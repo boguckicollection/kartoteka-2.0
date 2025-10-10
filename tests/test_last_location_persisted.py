@@ -20,6 +20,9 @@ class DummyVar:
     def get(self):
         return self.value
 
+    def set(self, value):
+        self.value = value
+
 
 def make_dummy():
     return SimpleNamespace(
@@ -31,9 +34,9 @@ def make_dummy():
             "język": DummyVar("ENG"),
             "stan": DummyVar("NM"),
             "cena": DummyVar(""),
-            "psa10_price": DummyVar(""),
             "card_type": DummyVar("C"),
         },
+        psa10_price_var=DummyVar(""),
         type_vars={"Reverse": DummyVar(False), "Holo": DummyVar(False)},
         card_cache={},
         cards=["/tmp/card.jpg"],

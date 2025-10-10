@@ -18,6 +18,9 @@ class DummyVar:
     def get(self):
         return self.value
 
+    def set(self, value):
+        self.value = value
+
 
 class DestroyedVar:
     def winfo_exists(self):
@@ -37,9 +40,9 @@ def make_dummy():
             "język": DummyVar("ENG"),
             "stan": DummyVar("NM"),
             "cena": DummyVar(""),
-            "psa10_price": DummyVar(""),
             "card_type": DummyVar("C"),
         },
+        psa10_price_var=DummyVar(""),
         type_vars={"Reverse": DummyVar(False), "Holo": DummyVar(False)},
         card_cache={},
         cards=["card1.jpg", "card2.jpg"],

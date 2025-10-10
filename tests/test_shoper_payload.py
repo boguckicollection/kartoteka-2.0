@@ -26,12 +26,12 @@ def test_build_shoper_payload_forwards_optional_fields():
         "delivery": "24h",
         "ilość": 2,
         "stock_warnlevel": 1,
-        "type": "virtual",
         "producer_id": 11,
         "group_id": 22,
         "tax_id": 33,
         "category_id": 44,
         "unit_id": 55,
+        "type": "virtual",
         "code": "CODE-123",
         "ean": "1234567890123",
         "pkwiu": "58.11",
@@ -46,14 +46,14 @@ def test_build_shoper_payload_forwards_optional_fields():
     payload = app._build_shoper_payload(card)
 
     assert payload["stock"] == {"stock": 2, "warnlevel": 1}
-    assert payload["ean"] == "1234567890123"
-    assert payload["type"] == "virtual"
+    assert "ean" not in payload
+    assert "type" not in payload
     assert payload["producer_id"] == 11
     assert payload["group_id"] == 22
     assert payload["tax_id"] == 33
     assert payload["category_id"] == 44
     assert payload["unit_id"] == 55
-    assert payload["code"] == "CODE-123"
+    assert "code" not in payload
     assert payload["pkwiu"] == "58.11"
     assert payload["dimensions"] == {"width": 1.1, "height": 2.2}
     assert payload["tags"] == ["tag1", "tag2"]
