@@ -87,6 +87,30 @@ def _create_bool_var(value: bool = False):
         return _Var(value)
 
 
+class _AttributeEntryAdapter:
+    """Expose attribute selections through ``self.entries``.
+
+    ``save_current_data`` gathers values from every entry that provides a
+    ``get`` method.  Attribute widgets store their selection inside
+    ``self.attribute_values`` instead of a regular Tk variable, therefore
+    ``self.entries`` keeps small adapter objects that forward ``get`` calls to
+    the aggregated dictionary.
+    """
+
+    def __init__(self, app: "CardEditorApp", group_id: int, attribute_id: int):
+        self.app = app
+        self.group_id = int(group_id)
+        self.attribute_id = int(attribute_id)
+
+    def get(self):  # pragma: no cover - exercised indirectly via app logic
+        group = getattr(self.app, "attribute_values", {})
+        if not isinstance(group, Mapping):
+            return None
+        values = group.get(self.group_id, {})
+        if not isinstance(values, Mapping):
+            return None
+        return values.get(self.attribute_id)
+
 def _coerce_quantity(value: Any) -> int:
     if value is None:
         return 0
@@ -2098,6 +2122,11 @@ class CardEditorApp:
         self.pool_total_label = None
         self.auction_queue = []
         self.in_scan = False
+        self.attribute_values: dict[int, dict[int, Any]] = {}
+        self._attribute_controls: dict[tuple[int, int], dict[str, Any]] = {}
+        self._pending_attribute_payload: Optional[Mapping[int, Mapping[int, Any]]] = None
+        self._attribute_editor_initialized = False
+        self._attribute_cache: dict[str, Any] = {}
         self.current_image_path = ""
         self.current_analysis_thread = None
         self.current_location = ""
@@ -2740,25 +2769,88 @@ class CardEditorApp:
             data = self.shoper_client.add_product(payload)
             product_id = data.get("product_id") or data.get("id")
             try:
+                attribute_map = (
+                    card.get("attributes") if isinstance(card, Mapping) else {}
+                )
+                cache: Mapping[str, Any] | dict[str, Any]
+                try:
+                    cache = self._refresh_attribute_cache()
+                except Exception as exc:  # pragma: no cover - defensive fallback
+                    logger.warning("Failed to refresh attribute cache: %s", exc)
+                    cache = getattr(self, "_attribute_cache", {}) or {}
+                attr_defs = (
+                    cache.get("attributes")
+                    if isinstance(cache, Mapping)
+                    else {}
+                )
+                name_map = (
+                    cache.get("by_name") if isinstance(cache, Mapping) else {}
+                )
+
+                def _sort_key(item: tuple[Any, Any]) -> Any:
+                    key = item[0]
+                    try:
+                        return int(key)
+                    except (TypeError, ValueError):
+                        return str(key)
+
+                seen_attribute_ids: set[int] = set()
+                if product_id and isinstance(attribute_map, Mapping):
+                    for _, attributes in sorted(attribute_map.items(), key=_sort_key):
+                        if not isinstance(attributes, Mapping):
+                            continue
+                        for attr_key, raw_value in sorted(attributes.items(), key=_sort_key):
+                            attr_id = self._resolve_attribute_id(attr_key, name_map)
+                            if attr_id is None:
+                                continue
+                            attr_meta = (
+                                attr_defs.get(attr_id) if isinstance(attr_defs, Mapping) else None
+                            )
+                            if not attr_meta:
+                                logger.warning(
+                                    "Missing Shoper attribute definition for %s", attr_id
+                                )
+                                continue
+                            values_payload = self._normalize_attribute_payload(
+                                attr_meta, raw_value
+                            )
+                            if not values_payload:
+                                continue
+                            try:
+                                self.shoper_client.add_product_attribute(
+                                    product_id, attr_id, values_payload
+                                )
+                                seen_attribute_ids.add(attr_id)
+                            except Exception:
+                                logger.exception(
+                                    "Failed to assign attribute %s to product %s",
+                                    attr_id,
+                                    product_id,
+                                )
+
                 card_type_code = normalize_card_type_code(card.get("card_type"))
                 attr_value = card_type_label(card_type_code)
-                attr_values = [attr_value] if attr_value else []
-                if product_id and attr_values:
-                    cache = getattr(self, "_attribute_cache", {})
-                    attr_id = cache.get("Typ")
-                    if attr_id is None:
-                        attrs = self.shoper_client.get_attributes()
-                        for a in attrs.get("list", attrs):
-                            name = a.get("name")
-                            aid = a.get("attribute_id")
-                            if name and aid is not None:
-                                cache[name] = aid
-                        attr_id = cache.get("Typ")
-                        self._attribute_cache = cache
-                    if attr_id is not None:
-                        self.shoper_client.add_product_attribute(
-                            product_id, attr_id, attr_values
+                if product_id and attr_value:
+                    attr_id = self._resolve_attribute_id("Typ", name_map)
+                    if attr_id is not None and attr_id not in seen_attribute_ids:
+                        attr_meta = (
+                            attr_defs.get(attr_id)
+                            if isinstance(attr_defs, Mapping)
+                            else None
                         )
+                        values_payload = self._normalize_attribute_payload(
+                            attr_meta, attr_value
+                        )
+                        if values_payload:
+                            try:
+                                self.shoper_client.add_product_attribute(
+                                    product_id, attr_id, values_payload
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Failed to set fallback attribute Typ for product %s",
+                                    product_id,
+                                )
             except Exception as exc:
                 logger.exception("Failed to set product attributes")
             if isinstance(widget, tk.Text):
@@ -6883,6 +6975,28 @@ class CardEditorApp:
         for i in range(8):
             self.info_frame.columnconfigure(i, weight=1)
 
+        self.attribute_panel = ctk.CTkScrollableFrame(
+            self.frame,
+            fg_color=BG_COLOR,
+            label_text="Atrybuty Shoper",
+        )
+        self.attribute_panel.grid(
+            row=2,
+            column=5,
+            rowspan=12,
+            sticky="nsew",
+            padx=(0, 5),
+        )
+        self.frame.columnconfigure(5, weight=1)
+        self.attribute_panel.grid_columnconfigure(0, weight=1)
+        self.attribute_status_label = ctk.CTkLabel(
+            self.attribute_panel,
+            text="Ładowanie atrybutów...",
+            justify="left",
+            text_color=TEXT_COLOR,
+        )
+        self.attribute_status_label.grid(row=0, column=0, sticky="nw", padx=10, pady=10)
+
         self.entries = {}
 
         grid_opts = {"padx": 5, "pady": 2}
@@ -7174,6 +7288,10 @@ class CardEditorApp:
 
         self.root.bind("<Return>", lambda e: self.save_and_next())
         self.update_set_options()
+        if hasattr(self.root, "after_idle"):
+            self.root.after_idle(self._ensure_attribute_editor)
+        else:
+            self._ensure_attribute_editor()
 
         self.log_widget = tk.Text(
             self.frame,
@@ -7183,6 +7301,639 @@ class CardEditorApp:
             fg="white",
         )
         self.log_widget.grid(row=16, column=0, columnspan=6, sticky="ew")
+
+    def _ensure_attribute_editor(self):
+        if getattr(self, "_attribute_editor_initialized", False):
+            return
+        panel = getattr(self, "attribute_panel", None)
+        if panel is None:
+            return
+        client = getattr(self, "shoper_client", None)
+        if not client:
+            status = getattr(self, "attribute_status_label", None)
+            if status is not None:
+                try:
+                    status.configure(
+                        text="Skonfiguruj Shoper API, aby pobrać atrybuty."
+                    )
+                except tk.TclError:
+                    pass
+            return
+        try:
+            cache = self._refresh_attribute_cache(force=True)
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.warning("Failed to load Shoper attributes: %s", exc)
+            status = getattr(self, "attribute_status_label", None)
+            if status is not None:
+                try:
+                    status.configure(text="Nie udało się pobrać atrybutów Shoper.")
+                except tk.TclError:
+                    pass
+            return
+        self._build_attribute_editor(cache)
+        self._attribute_editor_initialized = True
+        if self._pending_attribute_payload:
+            self._apply_attribute_data(self._pending_attribute_payload)
+
+    def _refresh_attribute_cache(self, *, force: bool = False) -> dict[str, Any]:
+        """Return cached attribute metadata from Shoper.
+
+        The cache is populated on first access or when ``force`` is ``True``.
+        Every attribute is normalised with lookup tables so the editor can map
+        user selections back to the identifiers expected by Shoper.  Any
+        attribute with an unknown or unsupported type is exposed as a text
+        field, allowing the UI to remain functional until the schema is
+        updated.
+        """
+
+        if not force and self._attribute_cache:
+            return self._attribute_cache
+        client = getattr(self, "shoper_client", None)
+        if not client:
+            self._attribute_cache = {}
+            return {}
+        raw = client.get_attributes() or {}
+        attr_list = raw.get("list", raw)
+        if not isinstance(attr_list, Iterable):
+            attr_list = []
+        groups: dict[int, dict[str, Any]] = {}
+        attributes: dict[int, dict[str, Any]] = {}
+        name_map: dict[str, int] = {}
+        for item in attr_list:
+            if not isinstance(item, Mapping):
+                continue
+            attr_id_raw = item.get("attribute_id")
+            try:
+                attr_id = int(attr_id_raw)
+            except (TypeError, ValueError):
+                continue
+            group_raw = item.get("attribute_group_id") or 0
+            try:
+                group_id = int(group_raw)
+            except (TypeError, ValueError):
+                group_id = 0
+            group_name = (
+                item.get("group_name")
+                or item.get("attribute_group_name")
+                or (item.get("attribute_group") or {}).get("name")
+                or (item.get("group") or {}).get("name")
+                or f"Grupa {group_id}"
+            )
+            group_entry = groups.setdefault(
+                group_id, {"name": group_name, "attributes": []}
+            )
+            group_entry["attributes"].append(item)
+            prepared = self._prepare_attribute_metadata(item, group_id, group_name)
+            attributes[attr_id] = prepared
+            attr_name = item.get("name") or item.get("attribute_name")
+            if isinstance(attr_name, str) and attr_name.strip():
+                name_map[attr_name.strip().lower()] = attr_id
+        cache = {"groups": groups, "attributes": attributes, "by_name": name_map}
+        self._attribute_cache = cache
+        return cache
+
+    @staticmethod
+    def _extract_attribute_values(attr: Mapping[str, Any]) -> list[tuple[Any, str]]:
+        values_source = (
+            attr.get("dictionary")
+            or attr.get("values")
+            or attr.get("options")
+            or []
+        )
+        items: list[tuple[Any, str]] = []
+        iterable: Iterable[Any]
+        if isinstance(values_source, Mapping):
+            iterable = values_source.items()
+        else:
+            iterable = values_source
+        for value in iterable:
+            key: Any
+            label: Any
+            if isinstance(value, tuple) and len(value) == 2:
+                key, label = value
+            elif isinstance(value, Mapping):
+                key = (
+                    value.get("value_id")
+                    or value.get("id")
+                    or value.get("value")
+                    or value.get("key")
+                )
+                label = (
+                    value.get("name")
+                    or value.get("label")
+                    or value.get("value")
+                    or value.get("text")
+                    or value.get("title")
+                )
+            else:
+                key = value
+                label = value
+            if key is None:
+                continue
+            if isinstance(key, str) and key.isdigit():
+                try:
+                    key = int(key)
+                except ValueError:
+                    pass
+            if isinstance(label, str):
+                label_text = label.strip() or str(key)
+            else:
+                label_text = str(label) if label is not None else str(key)
+            items.append((key, label_text))
+        return items
+
+    def _prepare_attribute_metadata(
+        self, attr: Mapping[str, Any], group_id: int, group_name: str
+    ) -> dict[str, Any]:
+        attr_type = str(attr.get("type") or attr.get("input_type") or "").lower()
+        values = self._extract_attribute_values(attr)
+        values_by_id: dict[Any, str] = {}
+        values_by_name: dict[str, Any] = {}
+        for key, label in values:
+            values_by_id[key] = label
+            if isinstance(label, str) and label.strip():
+                values_by_name[label.strip().lower()] = key
+            values_by_name[str(key).strip().lower()] = key
+        multiple = bool(
+            attr.get("multiple")
+            or attr_type in {"multiselect", "checkbox", "checkboxes"}
+        )
+        if multiple and values:
+            widget_type = "multiselect"
+        elif values:
+            widget_type = "select"
+        else:
+            widget_type = "text"
+        return {
+            "raw": attr,
+            "type": attr_type,
+            "group_id": group_id,
+            "group_name": group_name,
+            "values": values,
+            "values_by_id": values_by_id,
+            "values_by_name": values_by_name,
+            "widget_type": widget_type,
+        }
+
+    def _clear_attribute_entries(self) -> None:
+        for key in list(self.entries.keys()):
+            if isinstance(key, str) and key.startswith("attribute:"):
+                self.entries.pop(key, None)
+
+    def _build_attribute_editor(self, cache: Mapping[str, Any]) -> None:
+        panel = getattr(self, "attribute_panel", None)
+        if panel is None:
+            return
+        status = getattr(self, "attribute_status_label", None)
+        if status is not None:
+            try:
+                status.destroy()
+            except tk.TclError:
+                pass
+            self.attribute_status_label = None
+        content = getattr(self, "_attribute_content", None)
+        if content is not None:
+            try:
+                content.destroy()
+            except tk.TclError:
+                pass
+        self._attribute_content = ctk.CTkFrame(panel, fg_color="transparent")
+        self._attribute_content.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        self._attribute_content.grid_columnconfigure(0, weight=1)
+        self._clear_attribute_entries()
+        self.attribute_values = {}
+        self._attribute_controls = {}
+        groups = cache.get("groups", {}) if isinstance(cache, Mapping) else {}
+        if not groups:
+            ctk.CTkLabel(
+                self._attribute_content,
+                text="Brak dostępnych atrybutów.",
+                text_color=TEXT_COLOR,
+            ).grid(row=0, column=0, sticky="w", padx=5, pady=5)
+            return
+        font_factory = getattr(ctk, "CTkFont", None)
+
+        def _group_sort(item: tuple[Any, Any]) -> Any:
+            key = item[0]
+            try:
+                return int(key)
+            except (TypeError, ValueError):
+                return str(key)
+
+        row = 0
+        for group_id_raw, group_meta in sorted(groups.items(), key=_group_sort):
+            try:
+                group_id = int(group_id_raw)
+            except (TypeError, ValueError):
+                group_id = group_id_raw
+            group_name = (
+                group_meta.get("name")
+                if isinstance(group_meta, Mapping)
+                else f"Grupa {group_id}"
+            )
+            try:
+                group_font = font_factory(size=17, weight="bold") if callable(font_factory) else None
+            except Exception:  # pragma: no cover - fallback for mocks
+                group_font = None
+            ctk.CTkLabel(
+                self._attribute_content,
+                text=str(group_name),
+                font=group_font,
+                text_color=TEXT_COLOR,
+            ).grid(row=row, column=0, sticky="w", padx=5, pady=(0, 4))
+            row += 1
+            group_frame = ctk.CTkFrame(self._attribute_content, fg_color="transparent")
+            group_frame.grid(row=row, column=0, sticky="ew", padx=5, pady=(0, 12))
+            group_frame.grid_columnconfigure(1, weight=1)
+            row += 1
+            attributes = (
+                group_meta.get("attributes")
+                if isinstance(group_meta, Mapping)
+                else []
+            )
+            attr_row = 0
+            for raw_attr in attributes:
+                if not isinstance(raw_attr, Mapping):
+                    continue
+                attr_id_raw = raw_attr.get("attribute_id")
+                try:
+                    attr_id = int(attr_id_raw)
+                except (TypeError, ValueError):
+                    continue
+                prepared = cache.get("attributes", {}).get(attr_id)
+                if not prepared:
+                    continue
+                attr_name = raw_attr.get("name") or raw_attr.get("attribute_name") or f"Atrybut {attr_id}"
+                ctk.CTkLabel(
+                    group_frame,
+                    text=str(attr_name),
+                    text_color=TEXT_COLOR,
+                ).grid(row=attr_row, column=0, sticky="w", padx=(5, 10), pady=4)
+                widget_type = prepared.get("widget_type") or "text"
+                attr_key = f"attribute:{group_id}:{attr_id}"
+                if widget_type == "select":
+                    var = tk.StringVar()
+                    value_to_label = {
+                        key: label for key, label in prepared.get("values", [])
+                    }
+                    label_to_value = {
+                        label: key for key, label in prepared.get("values", [])
+                    }
+                    display_values = [""] + [label for _, label in prepared.get("values", [])]
+
+                    def _on_select(choice: str, gid=group_id, aid=attr_id, mapping=label_to_value):
+                        selected = mapping.get(choice)
+                        if selected is None and isinstance(choice, str) and choice.strip():
+                            selected = choice.strip()
+                        self._store_attribute_value(gid, aid, selected)
+
+                    combo = ctk.CTkComboBox(
+                        group_frame,
+                        variable=var,
+                        values=display_values,
+                        width=200,
+                        command=_on_select,
+                    )
+                    combo.grid(row=attr_row, column=1, sticky="ew", padx=5, pady=4)
+                    control = {
+                        "widget_type": "select",
+                        "variable": var,
+                        "value_to_label": value_to_label,
+                        "meta": prepared,
+                    }
+                elif widget_type == "multiselect":
+                    options_frame = ctk.CTkFrame(group_frame, fg_color="transparent")
+                    options_frame.grid(row=attr_row, column=1, sticky="ew", padx=5, pady=4)
+                    checkbox_vars: dict[Any, Any] = {}
+
+                    def _on_toggle(gid=group_id, aid=attr_id, frame_vars=checkbox_vars):
+                        selected: list[Any] = []
+                        for value_id, bool_var in frame_vars.items():
+                            try:
+                                is_selected = bool(bool_var.get())
+                            except Exception:
+                                is_selected = False
+                            if is_selected:
+                                selected.append(value_id)
+                        existing = []
+                        current = self.attribute_values.get(gid, {}).get(aid)
+                        if isinstance(current, list):
+                            existing = [val for val in current if val not in frame_vars]
+                        if existing:
+                            combined = selected + [val for val in existing if val not in selected]
+                        else:
+                            combined = selected
+                        self._store_attribute_value(gid, aid, combined)
+
+                    for idx, (value_id, label) in enumerate(prepared.get("values", [])):
+                        bool_var = _create_bool_var(False)
+                        checkbox_vars[value_id] = bool_var
+                        ctk.CTkCheckBox(
+                            options_frame,
+                            text=label,
+                            variable=bool_var,
+                            command=_on_toggle,
+                        ).grid(row=idx // 2, column=idx % 2, sticky="w", padx=2, pady=2)
+                    options_frame.grid_columnconfigure(0, weight=1)
+                    options_frame.grid_columnconfigure(1, weight=1)
+                    control = {
+                        "widget_type": "multiselect",
+                        "checkbox_vars": checkbox_vars,
+                        "meta": prepared,
+                    }
+                else:
+                    var = tk.StringVar()
+
+                    def _on_text_change(*_args, gid=group_id, aid=attr_id, variable=var):
+                        try:
+                            text = variable.get()
+                        except tk.TclError:
+                            text = ""
+                        cleaned = text.strip()
+                        self._store_attribute_value(gid, aid, cleaned or None)
+
+                    entry = ctk.CTkEntry(group_frame, textvariable=var, width=200)
+                    entry.grid(row=attr_row, column=1, sticky="ew", padx=5, pady=4)
+                    try:
+                        var.trace_add("write", _on_text_change)
+                    except AttributeError:  # pragma: no cover - Tk fallback
+                        var.trace("w", lambda *a, **k: _on_text_change())
+                    control = {
+                        "widget_type": "text",
+                        "variable": var,
+                        "meta": prepared,
+                    }
+                attr_row += 1
+                adapter = _AttributeEntryAdapter(self, group_id, attr_id)
+                self.entries[attr_key] = adapter
+                self._attribute_controls[(int(group_id), int(attr_id))] = control
+
+    def _store_attribute_value(self, group_id: Any, attribute_id: Any, value: Any) -> None:
+        try:
+            gid = int(group_id)
+        except (TypeError, ValueError):
+            return
+        try:
+            aid = int(attribute_id)
+        except (TypeError, ValueError):
+            return
+        if value in (None, "", []):
+            group = self.attribute_values.get(gid)
+            if isinstance(group, dict) and aid in group:
+                group.pop(aid, None)
+                if not group:
+                    self.attribute_values.pop(gid, None)
+            return
+        if isinstance(value, (list, tuple, set)):
+            collected: list[Any] = []
+            for item in value:
+                if isinstance(item, str):
+                    stripped = item.strip()
+                    if stripped:
+                        collected.append(stripped)
+                elif item is not None:
+                    collected.append(item)
+            if not collected:
+                group = self.attribute_values.get(gid)
+                if isinstance(group, dict) and aid in group:
+                    group.pop(aid, None)
+                    if not group:
+                        self.attribute_values.pop(gid, None)
+                return
+            value_to_store: Any = list(dict.fromkeys(collected))
+        else:
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    group = self.attribute_values.get(gid)
+                    if isinstance(group, dict) and aid in group:
+                        group.pop(aid, None)
+                        if not group:
+                            self.attribute_values.pop(gid, None)
+                    return
+                value_to_store = stripped
+            else:
+                value_to_store = value
+        group = self.attribute_values.setdefault(gid, {})
+        group[aid] = value_to_store
+
+    def _normalize_attribute_selection(
+        self, attr_meta: Mapping[str, Any] | None, raw_value: Any
+    ) -> list[Any]:
+        if attr_meta is None:
+            attr_meta = {}
+        if isinstance(raw_value, (list, tuple, set)):
+            values = list(raw_value)
+        elif raw_value in (None, ""):
+            return []
+        else:
+            values = [raw_value]
+        normalized: list[Any] = []
+        values_by_id = attr_meta.get("values_by_id", {})
+        values_by_name = attr_meta.get("values_by_name", {})
+        for item in values:
+            if isinstance(item, Mapping):
+                candidate = (
+                    item.get("value_id")
+                    or item.get("id")
+                    or item.get("value")
+                )
+                if candidate is not None:
+                    normalized.append(candidate)
+                    continue
+                label = item.get("name") or item.get("label")
+                if isinstance(label, str):
+                    mapped = values_by_name.get(label.strip().lower())
+                    if mapped is not None:
+                        normalized.append(mapped)
+                        continue
+                continue
+            if item in values_by_id:
+                normalized.append(item)
+                continue
+            if isinstance(item, str):
+                stripped = item.strip()
+                if not stripped:
+                    continue
+                if stripped in values_by_id:
+                    normalized.append(stripped)
+                    continue
+                mapped = values_by_name.get(stripped.lower())
+                if mapped is not None:
+                    normalized.append(mapped)
+                    continue
+                try:
+                    numeric = int(stripped)
+                except ValueError:
+                    normalized.append(stripped)
+                else:
+                    if numeric in values_by_id:
+                        normalized.append(numeric)
+                    else:
+                        normalized.append(numeric)
+            else:
+                normalized.append(item)
+        return normalized
+
+    def _set_attribute_selection(
+        self, group_id: int, attribute_id: int, value: Any
+    ) -> None:
+        control = self._attribute_controls.get((group_id, attribute_id))
+        if not control:
+            return
+        meta = control.get("meta")
+        widget_type = control.get("widget_type") or "text"
+        normalized = self._normalize_attribute_selection(meta, value)
+        if widget_type == "multiselect":
+            checkbox_vars = control.get("checkbox_vars", {})
+            recognized: list[Any] = []
+            extras: list[Any] = []
+            for item in normalized:
+                if item in checkbox_vars:
+                    recognized.append(item)
+                else:
+                    extras.append(item)
+            for option, var in checkbox_vars.items():
+                try:
+                    var.set(option in recognized)
+                except Exception:
+                    pass
+            combined = recognized + [item for item in extras if item not in recognized]
+            self._store_attribute_value(group_id, attribute_id, combined)
+        elif widget_type == "select":
+            value_to_label = control.get("value_to_label", {})
+            chosen = None
+            fallback = None
+            for item in normalized:
+                if item in value_to_label:
+                    chosen = item
+                    break
+                if fallback is None:
+                    fallback = item
+            var = control.get("variable")
+            if chosen is not None:
+                label = value_to_label.get(chosen, str(chosen))
+                try:
+                    var.set(label)
+                except Exception:
+                    pass
+                self._store_attribute_value(group_id, attribute_id, chosen)
+            elif fallback is not None:
+                try:
+                    var.set(str(fallback))
+                except Exception:
+                    pass
+                self._store_attribute_value(group_id, attribute_id, fallback)
+            else:
+                try:
+                    var.set("")
+                except Exception:
+                    pass
+                self._store_attribute_value(group_id, attribute_id, None)
+        else:
+            var = control.get("variable")
+            text = ""
+            if normalized:
+                first = normalized[0]
+                text = str(first)
+            try:
+                var.set(text)
+            except Exception:
+                pass
+            self._store_attribute_value(group_id, attribute_id, text or None)
+
+    def _apply_attribute_data(
+        self, attributes: Optional[Mapping[Any, Mapping[Any, Any]]]
+    ) -> None:
+        if not attributes:
+            self._pending_attribute_payload = None
+            self._reset_attribute_editor()
+            return
+        if not self._attribute_controls:
+            self._pending_attribute_payload = attributes
+            return
+        self._reset_attribute_editor()
+        name_map = (
+            self._attribute_cache.get("by_name")
+            if isinstance(self._attribute_cache, Mapping)
+            else {}
+        ) or {}
+        for group_key, values in attributes.items():
+            try:
+                group_id = int(group_key)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(values, Mapping):
+                continue
+            for attr_key, raw_value in values.items():
+                attr_id = self._resolve_attribute_id(attr_key, name_map)
+                if attr_id is None:
+                    continue
+                self._set_attribute_selection(group_id, attr_id, raw_value)
+        self._pending_attribute_payload = None
+
+    def _reset_attribute_editor(self) -> None:
+        self.attribute_values = {}
+        for control in self._attribute_controls.values():
+            widget_type = control.get("widget_type")
+            if widget_type == "multiselect":
+                for var in control.get("checkbox_vars", {}).values():
+                    try:
+                        var.set(False)
+                    except Exception:
+                        pass
+            else:
+                var = control.get("variable")
+                if var is None:
+                    continue
+                try:
+                    var.set("")
+                except Exception:
+                    pass
+
+    def _resolve_attribute_id(
+        self, key: Any, name_map: Mapping[str, int] | None
+    ) -> Optional[int]:
+        if isinstance(key, int):
+            return key
+        if isinstance(key, str):
+            stripped = key.strip()
+            if not stripped:
+                return None
+            if stripped.isdigit():
+                try:
+                    return int(stripped)
+                except ValueError:
+                    return None
+            lookup = (name_map or {}).get(stripped.lower())
+            if lookup is not None:
+                return lookup
+        return None
+
+    def _normalize_attribute_payload(
+        self, attr_meta: Mapping[str, Any] | None, raw_value: Any
+    ) -> list[Any]:
+        normalized = self._normalize_attribute_selection(attr_meta, raw_value)
+        widget_type = (attr_meta or {}).get("widget_type")
+        if widget_type == "multiselect":
+            seen: list[Any] = []
+            for item in normalized:
+                if item not in seen:
+                    seen.append(item)
+            return seen
+        result: list[Any] = []
+        if widget_type == "select":
+            if normalized:
+                result.append(normalized[0])
+            return result
+        for item in normalized:
+            if isinstance(item, str):
+                stripped = item.strip()
+                if stripped:
+                    result.append(stripped)
+            elif item is not None:
+                result.append(item)
+        return result
 
     def update_set_options(self, event=None):
         lang = self.lang_var.get().strip().upper()
@@ -7543,6 +8294,19 @@ class CardEditorApp:
                     pass
                 self.location_label.configure(text="")
 
+        attributes_to_apply: Optional[Mapping[Any, Any]] = None
+        current_row = None
+        if (
+            getattr(self, "output_data", None)
+            and 0 <= self.index < len(self.output_data)
+        ):
+            candidate_row = self.output_data[self.index]
+            if isinstance(candidate_row, Mapping):
+                current_row = candidate_row
+                attrs = candidate_row.get("attributes")
+                if isinstance(attrs, Mapping):
+                    attributes_to_apply = attrs
+
         for key, entry in list(self.entries.items()):
             if hasattr(entry, "winfo_exists"):
                 try:
@@ -7578,12 +8342,15 @@ class CardEditorApp:
             except tk.TclError:
                 self.entries.pop(key, None)
 
+        self._reset_attribute_editor()
         skip_analysis = False
         self.selected_candidate_meta = None
         if cache_key and cache_key in self.card_cache:
             cached = self.card_cache[cache_key]
             entry_data = dict(cached.get("entries", {}) or {})
             for field, value in entry_data.items():
+                if isinstance(field, str) and field.startswith("attribute:"):
+                    continue
                 entry = self.entries.get(field)
                 if isinstance(entry, (tk.Entry, ctk.CTkEntry)):
                     if field == "numer":
@@ -7603,6 +8370,9 @@ class CardEditorApp:
                 combined["card_type"] = cached["card_type"]
             self._set_card_type_from_mapping(combined)
             self.update_set_options()
+            attrs = cached.get("attributes")
+            if isinstance(attrs, Mapping):
+                attributes_to_apply = attrs
 
         elif inv_entry:
             self.entries["nazwa"].insert(0, inv_entry.get("nazwa", ""))
@@ -7619,9 +8389,18 @@ class CardEditorApp:
                 filename,
                 cache_key,
             )
+            attrs = inv_entry.get("attributes") if isinstance(inv_entry, Mapping) else None
+            if isinstance(attrs, Mapping):
+                attributes_to_apply = attrs
 
         folder = os.path.basename(os.path.dirname(image_path))
         progress_cb = getattr(self, "_update_card_progress", None)
+
+        if attributes_to_apply is None and isinstance(current_row, Mapping):
+            attrs = current_row.get("attributes")
+            if isinstance(attrs, Mapping):
+                attributes_to_apply = attrs
+        self._apply_attribute_data(attributes_to_apply or {})
 
         fp_match = None
         if (
@@ -8977,13 +9756,43 @@ class CardEditorApp:
         the index."""
         data: dict[str, Any] = {}
         raw_entries: dict[str, Any] = {}
+        attribute_payload: dict[int, dict[int, Any]] = {}
         for k, v in self.entries.items():
             try:
                 if hasattr(v, "winfo_exists") and not v.winfo_exists():
                     continue
                 value = v.get()
-                data[k] = value
                 raw_entries[k] = value
+                if isinstance(k, str) and k.startswith("attribute:"):
+                    parts = k.split(":", 2)
+                    if len(parts) == 3:
+                        try:
+                            group_id = int(parts[1])
+                            attr_id = int(parts[2])
+                        except (TypeError, ValueError):
+                            continue
+                        normalized_value = value
+                        if isinstance(normalized_value, (list, tuple, set)):
+                            cleaned: list[Any] = []
+                            for item in normalized_value:
+                                if isinstance(item, str):
+                                    stripped = item.strip()
+                                    if stripped:
+                                        cleaned.append(stripped)
+                                elif item is not None:
+                                    cleaned.append(item)
+                            if not cleaned:
+                                continue
+                            normalized_value = cleaned
+                        elif isinstance(normalized_value, str):
+                            normalized_value = normalized_value.strip()
+                            if not normalized_value:
+                                continue
+                        elif normalized_value is None:
+                            continue
+                        attribute_payload.setdefault(group_id, {})[attr_id] = normalized_value
+                    continue
+                data[k] = value
             except tk.TclError:
                 continue
         if "ball_type" in data:
@@ -9099,6 +9908,11 @@ class CardEditorApp:
         if dimensions:
             data["dimensions"] = dimensions
 
+        if attribute_payload:
+            data["attributes"] = attribute_payload
+        else:
+            data.pop("attributes", None)
+
         name = data.get("nazwa")
         number = data.get("numer")
         set_name = data.get("set")
@@ -9169,6 +9983,7 @@ class CardEditorApp:
             "entries": {k: v for k, v in raw_entries.items()},
             "types": types,
             "card_type": card_type_code,
+            "attributes": attribute_payload,
         }
 
         front_path = self.cards[self.index]
