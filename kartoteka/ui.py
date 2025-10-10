@@ -111,6 +111,225 @@ def _create_string_var(value: str = ""):
         return _Var(value)
 
 
+LANGUAGE_ATTRIBUTE_GROUP_ID = 14
+LANGUAGE_DEFAULT_CODE = "ENG"
+
+
+def _normalize_language_label(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    upper = text.upper()
+    direct = {
+        "ENG": "ENG",
+        "EN": "ENG",
+        "ENGLISH": "ENG",
+        "JP": "JP",
+        "JPN": "JP",
+        "JAP": "JP",
+        "JAPANESE": "JP",
+    }
+    if upper in direct:
+        return direct[upper]
+    normalized = unicodedata.normalize("NFKD", text)
+    ascii_text = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    lowered = ascii_text.lower()
+    ascii_map = {
+        "angielski": "ENG",
+        "angielski (eng)": "ENG",
+        "angielski (en)": "ENG",
+        "ang": "ENG",
+        "ang.": "ENG",
+        "japonski": "JP",
+        "japonski (jp)": "JP",
+        "japonski (jpn)": "JP",
+        "japonski (jap)": "JP",
+    }
+    if lowered in ascii_map:
+        return ascii_map[lowered]
+    if any(token in lowered for token in ("angiel", "english")):
+        return "ENG"
+    compact = lowered.replace(" ", "")
+    if any(token in compact for token in ("jp", "jap", "jpn")):
+        return "JP"
+    if "japon" in lowered or "japan" in lowered:
+        return "JP"
+    return None
+
+
+def _iter_attribute_value_candidates(value: Any) -> Iterable[Any]:
+    if isinstance(value, Mapping):
+        for item in value.values():
+            yield item
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield item
+    else:
+        yield value
+
+
+def _get_attribute_control(app: Any, group_id: int, attribute_id: int) -> Optional[Mapping[str, Any]]:
+    controls = getattr(app, "_attribute_controls", {})
+    if isinstance(controls, Mapping):
+        return controls.get((group_id, attribute_id))
+    return None
+
+
+def _decode_language_value(app: Any, attribute_id: Any, raw_value: Any) -> Optional[str]:
+    try:
+        attr_id = int(attribute_id)
+    except (TypeError, ValueError):
+        attr_id = attribute_id
+    control = _get_attribute_control(app, LANGUAGE_ATTRIBUTE_GROUP_ID, attr_id)
+    meta = control.get("meta") if isinstance(control, Mapping) else {}
+    values_by_id = {}
+    if isinstance(meta, Mapping):
+        values_by_id = meta.get("values_by_id", {}) or {}
+    value_to_label = control.get("value_to_label", {}) if isinstance(control, Mapping) else {}
+
+    for candidate in _iter_attribute_value_candidates(raw_value):
+        label = None
+        if candidate in value_to_label:
+            label = value_to_label.get(candidate)
+        elif isinstance(candidate, str):
+            stripped = candidate.strip()
+            if stripped in value_to_label:
+                label = value_to_label.get(stripped)
+            elif stripped.isdigit():
+                try:
+                    numeric = int(stripped)
+                except ValueError:
+                    numeric = None
+                if numeric is not None:
+                    label = value_to_label.get(numeric) or values_by_id.get(numeric)
+            if label is None and stripped in values_by_id:
+                label = values_by_id.get(stripped)
+        elif candidate in values_by_id:
+            label = values_by_id.get(candidate)
+        code = _normalize_language_label(label if label is not None else candidate)
+        if code:
+            return code
+    return None
+
+
+def _extract_language_code_from_attributes(app: Any) -> Optional[str]:
+    values = getattr(app, "attribute_values", None)
+    if not isinstance(values, Mapping):
+        return None
+    group_values = values.get(LANGUAGE_ATTRIBUTE_GROUP_ID)
+    if not isinstance(group_values, Mapping):
+        return None
+    for attr_id, raw_value in group_values.items():
+        code = _decode_language_value(app, attr_id, raw_value)
+        if code:
+            return code
+    return None
+
+
+def _get_current_language_code(app: Any) -> str:
+    code = _extract_language_code_from_attributes(app)
+    if code:
+        return code
+    lang_var = getattr(app, "lang_var", None)
+    if lang_var is not None and hasattr(lang_var, "get"):
+        try:
+            fallback = lang_var.get()
+        except Exception:
+            fallback = None
+        else:
+            normalized = _normalize_language_label(fallback)
+            if normalized:
+                return normalized
+    return LANGUAGE_DEFAULT_CODE
+
+
+def _find_language_attribute_ids(app: Any) -> list[int]:
+    controls = getattr(app, "_attribute_controls", {})
+    if not isinstance(controls, Mapping):
+        return []
+    result: list[int] = []
+    for (group_id, attr_id) in controls.keys():
+        if group_id == LANGUAGE_ATTRIBUTE_GROUP_ID:
+            try:
+                result.append(int(attr_id))
+            except (TypeError, ValueError):
+                continue
+    return result
+
+
+def _find_language_dictionary_value(control: Optional[Mapping[str, Any]], code: str) -> Any:
+    if not isinstance(control, Mapping):
+        return None
+    meta = control.get("meta")
+    values = None
+    if isinstance(meta, Mapping):
+        values = meta.get("values")
+    if not isinstance(values, Iterable):
+        return None
+    for item in values:
+        if (
+            isinstance(item, tuple)
+            and len(item) == 2
+            and _normalize_language_label(item[1]) == code
+        ):
+            return item[0]
+    return None
+
+
+def _apply_language_code_to_attribute(app: Any, code: str) -> None:
+    attr_ids = _find_language_attribute_ids(app)
+    if not attr_ids:
+        return
+    target_code = code or LANGUAGE_DEFAULT_CODE
+    for attr_id in attr_ids:
+        control = _get_attribute_control(app, LANGUAGE_ATTRIBUTE_GROUP_ID, attr_id)
+        target_value = _find_language_dictionary_value(control, target_code)
+        if target_value is None:
+            target_value = target_code
+        store = getattr(app, "_store_attribute_value", None)
+        if callable(store):
+            store(LANGUAGE_ATTRIBUTE_GROUP_ID, attr_id, target_value)
+        else:
+            values = getattr(app, "attribute_values", None)
+            if not isinstance(values, dict):
+                values = {}
+                setattr(app, "attribute_values", values)
+            group_map = values.setdefault(LANGUAGE_ATTRIBUTE_GROUP_ID, {})
+            group_map[attr_id] = target_value
+            try:
+                app.update_set_options()
+            except Exception:
+                pass
+        if isinstance(control, Mapping):
+            widget_type = control.get("widget_type")
+            var = control.get("variable")
+            if widget_type == "select":
+                value_to_label = control.get("value_to_label", {})
+                label = value_to_label.get(target_value)
+                if label is None and isinstance(target_value, str):
+                    label = target_value
+                if label is not None and var is not None:
+                    try:
+                        var.set(label)
+                    except Exception:
+                        pass
+            elif widget_type == "text" and var is not None:
+                try:
+                    var.set(target_code)
+                except Exception:
+                    pass
+        break
+
+
+def _set_language_attribute_default(app: Any, code: str = LANGUAGE_DEFAULT_CODE) -> None:
+    current = _extract_language_code_from_attributes(app)
+    if current:
+        return
+    _apply_language_code_to_attribute(app, code)
+
+
 class _AttributeEntryAdapter:
     """Expose attribute selections through ``self.entries``.
 
@@ -7026,41 +7245,28 @@ class CardEditorApp:
         grid_opts = {"padx": 5, "pady": 2}
 
         tk.Label(
-            self.info_frame, text="Język", bg=FIELD_BG_COLOR, fg=TEXT_COLOR
-        ).grid(
-            row=start_row, column=0, sticky="w", **grid_opts
-        )
-        self.lang_var = tk.StringVar(value="ENG")
-        self.entries["język"] = self.lang_var
-        lang_dropdown = ctk.CTkComboBox(
-            self.info_frame, values=["ENG", "JP"], variable=self.lang_var, width=200
-        )
-        lang_dropdown.grid(row=start_row, column=1, sticky="ew", **grid_opts)
-        lang_dropdown.bind("<<ComboboxSelected>>", self.update_set_options)
-
-        tk.Label(
             self.info_frame, text="Nazwa", bg=FIELD_BG_COLOR, fg=TEXT_COLOR
         ).grid(
-            row=start_row + 1, column=0, sticky="w", **grid_opts
+            row=start_row, column=0, sticky="w", **grid_opts
         )
         self.entries["nazwa"] = ctk.CTkEntry(
             self.info_frame, width=200, placeholder_text="Nazwa"
         )
-        self.entries["nazwa"].grid(row=start_row + 1, column=1, sticky="ew", **grid_opts)
+        self.entries["nazwa"].grid(row=start_row, column=1, sticky="ew", **grid_opts)
 
         tk.Label(
             self.info_frame, text="Numer", bg=FIELD_BG_COLOR, fg=TEXT_COLOR
         ).grid(
-            row=start_row + 2, column=0, sticky="w", **grid_opts
+            row=start_row + 1, column=0, sticky="w", **grid_opts
         )
         self.entries["numer"] = ctk.CTkEntry(
             self.info_frame, width=200, placeholder_text="Numer"
         )
-        self.entries["numer"].grid(row=start_row + 2, column=1, sticky="ew", **grid_opts)
+        self.entries["numer"].grid(row=start_row + 1, column=1, sticky="ew", **grid_opts)
 
         tk.Label(
             self.info_frame, text="Era", bg=FIELD_BG_COLOR, fg=TEXT_COLOR
-        ).grid(row=start_row + 3, column=0, sticky="w", **grid_opts)
+        ).grid(row=start_row + 2, column=0, sticky="w", **grid_opts)
         self.era_var = tk.StringVar()
         self.era_dropdown = ctk.CTkComboBox(
             self.info_frame,
@@ -7068,34 +7274,32 @@ class CardEditorApp:
             variable=self.era_var,
             width=200,
         )
-        self.era_dropdown.grid(row=start_row + 3, column=1, sticky="ew", **grid_opts)
+        self.era_dropdown.grid(row=start_row + 2, column=1, sticky="ew", **grid_opts)
         self.era_dropdown.bind("<<ComboboxSelected>>", self.update_set_options)
         self.entries["era"] = self.era_var
 
         tk.Label(
             self.info_frame, text="Set", bg=FIELD_BG_COLOR, fg=TEXT_COLOR
         ).grid(
-            row=start_row + 4, column=0, sticky="w", **grid_opts
+            row=start_row + 3, column=0, sticky="w", **grid_opts
         )
         self.set_var = tk.StringVar()
         self.set_dropdown = ctk.CTkComboBox(
             self.info_frame, variable=self.set_var, width=20
         )
-        self.set_dropdown.grid(row=start_row + 4, column=1, sticky="ew", **grid_opts)
+        self.set_dropdown.grid(row=start_row + 3, column=1, sticky="ew", **grid_opts)
         self.set_dropdown.bind("<KeyRelease>", self.filter_sets)
         self.set_dropdown.bind("<Tab>", self.autocomplete_set)
         self.entries["set"] = self.set_var
 
         tk.Label(
             self.info_frame, text="Typ", bg=FIELD_BG_COLOR, fg=TEXT_COLOR
-        ).grid(
-            row=start_row + 5, column=0, sticky="w", **grid_opts
-        )
+        ).grid(row=start_row + 4, column=0, sticky="w", **grid_opts)
         self.card_type_var = tk.StringVar(value=CARD_TYPE_DEFAULT)
         self.entries["card_type"] = self.card_type_var
         self.type_frame = ctk.CTkFrame(self.info_frame)
         self.type_frame.grid(
-            row=start_row + 5, column=1, columnspan=7, sticky="w", **grid_opts
+            row=start_row + 4, column=1, columnspan=7, sticky="w", **grid_opts
         )
         for idx, (code, label) in enumerate(
             (("C", "Common"), ("H", "Holo"), ("R", "Reverse"))
@@ -7678,6 +7882,8 @@ class CardEditorApp:
                 self.entries[attr_key] = adapter
                 self._attribute_controls[(int(group_id), int(attr_id))] = control
 
+        _set_language_attribute_default(self)
+
     def _store_attribute_value(self, group_id: Any, attribute_id: Any, value: Any) -> None:
         try:
             gid = int(group_id)
@@ -7687,12 +7893,17 @@ class CardEditorApp:
             aid = int(attribute_id)
         except (TypeError, ValueError):
             return
+        changed = False
         if value in (None, "", []):
             group = self.attribute_values.get(gid)
             if isinstance(group, dict) and aid in group:
-                group.pop(aid, None)
+                previous = group.pop(aid, None)
+                if previous is not None:
+                    changed = True
                 if not group:
                     self.attribute_values.pop(gid, None)
+            if changed:
+                self._on_attribute_value_changed(gid, aid)
             return
         if isinstance(value, (list, tuple, set)):
             collected: list[Any] = []
@@ -7706,9 +7917,13 @@ class CardEditorApp:
             if not collected:
                 group = self.attribute_values.get(gid)
                 if isinstance(group, dict) and aid in group:
-                    group.pop(aid, None)
+                    previous = group.pop(aid, None)
+                    if previous is not None:
+                        changed = True
                     if not group:
                         self.attribute_values.pop(gid, None)
+                if changed:
+                    self._on_attribute_value_changed(gid, aid)
                 return
             value_to_store: Any = list(dict.fromkeys(collected))
         else:
@@ -7717,15 +7932,38 @@ class CardEditorApp:
                 if not stripped:
                     group = self.attribute_values.get(gid)
                     if isinstance(group, dict) and aid in group:
-                        group.pop(aid, None)
+                        previous = group.pop(aid, None)
+                        if previous is not None:
+                            changed = True
                         if not group:
                             self.attribute_values.pop(gid, None)
+                    if changed:
+                        self._on_attribute_value_changed(gid, aid)
                     return
                 value_to_store = stripped
             else:
                 value_to_store = value
-        group = self.attribute_values.setdefault(gid, {})
+        existing_group = self.attribute_values.get(gid)
+        if isinstance(existing_group, dict):
+            group = existing_group
+        else:
+            group = {}
+            self.attribute_values[gid] = group
+        previous = group.get(aid)
+        if isinstance(previous, list) and isinstance(value_to_store, list):
+            if previous == value_to_store:
+                return
+        elif previous == value_to_store:
+            return
         group[aid] = value_to_store
+        self._on_attribute_value_changed(gid, aid)
+
+    def _on_attribute_value_changed(self, group_id: int, attribute_id: int) -> None:
+        if group_id == LANGUAGE_ATTRIBUTE_GROUP_ID:
+            try:
+                self.update_set_options()
+            except Exception:
+                pass
 
     def _normalize_attribute_selection(
         self, attr_meta: Mapping[str, Any] | None, raw_value: Any
@@ -7900,6 +8138,7 @@ class CardEditorApp:
                     var.set("")
                 except Exception:
                     pass
+        _set_language_attribute_default(self)
 
     def _resolve_attribute_id(
         self, key: Any, name_map: Mapping[str, int] | None
@@ -7946,7 +8185,7 @@ class CardEditorApp:
         return result
 
     def update_set_options(self, event=None):
-        lang = self.lang_var.get().strip().upper()
+        lang = _get_current_language_code(self).upper()
         era = self.era_var.get().strip()
         if lang == "JP":
             self.sets_file = "tcg_sets_jp.json"
@@ -7992,7 +8231,7 @@ class CardEditorApp:
 
     def filter_sets(self, event=None):
         typed = self.set_var.get().strip().lower()
-        lang = self.lang_var.get().strip().upper()
+        lang = _get_current_language_code(self).upper()
         era = self.era_var.get().strip()
         if lang == "JP":
             sets_by_era = tcg_sets_jp_by_era
@@ -8039,7 +8278,7 @@ class CardEditorApp:
 
     def autocomplete_set(self, event=None):
         typed = self.set_var.get().strip().lower()
-        lang = self.lang_var.get().strip().upper()
+        lang = _get_current_language_code(self).upper()
         era = self.era_var.get().strip()
         if lang == "JP":
             sets_by_era = tcg_sets_jp_by_era
@@ -8105,7 +8344,7 @@ class CardEditorApp:
         )
         self.cheat_frame.grid(row=2, column=5, rowspan=12, sticky="nsew")
 
-        lang = self.lang_var.get().strip().upper()
+        lang = _get_current_language_code(self).upper()
         sets_by_era = (
             tcg_sets_jp_by_era if lang == "JP" else tcg_sets_eng_by_era
         )
@@ -8306,6 +8545,7 @@ class CardEditorApp:
 
         attributes_to_apply: Optional[Mapping[Any, Any]] = None
         current_row = None
+        cached_language_code: Optional[str] = None
         if (
             getattr(self, "output_data", None)
             and 0 <= self.index < len(self.output_data)
@@ -8335,9 +8575,7 @@ class CardEditorApp:
                 if entry_types and isinstance(entry, entry_types):
                     entry.delete(0, tk.END)
                 elif isinstance(tk.StringVar, type) and isinstance(entry, tk.StringVar):
-                    if key == "język":
-                        entry.set("ENG")
-                    elif key == "stan":
+                    if key == "stan":
                         entry.set("NM")
                     elif key == "ball_type":
                         entry.set("")
@@ -8373,6 +8611,9 @@ class CardEditorApp:
             entry_data = dict(cached.get("entries", {}) or {})
             for field, value in entry_data.items():
                 if isinstance(field, str) and field.startswith("attribute:"):
+                    continue
+                if field == "język":
+                    cached_language_code = _normalize_language_label(value) or cached_language_code
                     continue
                 entry = self.entries.get(field)
                 if isinstance(entry, (tk.Entry, ctk.CTkEntry)):
@@ -8429,6 +8670,13 @@ class CardEditorApp:
             if isinstance(attrs, Mapping):
                 attributes_to_apply = attrs
         self._apply_attribute_data(attributes_to_apply or {})
+        if cached_language_code is None and isinstance(current_row, Mapping):
+            cached_language_code = _normalize_language_label(current_row.get("język"))
+        if cached_language_code is None and isinstance(inv_entry, Mapping):
+            cached_language_code = _normalize_language_label(inv_entry.get("język"))
+        current_lang = _extract_language_code_from_attributes(self)
+        if cached_language_code and cached_language_code != current_lang:
+            _apply_language_code_to_attribute(self, cached_language_code)
 
         fp_match = None
         if (
@@ -8721,13 +8969,7 @@ class CardEditorApp:
         self.image_label.configure(image=img)
 
     def _analyze_and_fill(self, path, idx):
-        lang_var = getattr(self, "lang_var", None)
-        translate = False
-        if lang_var is not None:
-            try:
-                translate = lang_var.get() == "JP"
-            except tk.TclError:
-                translate = False
+        translate = _get_current_language_code(self).upper() == "JP"
         update_progress = getattr(self, "_update_card_progress", None)
         if update_progress:
             self.root.after(0, lambda: update_progress(0, show=True))
@@ -9789,11 +10031,15 @@ class CardEditorApp:
         data: dict[str, Any] = {}
         raw_entries: dict[str, Any] = {}
         attribute_payload: dict[int, dict[int, Any]] = {}
+        language_code = _get_current_language_code(self)
         for k, v in self.entries.items():
             try:
                 if hasattr(v, "winfo_exists") and not v.winfo_exists():
                     continue
                 value = v.get()
+                if k == "język":
+                    raw_entries[k] = language_code
+                    continue
                 raw_entries[k] = value
                 if isinstance(k, str) and k.startswith("attribute:"):
                     parts = k.split(":", 2)
@@ -9827,6 +10073,8 @@ class CardEditorApp:
                 data[k] = value
             except tk.TclError:
                 continue
+        raw_entries.setdefault("język", language_code)
+        data["język"] = language_code
         psa_var = getattr(self, "psa10_price_var", None)
         if hasattr(psa_var, "get"):
             try:
