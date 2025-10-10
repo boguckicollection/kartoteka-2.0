@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 import re
 from datetime import date, timedelta
@@ -39,6 +40,20 @@ STORE_FIELDNAMES = [
     "seo_title",
     "vat",
     "images 1",
+    "ean",
+    "type",
+    "producer_id",
+    "group_id",
+    "tax_id",
+    "category_id",
+    "unit_id",
+    "code",
+    "pkwiu",
+    "dimensions",
+    "tags",
+    "collections",
+    "additional_codes",
+    "virtual",
 ]
 
 # include a ``sold`` flag so individual cards can be marked as sold and track
@@ -542,6 +557,21 @@ def get_daily_additions(days: int = 7) -> dict[str, int]:
 
 def format_store_row(row):
     """Return a row formatted for the store CSV."""
+
+    def _serialise(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "1" if value else ""
+        if isinstance(value, (list, dict)):
+            try:
+                return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            except TypeError:
+                return json.dumps(
+                    [str(v) for v in value], ensure_ascii=False, separators=(",", ":")
+                )
+        return str(value)
+
     formatted_name = row["nazwa"]
 
     return {
@@ -562,6 +592,20 @@ def format_store_row(row):
         "seo_title": row.get("seo_title", ""),
         "vat": row.get("vat", "23%"),
         "images 1": row.get("image1", row.get("images", "")),
+        "ean": _serialise(row.get("ean")),
+        "type": _serialise(row.get("type")),
+        "producer_id": _serialise(row.get("producer_id")),
+        "group_id": _serialise(row.get("group_id")),
+        "tax_id": _serialise(row.get("tax_id")),
+        "category_id": _serialise(row.get("category_id")),
+        "unit_id": _serialise(row.get("unit_id")),
+        "code": _serialise(row.get("code")),
+        "pkwiu": _serialise(row.get("pkwiu")),
+        "dimensions": _serialise(row.get("dimensions")),
+        "tags": _serialise(row.get("tags")),
+        "collections": _serialise(row.get("collections")),
+        "additional_codes": _serialise(row.get("additional_codes")),
+        "virtual": _serialise(row.get("virtual")),
     }
 
 

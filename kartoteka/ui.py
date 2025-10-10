@@ -4188,13 +4188,10 @@ class CardEditorApp:
             "category": card.get("category"),
             "producer": card.get("producer"),
             "other_price": card.get("other_price", ""),
-            "pkwiu": card.get("pkwiu", ""),
             "weight": card.get("weight", 0.01),
             "priority": card.get("priority", 0),
             "short_description": card.get("short_description", ""),
             "description": card.get("description", ""),
-            "stock": card.get("ilość", 1),
-            "stock_warnlevel": card.get("stock_warnlevel", 0),
             "availability": card.get("availability", 1),
             "delivery": card.get("delivery"),
             "views": card.get("views", ""),
@@ -4202,6 +4199,75 @@ class CardEditorApp:
             "rank_votes": card.get("rank_votes", ""),
             "warehouse_code": card.get("warehouse_code", ""),
         }
+
+        def _has_value(value: Any) -> bool:
+            if value is None:
+                return False
+            if isinstance(value, str):
+                return bool(value.strip())
+            if isinstance(value, (list, tuple, set, dict)):
+                return bool(value)
+            return True
+
+        stock_value = card.get("ilość")
+        if stock_value in (None, ""):
+            stock_value = card.get("stock")
+        if stock_value in (None, ""):
+            stock_value = 1
+        stock_block: dict[str, Any] = {"stock": stock_value}
+        warnlevel = card.get("stock_warnlevel")
+        if _has_value(warnlevel):
+            try:
+                stock_block["warnlevel"] = int(warnlevel)
+            except (TypeError, ValueError):
+                pass
+        if stock_block:
+            payload["stock"] = stock_block
+
+        for field in ("type", "code", "ean", "pkwiu"):
+            value = card.get(field)
+            if isinstance(value, str):
+                value = value.strip()
+            if _has_value(value):
+                payload[field] = value
+
+        for field in ("producer_id", "group_id", "tax_id", "category_id", "unit_id"):
+            value = card.get(field)
+            if not _has_value(value):
+                continue
+            try:
+                payload[field] = int(value)
+            except (TypeError, ValueError):
+                payload[field] = value
+
+        if card.get("virtual"):
+            payload["virtual"] = bool(card.get("virtual"))
+
+        for field in ("tags", "collections", "additional_codes"):
+            values = card.get(field)
+            if isinstance(values, (list, tuple, set)):
+                cleaned = [str(item).strip() for item in values if str(item).strip()]
+            elif isinstance(values, str):
+                cleaned = [part.strip() for part in re.split(r"[;,]", values) if part.strip()]
+            else:
+                cleaned = []
+            if cleaned:
+                payload[field] = cleaned
+
+        dimensions = card.get("dimensions")
+        if isinstance(dimensions, Mapping):
+            dims: dict[str, float] = {}
+            for key in ("width", "height", "length"):
+                value = dimensions.get(key)
+                if not _has_value(value):
+                    continue
+                try:
+                    dims[key] = float(value)
+                except (TypeError, ValueError):
+                    continue
+            if dims:
+                payload["dimensions"] = dims
+
         if card.get("image1"):
             payload["images"] = card["image1"]
         return payload
@@ -7028,6 +7094,78 @@ class CardEditorApp:
             row=start_row + 11, column=0, columnspan=4, sticky="ew", **grid_opts
         )
 
+        # --- Shoper specific configuration ---
+        shoper_start_row = start_row + 12
+        ctk.CTkLabel(
+            self.info_frame,
+            text="Shoper",
+            anchor="w",
+        ).grid(row=shoper_start_row, column=0, columnspan=8, sticky="ew", pady=(10, 4))
+
+        shoper_frame = ctk.CTkFrame(self.info_frame, fg_color="transparent")
+        shoper_frame.grid(
+            row=shoper_start_row + 1,
+            column=0,
+            columnspan=8,
+            sticky="nsew",
+        )
+        for i in range(6):
+            shoper_frame.columnconfigure(i, weight=1)
+
+        def add_field(row: int, column: int, label_text: str, key: str, *, widget: str = "entry", values: Iterable[str] | None = None, width: int = 160):
+            tk.Label(
+                shoper_frame,
+                text=label_text,
+                bg=FIELD_BG_COLOR,
+                fg=TEXT_COLOR,
+            ).grid(row=row, column=column, sticky="w", padx=5, pady=2)
+            var = tk.StringVar()
+            if widget == "combo":
+                combo = ctk.CTkComboBox(
+                    shoper_frame,
+                    values=list(values or []),
+                    variable=var,
+                    width=width,
+                )
+                combo.grid(row=row, column=column + 1, sticky="ew", padx=5, pady=2)
+            else:
+                entry = ctk.CTkEntry(
+                    shoper_frame,
+                    textvariable=var,
+                    width=width,
+                )
+                entry.grid(row=row, column=column + 1, sticky="ew", padx=5, pady=2)
+            self.entries[key] = var
+
+        add_field(0, 0, "Typ produktu", "type", widget="combo", values=["", "product", "virtual"])
+        add_field(0, 2, "Kod Shoper", "code")
+        add_field(0, 4, "EAN", "ean")
+
+        add_field(1, 0, "ID producenta", "producer_id")
+        add_field(1, 2, "ID grupy", "group_id")
+        add_field(1, 4, "ID podatku", "tax_id")
+
+        add_field(2, 0, "ID kategorii", "category_id")
+        add_field(2, 2, "ID jednostki", "unit_id")
+        add_field(2, 4, "PKWiU", "pkwiu")
+
+        add_field(3, 0, "Szerokość (cm)", "dimension_w")
+        add_field(3, 2, "Wysokość (cm)", "dimension_h")
+        add_field(3, 4, "Długość (cm)", "dimension_l")
+
+        add_field(4, 0, "Tagi", "tags", width=220)
+        add_field(4, 2, "Kolekcje", "collections", width=220)
+        add_field(4, 4, "Dodatkowe kody", "additional_codes", width=220)
+
+        virtual_var = _create_bool_var(False)
+        self.entries["virtual"] = virtual_var
+        virtual_checkbox = ctk.CTkCheckBox(
+            shoper_frame,
+            text="Produkt wirtualny",
+            variable=virtual_var,
+        )
+        virtual_checkbox.grid(row=5, column=0, columnspan=2, sticky="w", padx=5, pady=(6, 2))
+
         self.eur_entry.bind("<Return>", self.convert_eur_to_pln)
 
         for entry in self.entries.values():
@@ -8837,12 +8975,15 @@ class CardEditorApp:
     def save_current_data(self):
         """Store the data for the currently displayed card without changing
         the index."""
-        data: dict[str, str] = {}
+        data: dict[str, Any] = {}
+        raw_entries: dict[str, Any] = {}
         for k, v in self.entries.items():
             try:
                 if hasattr(v, "winfo_exists") and not v.winfo_exists():
                     continue
-                data[k] = v.get()
+                value = v.get()
+                data[k] = value
+                raw_entries[k] = value
             except tk.TclError:
                 continue
         if "ball_type" in data:
@@ -8857,6 +8998,107 @@ class CardEditorApp:
         data.setdefault("numer", "")
         data.setdefault("set", "")
         data.setdefault("era", "")
+
+        def _clean_text(value: Any) -> str:
+            if isinstance(value, str):
+                return value.strip()
+            if value is None:
+                return ""
+            return str(value).strip()
+
+        def _int_or_none(value: Any) -> int | None:
+            if value in (None, ""):
+                return None
+            try:
+                if isinstance(value, str):
+                    value = value.strip()
+                    if not value:
+                        return None
+                return int(float(str(value).replace(",", ".")))
+            except (TypeError, ValueError):
+                return None
+
+        def _float_or_none(value: Any) -> float | None:
+            if value in (None, ""):
+                return None
+            try:
+                if isinstance(value, str):
+                    cleaned = value.strip().replace(" ", "").replace(",", ".")
+                    if not cleaned:
+                        return None
+                    return float(cleaned)
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        def _split_to_list(value: Any) -> list[str]:
+            if value in (None, ""):
+                return []
+            if isinstance(value, str):
+                parts = re.split(r"[;,]", value)
+                return [part.strip() for part in parts if part.strip()]
+            if isinstance(value, Mapping):
+                return [
+                    str(v).strip()
+                    for v in value.values()
+                    if str(v).strip()
+                ]
+            if isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
+                result: list[str] = []
+                for item in value:
+                    text = str(item).strip()
+                    if text:
+                        result.append(text)
+                return result
+            return []
+
+        for field in ("type", "code", "ean", "pkwiu"):
+            if field in data:
+                cleaned = _clean_text(data[field])
+                if field == "ean":
+                    cleaned = cleaned.replace(" ", "")
+                if cleaned:
+                    data[field] = cleaned
+                else:
+                    data.pop(field, None)
+
+        list_fields = ("tags", "collections", "additional_codes")
+        for field in list_fields:
+            if field in data:
+                values = _split_to_list(data[field])
+                if values:
+                    data[field] = values
+                else:
+                    data.pop(field, None)
+
+        int_fields = ("producer_id", "group_id", "tax_id", "category_id", "unit_id")
+        for field in int_fields:
+            if field in data:
+                value = _int_or_none(data[field])
+                if value is not None:
+                    data[field] = value
+                else:
+                    data.pop(field, None)
+
+        if "virtual" in data:
+            data["virtual"] = bool(data["virtual"])
+            if not data["virtual"]:
+                data.pop("virtual")
+
+        dimensions: dict[str, float] = {}
+        for axis, field in (
+            ("width", "dimension_w"),
+            ("height", "dimension_h"),
+            ("length", "dimension_l"),
+        ):
+            if field in data:
+                value = _float_or_none(data[field])
+                if value is not None:
+                    dimensions[axis] = value
+                data.pop(field, None)
+        if dimensions:
+            data["dimensions"] = dimensions
+
         name = data.get("nazwa")
         number = data.get("numer")
         set_name = data.get("set")
@@ -8924,7 +9166,7 @@ class CardEditorApp:
         key = f"{data['nazwa']}|{data['numer']}|{data['set']}|{data.get('era', '')}"
         data["ilość"] = 1
         self.card_cache[key] = {
-            "entries": {k: v for k, v in data.items()},
+            "entries": {k: v for k, v in raw_entries.items()},
             "types": types,
             "card_type": card_type_code,
         }
