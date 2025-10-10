@@ -27,7 +27,7 @@ from itertools import combinations
 import html
 import difflib
 import sys
-from typing import Any, Iterable, Mapping, Optional, Awaitable
+from typing import Any, Iterable, Mapping, Optional, Awaitable, NamedTuple
 from types import SimpleNamespace
 from pydantic import BaseModel
 import pytesseract
@@ -512,6 +512,84 @@ PSA_ICON_URL = "https://www.pngkey.com/png/full/231-2310791_psa-grading-standard
 
 CARD_TYPE_LABELS = {"C": "Common", "H": "Holo", "R": "Reverse"}
 CARD_TYPE_DEFAULT = "C"
+
+CARD_FINISH_ATTRIBUTE_GROUP_ID = 11
+
+
+class CardFinishSelection(NamedTuple):
+    code: str
+    ball: Optional[str]
+    label: Optional[str]
+    value: Any | None = None
+
+
+def _normalize_finish_label(text: Any) -> str:
+    if text is None:
+        return ""
+    if isinstance(text, bytes):
+        try:
+            text = text.decode("utf-8", "ignore")
+        except Exception:
+            text = text.decode("latin-1", "ignore")
+    normalized = unicodedata.normalize("NFKD", str(text))
+    ascii_text = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    lowered = ascii_text.lower()
+    return re.sub(r"[^a-z0-9]+", "", lowered)
+
+
+def _normalize_ball_suffix(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            normalized = _normalize_ball_suffix(item)
+            if normalized:
+                return normalized
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    upper = text.upper()
+    if upper in {"P", "M"}:
+        return upper
+    normalized = _normalize_finish_label(text)
+    if not normalized:
+        return None
+    if normalized.startswith("master") or "masterball" in normalized:
+        return "M"
+    if normalized.startswith("poke") or "pokeball" in normalized or "pokebal" in normalized:
+        return "P"
+    return None
+
+
+def _deduce_finish_variant(normalized_label: str) -> tuple[str, Optional[str]]:
+    if not normalized_label:
+        return CARD_TYPE_DEFAULT, None
+    ball = None
+    if "masterball" in normalized_label or (
+        normalized_label.startswith("master") and "ball" in normalized_label
+    ):
+        ball = "M"
+    elif "pokeball" in normalized_label or (
+        normalized_label.startswith("poke") and "ball" in normalized_label
+    ):
+        ball = "P"
+    code = CARD_TYPE_DEFAULT
+    if "reverse" in normalized_label or "mirror" in normalized_label:
+        code = "R"
+    elif any(token in normalized_label for token in ("holo", "foil", "blyszcz", "blysk")):
+        code = "H"
+    elif any(token in normalized_label for token in ("nonholo", "regular", "common", "zwykla", "normal")):
+        code = "C"
+    return code, ball
+
+
+DEFAULT_CARD_FINISH_LABEL = CARD_TYPE_LABELS.get(
+    CARD_TYPE_DEFAULT, CARD_TYPE_DEFAULT
+)
+DEFAULT_CARD_FINISH_SELECTION = CardFinishSelection(
+    CARD_TYPE_DEFAULT, None, DEFAULT_CARD_FINISH_LABEL, None
+)
 
 
 def normalize_card_type_code(value: Any, *, default: str = CARD_TYPE_DEFAULT) -> str:
@@ -2304,6 +2382,14 @@ class CardEditorApp:
         self.file_to_key = {}
         self.product_code_map = {}
         self.store_data = csv_utils.load_store_export()
+        self.card_type_var = _create_string_var(CARD_TYPE_DEFAULT)
+        self.card_type_display_var = _create_string_var(DEFAULT_CARD_FINISH_LABEL)
+        self._finish_attribute_id: Optional[int] = None
+        self._finish_value_to_variant: dict[Any, CardFinishSelection] = {}
+        self._finish_variant_to_value: dict[tuple[str, str], Any] = {}
+        self._finish_label_to_value: dict[str, Any] = {}
+        self._finish_value_to_label: dict[Any, str] = {}
+        self._pending_finish_selection: CardFinishSelection | None = None
         try:
             if HashDB and HASH_DB_FILE:
                 db_path = Path(HASH_DB_FILE)
@@ -7295,59 +7381,22 @@ class CardEditorApp:
         tk.Label(
             self.info_frame, text="Typ", bg=FIELD_BG_COLOR, fg=TEXT_COLOR
         ).grid(row=start_row + 4, column=0, sticky="w", **grid_opts)
-        self.card_type_var = tk.StringVar(value=CARD_TYPE_DEFAULT)
-        self.entries["card_type"] = self.card_type_var
-        self.type_frame = ctk.CTkFrame(self.info_frame)
-        self.type_frame.grid(
-            row=start_row + 4, column=1, columnspan=7, sticky="w", **grid_opts
+        display_var = getattr(self, "card_type_display_var", None)
+        if display_var is None:
+            display_var = _create_string_var(DEFAULT_CARD_FINISH_LABEL)
+            self.card_type_display_var = display_var
+        self.card_type_label_widget = ctk.CTkLabel(
+            self.info_frame,
+            textvariable=display_var,
+            anchor="w",
         )
-        for idx, (code, label) in enumerate(
-            (("C", "Common"), ("H", "Holo"), ("R", "Reverse"))
-        ):
-            ctk.CTkRadioButton(
-                self.type_frame,
-                text=label,
-                variable=self.card_type_var,
-                value=code,
-            ).grid(row=0, column=idx, padx=2, pady=2, sticky="w")
-
-        class _CardTypeProxy:
-            def __init__(self, var: tk.StringVar, code: str):
-                self._var = var
-                self._code = code
-
-            def get(self) -> bool:
-                try:
-                    return normalize_card_type_code(self._var.get()) == self._code
-                except tk.TclError:
-                    return False
-
-            def set(self, value: bool) -> None:
-                try:
-                    if value:
-                        self._var.set(self._code)
-                    elif normalize_card_type_code(self._var.get()) == self._code:
-                        self._var.set(CARD_TYPE_DEFAULT)
-                except tk.TclError:
-                    pass
-
-        self.type_vars = {
-            "Holo": _CardTypeProxy(self.card_type_var, "H"),
-            "Reverse": _CardTypeProxy(self.card_type_var, "R"),
-        }
-
-        self.ball_type_var = tk.StringVar(value="")
-        ball_frame = ctk.CTkFrame(self.type_frame, fg_color="transparent")
-        ball_frame.grid(row=0, column=3, padx=(10, 0), sticky="w")
-        ctk.CTkLabel(ball_frame, text="Ball:").pack(side="left", padx=(0, 4))
-        for label, value in (("Pokéball", "P"), ("Masterball", "M")):
-            ctk.CTkRadioButton(
-                ball_frame,
-                text=label,
-                variable=self.ball_type_var,
-                value=value,
-            ).pack(side="left", padx=2)
-        self.entries["ball_type"] = self.ball_type_var
+        self.card_type_label_widget.grid(
+            row=start_row + 4,
+            column=1,
+            columnspan=7,
+            sticky="w",
+            **grid_opts,
+        )
 
         tk.Label(
             self.info_frame, text="Stan", bg=FIELD_BG_COLOR, fg=TEXT_COLOR
@@ -7717,6 +7766,11 @@ class CardEditorApp:
         self._clear_attribute_entries()
         self.attribute_values = {}
         self._attribute_controls = {}
+        self._finish_attribute_id = None
+        self._finish_value_to_variant = {}
+        self._finish_variant_to_value = {}
+        self._finish_label_to_value = {}
+        self._finish_value_to_label = {}
         groups = cache.get("groups", {}) if isinstance(cache, Mapping) else {}
         if not groups:
             ctk.CTkLabel(
@@ -7777,7 +7831,11 @@ class CardEditorApp:
                 prepared = cache.get("attributes", {}).get(attr_id)
                 if not prepared:
                     continue
-                attr_name = raw_attr.get("name") or raw_attr.get("attribute_name") or f"Atrybut {attr_id}"
+                attr_name = (
+                    raw_attr.get("name")
+                    or raw_attr.get("attribute_name")
+                    or f"Atrybut {attr_id}"
+                )
                 ctk.CTkLabel(
                     group_frame,
                     text=str(attr_name),
@@ -7881,8 +7939,71 @@ class CardEditorApp:
                 adapter = _AttributeEntryAdapter(self, group_id, attr_id)
                 self.entries[attr_key] = adapter
                 self._attribute_controls[(int(group_id), int(attr_id))] = control
+                try:
+                    gid_int = int(group_id)
+                except (TypeError, ValueError):
+                    gid_int = None
+                if gid_int == CARD_FINISH_ATTRIBUTE_GROUP_ID:
+                    name_norm = _normalize_finish_label(attr_name)
+                    if name_norm.startswith("wykonczenie") or name_norm.endswith("finish"):
+                        self._register_finish_attribute(int(attr_id), prepared, control)
 
+        pending_finish = getattr(self, "_pending_finish_selection", None)
+        if isinstance(pending_finish, CardFinishSelection):
+            if self._apply_finish_selection(pending_finish):
+                self._pending_finish_selection = None
+        self._update_card_finish_display()
         _set_language_attribute_default(self)
+
+    def _register_finish_attribute(
+        self,
+        attr_id: int,
+        prepared: Mapping[str, Any],
+        control: Mapping[str, Any] | None,
+    ) -> None:
+        self._finish_attribute_id = int(attr_id)
+        mapping: dict[Any, CardFinishSelection] = {}
+        reverse: dict[tuple[str, str], Any] = {}
+        label_map: dict[str, Any] = {}
+        value_label_map: dict[Any, str] = {}
+        values = prepared.get("values") if isinstance(prepared, Mapping) else None
+        if isinstance(values, Iterable):
+            for value in values:
+                try:
+                    value_id, label = value
+                except (TypeError, ValueError):
+                    continue
+                label_text = str(label).strip()
+                value_label_map[value_id] = label_text
+                normalized_label = _normalize_finish_label(label_text)
+                code, ball = _deduce_finish_variant(normalized_label)
+                code = normalize_card_type_code(code)
+                ball_norm = _normalize_ball_suffix(ball)
+                selection = CardFinishSelection(
+                    code,
+                    ball_norm,
+                    label_text or None,
+                    value_id,
+                )
+                mapping[value_id] = selection
+                key = (selection.code, (selection.ball or ""))
+                reverse.setdefault(key, value_id)
+                if normalized_label and normalized_label not in label_map:
+                    label_map[normalized_label] = value_id
+        if isinstance(control, Mapping):
+            value_to_label = control.get("value_to_label", {}) or {}
+            if isinstance(value_to_label, Mapping):
+                for key, label in value_to_label.items():
+                    value_label_map.setdefault(key, str(label))
+                    normalized_label = _normalize_finish_label(label)
+                    if normalized_label and normalized_label not in label_map:
+                        label_map[normalized_label] = key
+        if mapping:
+            self._finish_value_to_variant = mapping
+            self._finish_variant_to_value = reverse
+            self._finish_label_to_value = label_map
+            self._finish_value_to_label = value_label_map
+        self._update_card_finish_display()
 
     def _store_attribute_value(self, group_id: Any, attribute_id: Any, value: Any) -> None:
         try:
@@ -7964,6 +8085,8 @@ class CardEditorApp:
                 self.update_set_options()
             except Exception:
                 pass
+        if group_id == CARD_FINISH_ATTRIBUTE_GROUP_ID:
+            self._update_card_finish_display()
 
     def _normalize_attribute_selection(
         self, attr_meta: Mapping[str, Any] | None, raw_value: Any
@@ -8100,7 +8223,9 @@ class CardEditorApp:
         if not self._attribute_controls:
             self._pending_attribute_payload = attributes
             return
-        self._reset_attribute_editor()
+        reset_editor = getattr(self, "_reset_attribute_editor", None)
+        if callable(reset_editor):
+            reset_editor()
         name_map = (
             self._attribute_cache.get("by_name")
             if isinstance(self._attribute_cache, Mapping)
@@ -8139,6 +8264,7 @@ class CardEditorApp:
                 except Exception:
                     pass
         _set_language_attribute_default(self)
+        self._set_card_type_code(CARD_TYPE_DEFAULT)
 
     def _resolve_attribute_id(
         self, key: Any, name_map: Mapping[str, int] | None
@@ -8203,31 +8329,292 @@ class CardEditorApp:
         if getattr(self, "cheat_frame", None) is not None:
             self.create_cheat_frame()
 
-    def _get_card_type_code(self) -> str:
+    def _get_card_finish_selection(self) -> CardFinishSelection:
+        attr_id = getattr(self, "_finish_attribute_id", None)
+        pending = getattr(self, "_pending_finish_selection", None)
+        if attr_id is None:
+            if isinstance(pending, CardFinishSelection):
+                return pending
+            var = getattr(self, "card_type_var", None)
+            code = CARD_TYPE_DEFAULT
+            if var is not None:
+                try:
+                    code = normalize_card_type_code(var.get())
+                except tk.TclError:
+                    code = CARD_TYPE_DEFAULT
+            label = CARD_TYPE_LABELS.get(code, DEFAULT_CARD_FINISH_LABEL)
+            return CardFinishSelection(code, None, label, None)
+        group_map: Mapping[int, Any] | None = None
+        values = getattr(self, "attribute_values", None)
+        if isinstance(values, Mapping):
+            group_map = values.get(CARD_FINISH_ATTRIBUTE_GROUP_ID)
+        raw_value: Any = None
+        if isinstance(group_map, Mapping):
+            raw_value = group_map.get(attr_id)
+        if isinstance(raw_value, (list, tuple)):
+            raw_value = raw_value[0] if raw_value else None
+        if raw_value is None:
+            if isinstance(pending, CardFinishSelection):
+                return pending
+            return DEFAULT_CARD_FINISH_SELECTION
+        return self._decode_finish_value(raw_value)
+
+    def _decode_finish_value(self, raw_value: Any) -> CardFinishSelection:
+        mapping = getattr(self, "_finish_value_to_variant", {}) or {}
+        if isinstance(raw_value, (list, tuple)):
+            raw_value = raw_value[0] if raw_value else None
+        if raw_value in mapping:
+            return mapping[raw_value]
+        attr_id = getattr(self, "_finish_attribute_id", None)
+        label = None
+        if attr_id is not None:
+            control = _get_attribute_control(
+                self, CARD_FINISH_ATTRIBUTE_GROUP_ID, attr_id
+            )
+        else:
+            control = None
+        if isinstance(control, Mapping):
+            value_to_label = control.get("value_to_label", {}) or {}
+            if isinstance(value_to_label, Mapping) and raw_value in value_to_label:
+                label = value_to_label.get(raw_value)
+        value_labels = getattr(self, "_finish_value_to_label", {}) or {}
+        if label is None and raw_value in value_labels:
+            label = value_labels.get(raw_value)
+        if label is None and isinstance(raw_value, str):
+            label = raw_value
+        if label is not None:
+            normalized = _normalize_finish_label(label)
+            code, ball = _deduce_finish_variant(normalized)
+            code = normalize_card_type_code(code)
+            ball_norm = _normalize_ball_suffix(ball)
+            label_text = str(label).strip() or CARD_TYPE_LABELS.get(
+                code, DEFAULT_CARD_FINISH_LABEL
+            )
+            return CardFinishSelection(code, ball_norm, label_text, raw_value)
+        code = CARD_TYPE_DEFAULT
         var = getattr(self, "card_type_var", None)
-        if var is None:
-            return CARD_TYPE_DEFAULT
-        try:
-            value = var.get()
-        except tk.TclError:
-            value = None
-        return normalize_card_type_code(value)
+        if var is not None:
+            try:
+                code = normalize_card_type_code(var.get())
+            except tk.TclError:
+                code = CARD_TYPE_DEFAULT
+        label_text = CARD_TYPE_LABELS.get(code, DEFAULT_CARD_FINISH_LABEL)
+        return CardFinishSelection(code, None, label_text, raw_value)
+
+    def _find_finish_value_for(
+        self, selection: CardFinishSelection
+    ) -> Any | None:
+        reverse = getattr(self, "_finish_variant_to_value", {}) or {}
+        ball_code = (selection.ball or "").upper()
+        key = (selection.code, ball_code)
+        if key in reverse:
+            return reverse[key]
+        if ball_code and (selection.code, "") in reverse:
+            return reverse[(selection.code, "")]
+        if selection.label:
+            lookup = self._find_finish_value_by_label(selection.label)
+            if lookup is not None:
+                return lookup
+        return None
+
+    def _find_finish_value_by_label(self, label: Any) -> Any | None:
+        normalized = _normalize_finish_label(label)
+        if not normalized:
+            return None
+        lookup = getattr(self, "_finish_label_to_value", {}) or {}
+        if normalized in lookup:
+            return lookup[normalized]
+        return None
+
+    def _apply_finish_selection(self, selection: CardFinishSelection) -> bool:
+        attr_id = getattr(self, "_finish_attribute_id", None)
+        var = getattr(self, "card_type_var", None)
+        if var is not None:
+            try:
+                var.set(selection.code)
+            except tk.TclError:
+                pass
+        if attr_id is None:
+            self._pending_finish_selection = selection
+            return False
+        value = selection.value
+        if value is None:
+            value = self._find_finish_value_for(selection)
+        if value is None and selection.label:
+            value = self._find_finish_value_by_label(selection.label)
+        if value is None:
+            return False
+        self._set_attribute_selection(
+            CARD_FINISH_ATTRIBUTE_GROUP_ID, attr_id, value
+        )
+        self._pending_finish_selection = None
+        return True
+
+    def _extract_finish_attribute_value(self, data: Mapping[str, Any] | None) -> Any:
+        if not isinstance(data, Mapping):
+            return None
+        attr_maps: list[Mapping[str, Any]] = []
+        for key in ("attributes", "attribute_values"):
+            candidate = data.get(key)
+            if isinstance(candidate, Mapping):
+                attr_maps.append(candidate)
+        attr_id = getattr(self, "_finish_attribute_id", None)
+        for attr_map in attr_maps:
+            group = attr_map.get(CARD_FINISH_ATTRIBUTE_GROUP_ID)
+            if group is None:
+                group = attr_map.get(str(CARD_FINISH_ATTRIBUTE_GROUP_ID))
+            if not isinstance(group, Mapping):
+                continue
+            if attr_id is not None:
+                if attr_id in group:
+                    return group[attr_id]
+                for attr_key, attr_value in group.items():
+                    try:
+                        if int(attr_key) == attr_id:
+                            return attr_value
+                    except (TypeError, ValueError):
+                        continue
+            if len(group) == 1:
+                return next(iter(group.values()))
+        return None
+
+    def _extract_finish_selection_from_mapping(
+        self, data: Mapping[str, Any] | None
+    ) -> CardFinishSelection:
+        if data is None:
+            return DEFAULT_CARD_FINISH_SELECTION
+        attr_value = self._extract_finish_attribute_value(data)
+        if attr_value is not None:
+            return self._decode_finish_value(attr_value)
+        label = None
+        if isinstance(data, Mapping):
+            for key in ("typ", "type_label", "finish", "wykończenie"):
+                if key in data and data[key]:
+                    label = data[key]
+                    break
+        ball_candidate = None
+        if isinstance(data, Mapping):
+            for key in ("ball_type", "ball", "ball_suffix"):
+                if key in data and data[key]:
+                    ball_candidate = data[key]
+                    break
+        ball_code = _normalize_ball_suffix(ball_candidate)
+        code = infer_card_type_code(data)
+        code = normalize_card_type_code(code)
+        label_text = str(label).strip() if isinstance(label, str) else label
+        selection = CardFinishSelection(code, ball_code, label_text or None, None)
+        value = None
+        if label_text:
+            value = self._find_finish_value_by_label(label_text)
+        if value is None:
+            value = self._find_finish_value_for(selection)
+        if value is not None:
+            selection = selection._replace(value=value)
+        return selection
+
+    def _update_card_finish_display(self) -> None:
+        selection = self._get_card_finish_selection()
+        label = selection.label or CARD_TYPE_LABELS.get(
+            selection.code, DEFAULT_CARD_FINISH_LABEL
+        )
+        display_var = getattr(self, "card_type_display_var", None)
+        if display_var is not None:
+            try:
+                display_var.set(label)
+            except tk.TclError:
+                pass
+        var = getattr(self, "card_type_var", None)
+        if var is not None:
+            try:
+                var.set(selection.code)
+            except tk.TclError:
+                pass
+
+    def _get_card_type_code(self) -> str:
+        selection = self._get_card_finish_selection()
+        return normalize_card_type_code(selection.code)
 
     def _set_card_type_code(self, value: Any) -> None:
-        var = getattr(self, "card_type_var", None)
-        if var is None:
-            return
-        try:
-            var.set(normalize_card_type_code(value))
-        except tk.TclError:
-            pass
+        code = normalize_card_type_code(value)
+        label = CARD_TYPE_LABELS.get(code, DEFAULT_CARD_FINISH_LABEL)
+        selection = CardFinishSelection(code, None, label, None)
+        apply_finish = getattr(self, "_apply_finish_selection", None)
+        success = False
+        if callable(apply_finish):
+            try:
+                success = bool(apply_finish(selection))
+            except Exception:
+                success = False
+        else:
+            var = getattr(self, "card_type_var", None)
+            if var is not None:
+                try:
+                    var.set(selection.code)
+                except Exception:
+                    pass
+        if not success and hasattr(self, "_pending_finish_selection"):
+            self._pending_finish_selection = selection
+        updater = getattr(self, "_update_card_finish_display", None)
+        if callable(updater):
+            try:
+                updater()
+            except Exception:
+                pass
+        else:
+            var = getattr(self, "card_type_var", None)
+            if var is not None:
+                try:
+                    var.set(selection.code)
+                except Exception:
+                    pass
 
     def _set_card_type_from_mapping(self, data: Mapping[str, Any] | None) -> None:
-        if data is None:
-            self._set_card_type_code(CARD_TYPE_DEFAULT)
-            return
-        code = infer_card_type_code(data)
-        self._set_card_type_code(code)
+        extractor = getattr(self, "_extract_finish_selection_from_mapping", None)
+        if callable(extractor):
+            try:
+                selection = extractor(data)
+            except Exception:
+                selection = DEFAULT_CARD_FINISH_SELECTION
+        else:
+            code = infer_card_type_code(data)
+            ball_candidate = None
+            if isinstance(data, Mapping):
+                ball_candidate = data.get("ball_type") or data.get("ball")
+            selection = CardFinishSelection(
+                normalize_card_type_code(code),
+                _normalize_ball_suffix(ball_candidate),
+                None,
+                None,
+            )
+        apply_finish = getattr(self, "_apply_finish_selection", None)
+        success = False
+        if callable(apply_finish):
+            try:
+                success = bool(apply_finish(selection))
+            except Exception:
+                success = False
+        else:
+            var = getattr(self, "card_type_var", None)
+            if var is not None:
+                try:
+                    var.set(selection.code)
+                except Exception:
+                    pass
+        if not success and hasattr(self, "_pending_finish_selection"):
+            self._pending_finish_selection = selection
+        updater = getattr(self, "_update_card_finish_display", None)
+        if callable(updater):
+            try:
+                updater()
+            except Exception:
+                pass
+        else:
+            var = getattr(self, "card_type_var", None)
+            if var is not None:
+                try:
+                    var.set(selection.code)
+                except Exception:
+                    pass
 
     def filter_sets(self, event=None):
         typed = self.set_var.get().strip().lower()
@@ -8577,10 +8964,6 @@ class CardEditorApp:
                 elif isinstance(tk.StringVar, type) and isinstance(entry, tk.StringVar):
                     if key == "stan":
                         entry.set("NM")
-                    elif key == "ball_type":
-                        entry.set("")
-                    elif key == "card_type":
-                        entry.set(CARD_TYPE_DEFAULT)
                     else:
                         entry.set("")
                 else:
@@ -8603,7 +8986,9 @@ class CardEditorApp:
             except (tk.TclError, RuntimeError):
                 psa_var.set(current_row.get("psa10_price", "") or "")
 
-        self._reset_attribute_editor()
+        reset_editor = getattr(self, "_reset_attribute_editor", None)
+        if callable(reset_editor):
+            reset_editor()
         skip_analysis = False
         self.selected_candidate_meta = None
         if cache_key and cache_key in self.card_cache:
@@ -8621,8 +9006,6 @@ class CardEditorApp:
                         value = sanitize_number(str(value))
                     entry.insert(0, value)
                 elif isinstance(entry, tk.StringVar):
-                    if field == "card_type":
-                        value = normalize_card_type_code(value)
                     entry.set(value)
             combined = dict(entry_data)
             types = cached.get("types")
@@ -8669,7 +9052,9 @@ class CardEditorApp:
             attrs = current_row.get("attributes")
             if isinstance(attrs, Mapping):
                 attributes_to_apply = attrs
-        self._apply_attribute_data(attributes_to_apply or {})
+        apply_attributes = getattr(self, "_apply_attribute_data", None)
+        if callable(apply_attributes):
+            apply_attributes(attributes_to_apply or {})
         if cached_language_code is None and isinstance(current_row, Mapping):
             cached_language_code = _normalize_language_label(current_row.get("język"))
         if cached_language_code is None and isinstance(inv_entry, Mapping):
@@ -9037,15 +9422,31 @@ class CardEditorApp:
                 preview_cb=getattr(self, "update_set_area_preview", None),
                 preview_image=getattr(self, "current_card_image", None),
             )
-        ball_suffix = None
-        ball_var = getattr(self, "ball_type_var", None)
-        if ball_var is not None:
+        get_finish = getattr(self, "_get_card_finish_selection", None)
+        if callable(get_finish):
             try:
-                current_ball = (ball_var.get() or "").strip().upper()
-            except tk.TclError:
-                current_ball = ""
-            if current_ball in {"P", "M"}:
-                ball_suffix = current_ball
+                finish_selection = get_finish()
+            except Exception:
+                finish_selection = CardFinishSelection(
+                    CARD_TYPE_DEFAULT,
+                    None,
+                    CARD_TYPE_LABELS.get(CARD_TYPE_DEFAULT, DEFAULT_CARD_FINISH_LABEL),
+                    None,
+                )
+        else:
+            var = getattr(self, "card_type_var", None)
+            try:
+                code_value = var.get() if var is not None else CARD_TYPE_DEFAULT
+            except Exception:
+                code_value = CARD_TYPE_DEFAULT
+            code_value = normalize_card_type_code(code_value)
+            finish_selection = CardFinishSelection(
+                code_value,
+                None,
+                card_type_label(code_value),
+                None,
+            )
+        ball_suffix = finish_selection.ball if finish_selection.ball in {"P", "M"} else None
         product_code = csv_utils.build_product_code(
             result.get("set", ""),
             result.get("number", ""),
@@ -10082,17 +10483,48 @@ class CardEditorApp:
             except (tk.TclError, RuntimeError):
                 data["psa10_price"] = psa_var.get() or ""
 
-        if "ball_type" in data:
-            ball_value = (data["ball_type"] or "").strip().upper()
-            if ball_value not in {"P", "M"}:
-                ball_value = ""
-            data["ball_type"] = ball_value
-        else:
-            ball_value = ""
         data.setdefault("nazwa", "")
         data.setdefault("numer", "")
         data.setdefault("set", "")
         data.setdefault("era", "")
+
+        get_finish = getattr(self, "_get_card_finish_selection", None)
+        if callable(get_finish):
+            try:
+                finish_selection = get_finish()
+            except Exception:
+                finish_selection = CardFinishSelection(
+                    CARD_TYPE_DEFAULT,
+                    None,
+                    CARD_TYPE_LABELS.get(CARD_TYPE_DEFAULT, DEFAULT_CARD_FINISH_LABEL),
+                    None,
+                )
+        else:
+            var = getattr(self, "card_type_var", None)
+            try:
+                code_value = var.get() if var is not None else CARD_TYPE_DEFAULT
+            except Exception:
+                code_value = CARD_TYPE_DEFAULT
+            code_value = normalize_card_type_code(code_value)
+            finish_selection = CardFinishSelection(
+                code_value,
+                None,
+                card_type_label(code_value),
+                None,
+            )
+        card_type_code = normalize_card_type_code(finish_selection.code)
+        ball_value = finish_selection.ball or ""
+        if isinstance(ball_value, str):
+            ball_value = ball_value.strip().upper()
+        else:
+            ball_value = ""
+        if ball_value not in {"P", "M"}:
+            ball_value = ""
+        finish_label_value = finish_selection.label or card_type_label(card_type_code)
+        finish_label = str(finish_label_value).strip() or card_type_label(card_type_code)
+        raw_entries["card_type"] = card_type_code
+        raw_entries["ball_type"] = ball_value
+        data["ball_type"] = ball_value
 
         def _clean_text(value: Any) -> str:
             if isinstance(value, str):
@@ -10211,11 +10643,10 @@ class CardEditorApp:
                         psa_var.set(fetched_psa)
                     except (tk.TclError, RuntimeError):
                         psa_var.set(fetched_psa)
-        card_type_code = normalize_card_type_code(data.get("card_type"))
         data["card_type"] = card_type_code
         types = card_type_flags(card_type_code)
         data["types"] = types
-        data["typ"] = card_type_label(card_type_code)
+        data["typ"] = finish_label
         data["variant"] = csv_utils.variant_code_to_name(card_type_code)
         existing_wc = ""
         if getattr(self, "output_data", None) and 0 <= self.index < len(self.output_data):
@@ -10276,6 +10707,7 @@ class CardEditorApp:
             "entries": {k: v for k, v in raw_entries.items()},
             "types": types,
             "card_type": card_type_code,
+            "ball_type": ball_value,
             "attributes": attribute_payload,
             "psa10_price": data.get("psa10_price", ""),
         }
