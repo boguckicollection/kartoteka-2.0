@@ -1176,7 +1176,6 @@ def test_fetch_card_data_auto_set(monkeypatch):
         "numer": DummyEntry("037/102"),
         "set": DummyVar(""),
         "cena": DummyEntry(),
-        "psa10_price": DummyEntry(),
     }
 
     dummy = SimpleNamespace(
@@ -1185,6 +1184,7 @@ def test_fetch_card_data_auto_set(monkeypatch):
             "Reverse": SimpleNamespace(get=lambda: False),
             "Holo": SimpleNamespace(get=lambda: False),
         },
+        psa10_price_var=DummyVar(""),
         get_price_from_db=lambda *a, **k: None,
         fetch_card_price=lambda *a, **k: None,
         fetch_psa10_price=lambda *a, **k: None,

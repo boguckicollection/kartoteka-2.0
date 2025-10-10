@@ -13,6 +13,8 @@ class DummyVar:
         self.value = value
     def get(self):
         return self.value
+    def set(self, value):
+        self.value = value
 
 
 def make_dummy(price):
@@ -25,9 +27,9 @@ def make_dummy(price):
             "język": DummyVar("ENG"),
             "stan": DummyVar("NM"),
             "cena": DummyVar(price),
-            "psa10_price": DummyVar(""),
             "card_type": DummyVar("C"),
         },
+        psa10_price_var=DummyVar(""),
         type_vars={"Reverse": DummyVar(False), "Holo": DummyVar(False)},
         card_cache={},
         cards=["/tmp/char.jpg"],

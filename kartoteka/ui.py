@@ -33,6 +33,13 @@ from pydantic import BaseModel
 import pytesseract
 from pathlib import Path
 
+if not hasattr(ctk, "CTkScrollableFrame"):
+    class _FallbackScrollableFrame:  # pragma: no cover - simple stub for tests
+        def __init__(self, *args, **kwargs):
+            pass
+
+    ctk.CTkScrollableFrame = _FallbackScrollableFrame  # type: ignore[attr-defined]
+
 try:  # pragma: no cover - optional dependency
     import openai  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -83,6 +90,23 @@ def _create_bool_var(value: bool = False):
 
             def set(self, new_value: bool) -> None:
                 self._value = bool(new_value)
+
+        return _Var(value)
+
+
+def _create_string_var(value: str = ""):
+    try:
+        return tk.StringVar(value=value)
+    except (tk.TclError, RuntimeError):
+        class _Var:
+            def __init__(self, default: str):
+                self._value = str(default)
+
+            def get(self) -> str:
+                return self._value
+
+            def set(self, new_value: Any) -> None:
+                self._value = str(new_value)
 
         return _Var(value)
 
@@ -4316,7 +4340,7 @@ class CardEditorApp:
         if stock_block:
             payload["stock"] = stock_block
 
-        for field in ("type", "code", "ean", "pkwiu"):
+        for field in ("pkwiu",):
             value = card.get(field)
             if isinstance(value, str):
                 value = value.strip()
@@ -7146,17 +7170,7 @@ class CardEditorApp:
         )
         self.entries["cena"].grid(row=start_row + 7, column=1, sticky="ew", **grid_opts)
 
-        tk.Label(
-            self.info_frame, text="PSA 10", bg=FIELD_BG_COLOR, fg=TEXT_COLOR
-        ).grid(
-            row=start_row + 8, column=0, sticky="w", **grid_opts
-        )
-        self.entries["psa10_price"] = ctk.CTkEntry(
-            self.info_frame, width=200, placeholder_text="PSA 10"
-        )
-        self.entries["psa10_price"].grid(
-            row=start_row + 8, column=1, sticky="ew", **grid_opts
-        )
+        self.psa10_price_var = _create_string_var("")
 
         self.api_button = self.create_button(
             self.info_frame,
@@ -7251,25 +7265,21 @@ class CardEditorApp:
                 entry.grid(row=row, column=column + 1, sticky="ew", padx=5, pady=2)
             self.entries[key] = var
 
-        add_field(0, 0, "Typ produktu", "type", widget="combo", values=["", "product", "virtual"])
-        add_field(0, 2, "Kod Shoper", "code")
-        add_field(0, 4, "EAN", "ean")
+        add_field(0, 0, "ID producenta", "producer_id")
+        add_field(0, 2, "ID grupy", "group_id")
+        add_field(0, 4, "ID podatku", "tax_id")
 
-        add_field(1, 0, "ID producenta", "producer_id")
-        add_field(1, 2, "ID grupy", "group_id")
-        add_field(1, 4, "ID podatku", "tax_id")
+        add_field(1, 0, "ID kategorii", "category_id")
+        add_field(1, 2, "ID jednostki", "unit_id")
+        add_field(1, 4, "PKWiU", "pkwiu")
 
-        add_field(2, 0, "ID kategorii", "category_id")
-        add_field(2, 2, "ID jednostki", "unit_id")
-        add_field(2, 4, "PKWiU", "pkwiu")
+        add_field(2, 0, "Szerokość (cm)", "dimension_w")
+        add_field(2, 2, "Wysokość (cm)", "dimension_h")
+        add_field(2, 4, "Długość (cm)", "dimension_l")
 
-        add_field(3, 0, "Szerokość (cm)", "dimension_w")
-        add_field(3, 2, "Wysokość (cm)", "dimension_h")
-        add_field(3, 4, "Długość (cm)", "dimension_l")
-
-        add_field(4, 0, "Tagi", "tags", width=220)
-        add_field(4, 2, "Kolekcje", "collections", width=220)
-        add_field(4, 4, "Dodatkowe kody", "additional_codes", width=220)
+        add_field(3, 0, "Tagi", "tags", width=220)
+        add_field(3, 2, "Kolekcje", "collections", width=220)
+        add_field(3, 4, "Dodatkowe kody", "additional_codes", width=220)
 
         virtual_var = _create_bool_var(False)
         self.entries["virtual"] = virtual_var
@@ -8342,6 +8352,19 @@ class CardEditorApp:
             except tk.TclError:
                 self.entries.pop(key, None)
 
+        psa_var = getattr(self, "psa10_price_var", None)
+        if hasattr(psa_var, "set"):
+            try:
+                psa_var.set("")
+            except (tk.TclError, RuntimeError):
+                psa_var.set("")
+
+        if isinstance(current_row, Mapping) and hasattr(psa_var, "set"):
+            try:
+                psa_var.set(current_row.get("psa10_price", "") or "")
+            except (tk.TclError, RuntimeError):
+                psa_var.set(current_row.get("psa10_price", "") or "")
+
         self._reset_attribute_editor()
         skip_analysis = False
         self.selected_candidate_meta = None
@@ -8373,6 +8396,11 @@ class CardEditorApp:
             attrs = cached.get("attributes")
             if isinstance(attrs, Mapping):
                 attributes_to_apply = attrs
+            if hasattr(psa_var, "set"):
+                try:
+                    psa_var.set(cached.get("psa10_price", "") or "")
+                except (tk.TclError, RuntimeError):
+                    psa_var.set(cached.get("psa10_price", "") or "")
 
         elif inv_entry:
             self.entries["nazwa"].insert(0, inv_entry.get("nazwa", ""))
@@ -9695,8 +9723,12 @@ class CardEditorApp:
 
         psa10_price = self.fetch_psa10_price(name, number, set_name)
         if psa10_price:
-            self.entries["psa10_price"].delete(0, tk.END)
-            self.entries["psa10_price"].insert(0, psa10_price)
+            psa_var = getattr(self, "psa10_price_var", None)
+            if hasattr(psa_var, "set"):
+                try:
+                    psa_var.set(psa10_price)
+                except (tk.TclError, RuntimeError):
+                    psa_var.set(psa10_price)
             self.log(f"PSA10 price for {name} {number}: {psa10_price} zł")
         else:
             self.log(f"PSA10 price for {name} {number} not found")
@@ -9795,6 +9827,13 @@ class CardEditorApp:
                 data[k] = value
             except tk.TclError:
                 continue
+        psa_var = getattr(self, "psa10_price_var", None)
+        if hasattr(psa_var, "get"):
+            try:
+                data["psa10_price"] = psa_var.get() or ""
+            except (tk.TclError, RuntimeError):
+                data["psa10_price"] = psa_var.get() or ""
+
         if "ball_type" in data:
             ball_value = (data["ball_type"] or "").strip().upper()
             if ball_value not in {"P", "M"}:
@@ -9802,7 +9841,6 @@ class CardEditorApp:
             data["ball_type"] = ball_value
         else:
             ball_value = ""
-        data.setdefault("psa10_price", "")
         data.setdefault("nazwa", "")
         data.setdefault("numer", "")
         data.setdefault("set", "")
@@ -9861,11 +9899,11 @@ class CardEditorApp:
                 return result
             return []
 
-        for field in ("type", "code", "ean", "pkwiu"):
+        data.setdefault("psa10_price", "")
+
+        for field in ("pkwiu",):
             if field in data:
                 cleaned = _clean_text(data[field])
-                if field == "ean":
-                    cleaned = cleaned.replace(" ", "")
                 if cleaned:
                     data[field] = cleaned
                 else:
@@ -9917,7 +9955,14 @@ class CardEditorApp:
         number = data.get("numer")
         set_name = data.get("set")
         if not data["psa10_price"]:
-            data["psa10_price"] = self.fetch_psa10_price(name, number, set_name)
+            fetched_psa = self.fetch_psa10_price(name, number, set_name)
+            if fetched_psa:
+                data["psa10_price"] = fetched_psa
+                if hasattr(psa_var, "set"):
+                    try:
+                        psa_var.set(fetched_psa)
+                    except (tk.TclError, RuntimeError):
+                        psa_var.set(fetched_psa)
         card_type_code = normalize_card_type_code(data.get("card_type"))
         data["card_type"] = card_type_code
         types = card_type_flags(card_type_code)
@@ -9984,6 +10029,7 @@ class CardEditorApp:
             "types": types,
             "card_type": card_type_code,
             "attributes": attribute_payload,
+            "psa10_price": data.get("psa10_price", ""),
         }
 
         front_path = self.cards[self.index]
