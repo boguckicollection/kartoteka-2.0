@@ -20,23 +20,73 @@ class DummyText:
         pass
     def insert(self, *a, **k):
         pass
+def test_push_product_posts_multiple_attributes(monkeypatch):
+    calls = []
 
+    def _add_attribute(product_id, attribute_id, values):
+        calls.append((product_id, attribute_id, values))
 
-def test_push_product_posts_attribute(monkeypatch):
     fake_client = SimpleNamespace(
         add_product=lambda data: {"product_id": 3},
-        get_attributes=lambda: {"list": [{"attribute_id": 2, "name": "Typ"}]},
-        add_product_attribute=MagicMock(),
+        get_attributes=lambda: {},
+        add_product_attribute=MagicMock(side_effect=_add_attribute),
     )
 
-    dummy = SimpleNamespace(
-        output_data=[{"foo": "bar", "card_type": "R"}],
-        index=0,
-        save_current_data=lambda: None,
-        _build_shoper_payload=lambda card: {"name": "x"},
-        shoper_client=fake_client,
-        type_vars={"Reverse": DummyVar(True)},
-        entries={},
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app.output_data = [
+        {
+            "foo": "bar",
+            "card_type": "R",
+            "attributes": {
+                10: {102: ["Foil", "Promo"]},
+                11: {103: "Signed by artist"},
+            },
+        }
+    ]
+    app.index = 0
+    app.save_current_data = lambda: None
+    app._build_shoper_payload = lambda card: {"name": "x"}
+    app.shoper_client = fake_client
+    app.entries = {}
+    app.attribute_values = {}
+    app._attribute_controls = {}
+    app._attribute_cache = {
+        "attributes": {
+            101: {
+                "values": [(3, "Reverse"), (4, "Holo")],
+                "values_by_id": {3: "Reverse", 4: "Holo"},
+                "values_by_name": {"reverse": 3, "holo": 4},
+                "widget_type": "select",
+            },
+            102: {
+                "values": [(11, "Foil"), (12, "Promo")],
+                "values_by_id": {11: "Foil", 12: "Promo"},
+                "values_by_name": {"foil": 11, "promo": 12},
+                "widget_type": "multiselect",
+            },
+            103: {
+                "values": [],
+                "values_by_id": {},
+                "values_by_name": {},
+                "widget_type": "text",
+            },
+        },
+        "by_name": {"typ": 101, "rarity": 102, "uwagi": 103},
+        "groups": {},
+    }
+
+    def _refresh_cache(force=False):
+        return app._attribute_cache
+
+    app._refresh_attribute_cache = _refresh_cache.__get__(app, ui.CardEditorApp)
+    app._normalize_attribute_selection = (
+        ui.CardEditorApp._normalize_attribute_selection.__get__(app, ui.CardEditorApp)
+    )
+    app._normalize_attribute_payload = (
+        ui.CardEditorApp._normalize_attribute_payload.__get__(app, ui.CardEditorApp)
+    )
+    app._resolve_attribute_id = (
+        ui.CardEditorApp._resolve_attribute_id.__get__(app, ui.CardEditorApp)
     )
 
     monkeypatch.setattr(ui.messagebox, "showerror", lambda *a, **k: None)
@@ -45,6 +95,10 @@ def test_push_product_posts_attribute(monkeypatch):
     monkeypatch.setattr(ui.tk, "END", "end", raising=False)
 
     widget = DummyText()
-    ui.CardEditorApp.push_product(dummy, widget)
+    ui.CardEditorApp.push_product(app, widget)
 
-    fake_client.add_product_attribute.assert_called_once_with(3, 2, ["Reverse"])
+    assert calls == [
+        (3, 102, [11, 12]),
+        (3, 103, ["Signed by artist"]),
+        (3, 101, [3]),
+    ]
