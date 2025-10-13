@@ -4891,7 +4891,7 @@ class CardEditorApp:
         if _has_value(warnlevel):
             coerced_warn = _coerce_int(warnlevel)
             if coerced_warn:
-                stock_block["warnlevel"] = coerced_warn
+                stock_block["warn_level"] = coerced_warn
         if stock_block:
             payload["stock"] = stock_block
 

@@ -67,7 +67,7 @@ def test_build_shoper_payload_forwards_optional_fields():
             "permalink": "sample-product",
         }
     }
-    assert payload["stock"] == {"stock": 2, "warnlevel": 1}
+    assert payload["stock"] == {"stock": 2, "warn_level": 1}
     assert "ean" not in payload
     assert "type" not in payload
     assert payload["producer_id"] == 11
