@@ -201,11 +201,6 @@ class ShoperClient:
             page += 1
 
         return {"list": all_products, "count": len(all_products)}
-    
-    def get_order_products(self, order_id):
-        """Pobiera listę produktów dla konkretnego zamówienia."""
-        params = {"filters": json.dumps({"order_id": order_id})}
-        return self.get("order-products", params=params)
 
     # New helper methods for dashboard statistics
     def get_orders(self, status=None, filters=None, page=1, per_page=20):
