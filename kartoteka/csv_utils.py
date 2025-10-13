@@ -3,7 +3,7 @@ import json
 import os
 import re
 from datetime import date, timedelta
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Iterable, Mapping, Optional, Tuple
 from tkinter import filedialog, messagebox, TclError
 import unicodedata
 
@@ -15,6 +15,7 @@ INVENTORY_CSV = os.getenv(
 )
 WAREHOUSE_CSV = os.getenv("WAREHOUSE_CSV", INVENTORY_CSV)
 STORE_EXPORT_CSV = os.getenv("STORE_EXPORT_CSV", "store_export.csv")
+STORE_CACHE_JSON = os.getenv("STORE_CACHE_JSON", "store_cache.json")
 
 # Track last modification time and cached statistics for the warehouse CSV
 WAREHOUSE_CSV_MTIME: Optional[float] = None
@@ -136,6 +137,60 @@ def load_store_export(path: str = STORE_EXPORT_CSV) -> dict[str, dict[str, str]]
     except OSError:
         return {}
     return data
+
+
+def load_store_cache(path: str = STORE_CACHE_JSON) -> dict[str, dict[str, str]]:
+    """Return cached store data stored as JSON."""
+
+    try:
+        with open(path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    items: Iterable[Mapping[str, Any]]
+    if isinstance(payload, Mapping):
+        items = [value for value in payload.values() if isinstance(value, Mapping)]
+    elif isinstance(payload, list):
+        items = [value for value in payload if isinstance(value, Mapping)]
+    else:
+        return {}
+
+    data: dict[str, dict[str, str]] = {}
+    for item in items:
+        product_code = str(item.get("product_code") or item.get("code") or "").strip()
+        if not product_code:
+            continue
+        serialised = {
+            key: "" if value is None else str(value)
+            for key, value in item.items()
+        }
+        data[product_code] = serialised
+    return data
+
+
+def save_store_cache(
+    rows: Iterable[Mapping[str, Any]], path: str = STORE_CACHE_JSON
+) -> None:
+    """Persist ``rows`` to :data:`STORE_CACHE_JSON`."""
+
+    serialisable: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        serialisable.append(
+            {
+                key: "" if value is None else str(value)
+                for key, value in row.items()
+            }
+        )
+
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(serialisable, fh, ensure_ascii=False, indent=2)
 
 
 def _sanitize_number(value: str) -> str:
@@ -626,6 +681,21 @@ def format_warehouse_row(row):
     }
 
 
+def _iter_session_rows(app: Any) -> Iterable[Mapping[str, Any]]:
+    """Yield mapping-like rows collected during the current session."""
+
+    entries = getattr(app, "session_entries", None)
+    if isinstance(entries, list) and any(isinstance(row, Mapping) for row in entries):
+        for row in entries:
+            if isinstance(row, Mapping):
+                yield row
+        return
+
+    for row in getattr(app, "output_data", []):
+        if isinstance(row, Mapping):
+            yield row
+
+
 def load_csv_data(app):
     """Load a CSV file and merge duplicate rows."""
     file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
@@ -737,63 +807,135 @@ def load_csv_data(app):
     messagebox.showinfo("Sukces", "Plik CSV został scalony i zapisany.")
 
 
-def export_csv(app, path: str = STORE_EXPORT_CSV):
-    """Export collected data to the store CSV file."""
+def export_csv(app, path: str = STORE_EXPORT_CSV) -> list[dict[str, str]]:
+    """Return prepared store rows without writing them to disk."""
 
-    combined: dict[str, dict[str, str | int]] = {}
+    combined: dict[str, dict[str, Any]] = {}
 
-    if os.path.exists(path):
+    store_data = getattr(app, "store_data", None)
+    if isinstance(store_data, dict) and store_data:
+        for product_code, row in store_data.items():
+            if not isinstance(row, Mapping):
+                continue
+            row_copy = dict(row)
+            try:
+                row_copy["stock"] = int(row_copy.get("stock") or 0)
+            except (TypeError, ValueError):
+                try:
+                    row_copy["stock"] = int(str(row_copy.get("stock") or 0))
+                except (TypeError, ValueError):
+                    row_copy["stock"] = 0
+            combined[str(product_code).strip()] = row_copy
+    elif os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             reader = csv.DictReader(f, delimiter=";")
             for row in reader:
-                product_code = row.get("product_code")
+                product_code = str(row.get("product_code") or "").strip()
                 if not product_code:
                     continue
                 try:
                     row["stock"] = int(row.get("stock") or 0)
-                except ValueError:
+                except (TypeError, ValueError):
                     row["stock"] = 0
                 combined[product_code] = row
 
-    for row in app.output_data:
-        if row is None:
+    session_rows = list(_iter_session_rows(app))
+
+    for raw in session_rows:
+        try:
+            row = dict(raw)
+        except Exception:
             continue
-        product_code = str(row["product_code"])
+
+        product_code = str(row.get("product_code") or row.get("code") or "").strip()
+        if not product_code:
+            number = row.get("numer") or row.get("number") or ""
+            product_code = build_product_code(
+                row.get("set") or row.get("set_code") or "",
+                number,
+                infer_variant_code(row),
+                ball_suffix=row.get("ball_type"),
+            )
+            if product_code:
+                row["product_code"] = product_code
+
+        if not product_code:
+            continue
+
         if product_code in combined:
-            combined[product_code]["stock"] = int(combined[product_code]["stock"]) + 1
+            existing = combined[product_code]
+            try:
+                stock_value = int(existing.get("stock", 0))
+            except (TypeError, ValueError):
+                stock_value = 0
+            existing["stock"] = stock_value + 1
+            for key, value in format_store_row(row).items():
+                if key in existing and existing[key]:
+                    continue
+                existing[key] = value
         else:
             row_copy = row.copy()
             row_copy["stock"] = 1
             combined[product_code] = format_store_row(row_copy)
 
-    fieldnames = STORE_FIELDNAMES
+    prepared_rows: list[dict[str, str]] = []
+    for row in combined.values():
+        output = {key: ("" if value is None else str(value)) for key, value in row.items()}
+        try:
+            stock_value = int(output.get("stock", 0))
+        except (TypeError, ValueError):
+            stock_value = 0
+        output["stock"] = str(stock_value)
+        prepared_rows.append(output)
+
+    return prepared_rows
+
+
+def write_store_csv(rows: Iterable[Mapping[str, Any]], path: str) -> None:
+    """Write ``rows`` in store CSV format to ``path``."""
+
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
 
     with open(path, mode="w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter=";")
+        writer = csv.DictWriter(file, fieldnames=STORE_FIELDNAMES, delimiter=";")
         writer.writeheader()
-        for row in combined.values():
-            row_out = row.copy()
-            row_out["stock"] = str(row_out.get("stock", 0))
-            writer.writerow(row_out)
-    append_warehouse_csv(app)
-    messagebox.showinfo("Sukces", "Plik CSV został zapisany.")
-    if messagebox.askyesno("Wysyłka", "Czy wysłać plik do Shoper?"):
-        send_csv_to_shoper(app, path)
-    app.back_to_welcome()
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            writer.writerow({key: str(row.get(key, "")) for key in STORE_FIELDNAMES})
 
 
-def append_warehouse_csv(app, path: str = WAREHOUSE_CSV):
+def append_warehouse_csv(
+    app, path: str = WAREHOUSE_CSV, exported_rows: Iterable[Mapping[str, Any]] | None = None
+):
     """Append all collected rows to the warehouse CSV."""
     fieldnames = WAREHOUSE_FIELDNAMES
 
     file_exists = os.path.exists(path)
+    product_codes: set[str] = set()
+    if exported_rows is not None:
+        for row in exported_rows:
+            if not isinstance(row, Mapping):
+                continue
+            code = str(row.get("product_code") or row.get("code") or "").strip()
+            if code:
+                product_codes.add(code)
+
+    session_rows = list(_iter_session_rows(app))
+
     with open(path, "a", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")
         if not file_exists:
             writer.writeheader()
-        for row in app.output_data:
-            if row is None:
+        for row in session_rows:
+            if not isinstance(row, Mapping):
                 continue
+            if product_codes:
+                code = str(row.get("product_code") or "").strip()
+                if not code or code not in product_codes:
+                    continue
             writer.writerow(format_warehouse_row(row))
 
     # Recompute and cache inventory statistics to include newly written rows
