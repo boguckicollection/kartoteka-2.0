@@ -4766,23 +4766,105 @@ class CardEditorApp:
             "symbol",
         )
 
+        def _fetch_taxonomy_items(endpoint: str) -> list[Any]:
+            collected: list[Any] = []
+            seen_pages: set[int] = set()
+            next_params: Optional[dict[str, Any]] = None
+
+            def _extract_items(response: Any) -> list[Any]:
+                if isinstance(response, Mapping):
+                    for key in ("list", "items", "data", "results"):
+                        raw_items = response.get(key)
+                        if isinstance(raw_items, (list, tuple, set)):
+                            return list(raw_items)
+                    tree = response.get("tree")
+                    if isinstance(tree, (list, tuple, set)):
+                        return list(tree)
+                    return []
+                if isinstance(response, (list, tuple, set)):
+                    return list(response)
+                return []
+
+            def _coerce_page(value: Any) -> Optional[int]:
+                if isinstance(value, bool):
+                    return None
+                return _coerce_int(value)
+
+            while True:
+                if next_params:
+                    response = client.get(endpoint, params=next_params)
+                else:
+                    response = client.get(endpoint)
+
+                items = _extract_items(response)
+                if items:
+                    collected.extend(items)
+
+                next_page: Optional[int] = None
+                current_page: Optional[int] = None
+                total_pages: Optional[int] = None
+
+                if isinstance(response, Mapping):
+                    current_page = _coerce_page(response.get("page"))
+                    total_pages = _coerce_page(response.get("pages"))
+
+                    pagination = response.get("pagination")
+                    if isinstance(pagination, Mapping):
+                        current_page = current_page or _coerce_page(
+                            pagination.get("page")
+                            or pagination.get("current")
+                            or pagination.get("current_page")
+                        )
+                        total_pages = total_pages or _coerce_page(
+                            pagination.get("pages")
+                            or pagination.get("total")
+                            or pagination.get("total_pages")
+                        )
+
+                        candidate = pagination.get("next_page") or pagination.get("next")
+                        if isinstance(candidate, Mapping):
+                            candidate = (
+                                candidate.get("page")
+                                or candidate.get("number")
+                                or candidate.get("value")
+                            )
+                        if not isinstance(candidate, bool):
+                            next_page = _coerce_page(candidate)
+
+                    if next_page is None:
+                        candidate = response.get("next_page") or response.get("next")
+                        if isinstance(candidate, Mapping):
+                            candidate = (
+                                candidate.get("page")
+                                or candidate.get("number")
+                                or candidate.get("value")
+                            )
+                        if not isinstance(candidate, bool):
+                            next_page = _coerce_page(candidate)
+
+                    if next_page is None and current_page is not None and total_pages is not None:
+                        if current_page < total_pages:
+                            next_page = current_page + 1
+
+                if current_page is not None:
+                    seen_pages.add(current_page)
+
+                if (
+                    next_page is not None
+                    and next_page not in seen_pages
+                    and next_page != (next_params or {}).get("page")
+                ):
+                    seen_pages.add(next_page)
+                    next_params = {"page": next_page}
+                    continue
+
+                break
+
+            return collected
+
         for kind in missing:
             spec = required_specs[kind]
-            response = client.get(spec["endpoint"])
-            items: Iterable[Any]
-            if isinstance(response, Mapping):
-                for key in ("list", "items", "data", "results"):
-                    raw_items = response.get(key)
-                    if isinstance(raw_items, (list, tuple, set)):
-                        items = raw_items
-                        break
-                else:
-                    tree = response.get("tree")
-                    items = tree if isinstance(tree, (list, tuple, set)) else []
-            elif isinstance(response, (list, tuple, set)):
-                items = response
-            else:
-                items = []
+            items = _fetch_taxonomy_items(spec["endpoint"])
 
             by_id: dict[int, Mapping[str, Any]] = {}
             by_name: dict[str, int] = {}
