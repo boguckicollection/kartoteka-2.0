@@ -4987,11 +4987,84 @@ class CardEditorApp:
             "name": name or (product_code or ""),
         }
 
-        def _store_translation(field: str, value: Any) -> None:
+        def _store_translation(field: str, value: Any, *, overwrite: bool = False) -> None:
             if isinstance(value, str):
                 trimmed = value.strip()
-                if trimmed:
+                if not trimmed:
+                    return
+                existing = translation_entry.get(field)
+                if overwrite or not isinstance(existing, str) or not existing.strip():
                     translation_entry[field] = trimmed
+
+        def _normalize_locale_code(value: Any) -> Optional[str]:
+            if value is None:
+                return None
+            text = str(value).strip()
+            if not text:
+                return None
+            text = text.replace("-", "_")
+            if "_" in text:
+                lang_part, country_part = text.split("_", 1)
+                return f"{lang_part.lower()}_{country_part.upper()}"
+            return text.lower()
+
+        def _match_translation_locale(candidate: Mapping[str, Any]) -> bool:
+            for key in ("language_code", "lang_code", "lang", "language", "locale", "code"):
+                if key not in candidate:
+                    continue
+                value = candidate.get(key)
+                if isinstance(value, Mapping):
+                    value = (
+                        value.get("code")
+                        or value.get("language_code")
+                        or value.get("lang_code")
+                        or value.get("lang")
+                        or value.get("locale")
+                    )
+                normalized = _normalize_locale_code(value)
+                if normalized and normalized == translation_locale:
+                    return True
+            return False
+
+        def _extract_translation_from_mapping(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+            direct = data.get(translation_locale)
+            if isinstance(direct, Mapping):
+                return direct
+
+            candidates: Iterable[Any]
+            list_value = data.get("list")
+            if "list" in data and isinstance(list_value, Iterable) and not isinstance(list_value, (str, bytes, bytearray)):
+                candidates = list_value
+            else:
+                candidates = data.values()
+
+            for item in candidates:
+                if isinstance(item, Mapping) and _match_translation_locale(item):
+                    return item
+            return None
+
+        translations_data = card.get("translations")
+        translation_source: Optional[Mapping[str, Any]] = None
+
+        if isinstance(translations_data, Mapping):
+            translation_source = _extract_translation_from_mapping(translations_data)
+        elif isinstance(translations_data, Iterable) and not isinstance(translations_data, (str, bytes, bytearray)):
+            for element in translations_data:
+                if isinstance(element, Mapping):
+                    if _match_translation_locale(element):
+                        translation_source = element
+                        break
+
+        if translation_source:
+            for field in (
+                "short_description",
+                "description",
+                "seo_title",
+                "seo_description",
+                "seo_keywords",
+                "permalink",
+            ):
+                _store_translation(field, translation_source.get(field))
 
         _store_translation("short_description", card.get("short_description"))
         _store_translation("description", card.get("description"))
