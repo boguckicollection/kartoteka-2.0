@@ -102,6 +102,29 @@ def test_build_shoper_payload_forwards_optional_fields():
         assert field not in minimal_payload
 
 
+def test_build_shoper_payload_resolves_category_path_segments():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app.shoper_client = MagicMock()
+    app._shoper_taxonomy_cache = {
+        "category": {
+            "by_name": {
+                "Prismatic Evolutions": 128,
+            },
+            "default": 999,
+        }
+    }
+
+    card = {
+        "nazwa": "Card",
+        "product_code": "PKM-PATH",
+        "category": "Karty Pokémon > Scarlet & Violet > Prismatic Evolutions",
+    }
+
+    payload = app._build_shoper_payload(card)
+
+    assert payload["category_id"] == 128
+
+
 def test_build_shoper_payload_accepts_dict_taxonomy_values():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
     app.shoper_client = MagicMock()

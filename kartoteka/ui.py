@@ -4943,25 +4943,51 @@ class CardEditorApp:
                     default_val = mapping.get("default")
                 return _coerce_optional_int(default_val)
             lookup = _taxonomy_lookup(kind)
-            candidate = lookup.get(normalized_value)
-            if candidate is not None:
-                resolved = _coerce_optional_int(candidate)
-                if resolved is not None:
-                    return resolved
             aliases = None
             if isinstance(mapping, Mapping):
                 aliases = mapping.get("aliases")
-            if isinstance(aliases, Mapping):
-                alias_target = aliases.get(normalized_value)
-                if alias_target is None:
-                    for key, value in aliases.items():
-                        if _normalize_taxonomy_key(key) == normalized_value:
-                            alias_target = value
-                            break
-                if alias_target is not None and alias_target != raw_value:
-                    resolved = _resolve_taxonomy_id(kind, alias_target)
+
+            def _try_lookup(normalized_key: str) -> Optional[int]:
+                if not normalized_key:
+                    return None
+                candidate = lookup.get(normalized_key)
+                if candidate is not None:
+                    resolved = _coerce_optional_int(candidate)
                     if resolved is not None:
                         return resolved
+                if isinstance(aliases, Mapping):
+                    alias_target = aliases.get(normalized_key)
+                    if alias_target is None:
+                        for key, value in aliases.items():
+                            if _normalize_taxonomy_key(key) == normalized_key:
+                                alias_target = value
+                                break
+                    if alias_target is not None and alias_target != raw_value:
+                        resolved = _resolve_taxonomy_id(kind, alias_target)
+                        if resolved is not None:
+                            return resolved
+                return None
+
+            resolved = _try_lookup(normalized_value)
+            if resolved is not None:
+                return resolved
+
+            if kind == "category" and isinstance(raw_value, str):
+                path_segments = [
+                    segment.strip()
+                    for segment in re.split(r"[>/]", raw_value)
+                    if isinstance(segment, str) and segment.strip()
+                ]
+                if path_segments:
+                    for start_index in range(len(path_segments) - 1, -1, -1):
+                        candidate_value = " > ".join(path_segments[start_index:])
+                        normalized_candidate = _normalize_taxonomy_key(candidate_value)
+                        if normalized_candidate == normalized_value:
+                            continue
+                        resolved = _try_lookup(normalized_candidate)
+                        if resolved is not None:
+                            return resolved
+
             default_val = None
             if isinstance(mapping, Mapping):
                 default_val = mapping.get("default")
