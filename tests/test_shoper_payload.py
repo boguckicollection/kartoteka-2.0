@@ -102,6 +102,49 @@ def test_build_shoper_payload_forwards_optional_fields():
         assert field not in minimal_payload
 
 
+def test_build_shoper_payload_prefers_translation_locale_content():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app.shoper_client = MagicMock()
+    card = {
+        "nazwa": "Sample",
+        "product_code": "PKM-TRANS",
+        "short_description": "legacy short",
+        "description": "legacy desc",
+        "seo_title": "legacy title",
+        "seo_description": "legacy seo desc",
+        "seo_keywords": "legacy keywords",
+        "permalink": "legacy-link",
+        "translations": [
+            {
+                "translation_id": 1,
+                "language_code": "pl_PL",
+                "short_description": "translated short",
+                "description": "translated desc",
+                "seo_title": "translated title",
+                "seo_description": "translated seo desc",
+                "seo_keywords": "translated keywords",
+                "permalink": "translated-link",
+            },
+            {
+                "translation_id": 2,
+                "language_code": "en_US",
+                "short_description": "english short",
+            },
+        ],
+    }
+
+    payload = app._build_shoper_payload(card)
+
+    translation = payload["translations"]["pl_PL"]
+    assert translation["name"] == "Sample"
+    assert translation["short_description"] == "translated short"
+    assert translation["description"] == "translated desc"
+    assert translation["seo_title"] == "translated title"
+    assert translation["seo_description"] == "translated seo desc"
+    assert translation["seo_keywords"] == "translated keywords"
+    assert translation["permalink"] == "translated-link"
+
+
 def test_build_shoper_payload_fetches_taxonomy_when_missing():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
     client = MagicMock()
