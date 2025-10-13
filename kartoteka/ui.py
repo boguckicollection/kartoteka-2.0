@@ -113,6 +113,7 @@ def _create_string_var(value: str = ""):
 
 LANGUAGE_ATTRIBUTE_GROUP_ID = 14
 LANGUAGE_DEFAULT_CODE = "ENG"
+DEFAULT_TRANSLATION_LOCALE = "pl_PL"
 
 
 def _normalize_language_label(value: Any) -> Optional[str]:
@@ -4713,14 +4714,143 @@ class CardEditorApp:
                     return default
             return default
 
+        def _coerce_optional_int(value: Any) -> Optional[int]:
+            if value in (None, ""):
+                return None
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, (int, float)):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
+            if isinstance(value, str):
+                raw = value.strip()
+                if not raw:
+                    return None
+                if raw.isdigit():
+                    try:
+                        return int(raw)
+                    except ValueError:
+                        return None
+                try:
+                    return int(float(raw))
+                except ValueError:
+                    return None
+            return None
+
+        def _normalize_taxonomy_key(value: Any) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, str):
+                text = value
+            else:
+                text = str(value)
+            text = unicodedata.normalize("NFKD", text)
+            text = "".join(ch for ch in text if not unicodedata.combining(ch))
+            return text.strip().lower()
+
+        taxonomy_cache = getattr(self, "_shoper_taxonomy_cache", {}) or {}
+        taxonomy_lookup_cache: dict[str, dict[str, Any]] = {}
+
+        def _taxonomy_lookup(kind: str) -> dict[str, Any]:
+            if kind in taxonomy_lookup_cache:
+                return taxonomy_lookup_cache[kind]
+            mapping = taxonomy_cache.get(kind) if isinstance(taxonomy_cache, Mapping) else {}
+            lookup: dict[str, Any] = {}
+            candidates: Mapping[str, Any] | None = None
+            if isinstance(mapping, Mapping):
+                candidates = mapping.get("by_name")
+                if not isinstance(candidates, Mapping):
+                    candidates = {
+                        key: value
+                        for key, value in mapping.items()
+                        if isinstance(key, str) and key not in {"by_id", "default", "aliases"}
+                    }
+            if isinstance(candidates, Mapping):
+                for key, value in candidates.items():
+                    normalized_key = _normalize_taxonomy_key(key)
+                    if normalized_key:
+                        lookup[normalized_key] = value
+            taxonomy_lookup_cache[kind] = lookup
+            return lookup
+
+        def _resolve_taxonomy_id(kind: str, raw_value: Any) -> Optional[int]:
+            coerced = _coerce_optional_int(raw_value)
+            if coerced is not None:
+                return coerced
+            normalized_value = _normalize_taxonomy_key(raw_value)
+            mapping = taxonomy_cache.get(kind) if isinstance(taxonomy_cache, Mapping) else {}
+            if not normalized_value:
+                default_val = None
+                if isinstance(mapping, Mapping):
+                    default_val = mapping.get("default")
+                return _coerce_optional_int(default_val)
+            lookup = _taxonomy_lookup(kind)
+            candidate = lookup.get(normalized_value)
+            if candidate is not None:
+                resolved = _coerce_optional_int(candidate)
+                if resolved is not None:
+                    return resolved
+            aliases = None
+            if isinstance(mapping, Mapping):
+                aliases = mapping.get("aliases")
+            if isinstance(aliases, Mapping):
+                alias_target = aliases.get(normalized_value)
+                if alias_target is None:
+                    for key, value in aliases.items():
+                        if _normalize_taxonomy_key(key) == normalized_value:
+                            alias_target = value
+                            break
+                if alias_target is not None and alias_target != raw_value:
+                    resolved = _resolve_taxonomy_id(kind, alias_target)
+                    if resolved is not None:
+                        return resolved
+            default_val = None
+            if isinstance(mapping, Mapping):
+                default_val = mapping.get("default")
+            return _coerce_optional_int(default_val)
+
+        translation_locale = (
+            card.get("translation_locale")
+            or card.get("locale")
+            or getattr(self, "default_translation_locale", None)
+            or DEFAULT_TRANSLATION_LOCALE
+        )
+        if isinstance(translation_locale, str):
+            translation_locale = translation_locale.strip().replace("-", "_") or DEFAULT_TRANSLATION_LOCALE
+        else:
+            translation_locale = DEFAULT_TRANSLATION_LOCALE
+        if "_" in translation_locale:
+            lang_part, country_part = translation_locale.split("_", 1)
+            translation_locale = f"{lang_part.lower()}_{country_part.upper()}"
+        else:
+            translation_locale = translation_locale.lower()
+
+        translation_entry: dict[str, Any] = {
+            "name": name or (product_code or ""),
+        }
+
+        def _store_translation(field: str, value: Any) -> None:
+            if isinstance(value, str):
+                trimmed = value.strip()
+                if trimmed:
+                    translation_entry[field] = trimmed
+
+        _store_translation("short_description", card.get("short_description"))
+        _store_translation("description", card.get("description"))
+        _store_translation("seo_title", card.get("seo_title"))
+        _store_translation("seo_description", card.get("seo_description"))
+        _store_translation("seo_keywords", card.get("seo_keywords"))
+        _store_translation("permalink", card.get("permalink"))
+
+        translations = {translation_locale: translation_entry}
+
         payload = {
             "product_code": product_code,
             "active": _coerce_int(card.get("active", 1), default=1),
-            "name": name or (product_code or ""),
             "price": _coerce_float(card.get("cena", card.get("price")), default=0.0),
-            "vat": (card.get("vat") or "23%").strip(),
-            "unit": (card.get("unit") or "szt.").strip(),
-            "availability": _coerce_int(card.get("availability", 1), default=1),
+            "translations": translations,
         }
 
         def _has_value(value: Any) -> bool:
@@ -4740,18 +4870,6 @@ class CardEditorApp:
         weight_value = _coerce_float(weight, default=0.01)
         if weight_value:
             payload["weight"] = weight_value
-
-        for field in ("category", "producer", "delivery"):
-            value = card.get(field)
-            if _has_value(value):
-                payload[field] = value.strip() if isinstance(value, str) else value
-
-        for field in ("short_description", "description"):
-            value = card.get(field)
-            if isinstance(value, str):
-                stripped = value.strip()
-                if stripped:
-                    payload[field] = stripped
 
         other_price = card.get("other_price")
         if _has_value(other_price):
@@ -4784,14 +4902,25 @@ class CardEditorApp:
             if _has_value(value):
                 payload[field] = value
 
-        for field in ("producer_id", "group_id", "tax_id", "category_id", "unit_id"):
-            value = card.get(field)
-            if not _has_value(value):
-                continue
-            try:
-                payload[field] = int(value)
-            except (TypeError, ValueError):
-                payload[field] = value
+        taxonomy_fields = (
+            ("category_id", "category", "category"),
+            ("producer_id", "producer", "producer"),
+            ("tax_id", "vat", "tax"),
+            ("unit_id", "unit", "unit"),
+            ("availability_id", "availability", "availability"),
+        )
+
+        for target_field, legacy_field, cache_key in taxonomy_fields:
+            resolved_value = _resolve_taxonomy_id(cache_key, card.get(target_field))
+            if resolved_value is None:
+                resolved_value = _resolve_taxonomy_id(cache_key, card.get(legacy_field))
+            if resolved_value is not None:
+                payload[target_field] = resolved_value
+
+        group_value = card.get("group_id")
+        if _has_value(group_value):
+            coerced_group = _coerce_optional_int(group_value)
+            payload["group_id"] = coerced_group if coerced_group is not None else group_value
 
         if card.get("virtual"):
             payload["virtual"] = bool(card.get("virtual"))
