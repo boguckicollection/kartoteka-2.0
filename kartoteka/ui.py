@@ -3096,94 +3096,7 @@ class CardEditorApp:
                 messagebox.showerror("Błąd", "Brak danych karty do wysłania")
                 return
 
-            payload = self._build_shoper_payload(card)
-            data = self.shoper_client.add_product(payload)
-            product_id = data.get("product_id") or data.get("id")
-            try:
-                attribute_map = (
-                    card.get("attributes") if isinstance(card, Mapping) else {}
-                )
-                cache: Mapping[str, Any] | dict[str, Any]
-                try:
-                    cache = self._refresh_attribute_cache()
-                except Exception as exc:  # pragma: no cover - defensive fallback
-                    logger.warning("Failed to refresh attribute cache: %s", exc)
-                    cache = getattr(self, "_attribute_cache", {}) or {}
-                attr_defs = (
-                    cache.get("attributes")
-                    if isinstance(cache, Mapping)
-                    else {}
-                )
-                name_map = (
-                    cache.get("by_name") if isinstance(cache, Mapping) else {}
-                )
-
-                def _sort_key(item: tuple[Any, Any]) -> Any:
-                    key = item[0]
-                    try:
-                        return int(key)
-                    except (TypeError, ValueError):
-                        return str(key)
-
-                seen_attribute_ids: set[int] = set()
-                if product_id and isinstance(attribute_map, Mapping):
-                    for _, attributes in sorted(attribute_map.items(), key=_sort_key):
-                        if not isinstance(attributes, Mapping):
-                            continue
-                        for attr_key, raw_value in sorted(attributes.items(), key=_sort_key):
-                            attr_id = self._resolve_attribute_id(attr_key, name_map)
-                            if attr_id is None:
-                                continue
-                            attr_meta = (
-                                attr_defs.get(attr_id) if isinstance(attr_defs, Mapping) else None
-                            )
-                            if not attr_meta:
-                                logger.warning(
-                                    "Missing Shoper attribute definition for %s", attr_id
-                                )
-                                continue
-                            values_payload = self._normalize_attribute_payload(
-                                attr_meta, raw_value
-                            )
-                            if not values_payload:
-                                continue
-                            try:
-                                self.shoper_client.add_product_attribute(
-                                    product_id, attr_id, values_payload
-                                )
-                                seen_attribute_ids.add(attr_id)
-                            except Exception:
-                                logger.exception(
-                                    "Failed to assign attribute %s to product %s",
-                                    attr_id,
-                                    product_id,
-                                )
-
-                card_type_code = normalize_card_type_code(card.get("card_type"))
-                attr_value = card_type_label(card_type_code)
-                if product_id and attr_value:
-                    attr_id = self._resolve_attribute_id("Typ", name_map)
-                    if attr_id is not None and attr_id not in seen_attribute_ids:
-                        attr_meta = (
-                            attr_defs.get(attr_id)
-                            if isinstance(attr_defs, Mapping)
-                            else None
-                        )
-                        values_payload = self._normalize_attribute_payload(
-                            attr_meta, attr_value
-                        )
-                        if values_payload:
-                            try:
-                                self.shoper_client.add_product_attribute(
-                                    product_id, attr_id, values_payload
-                                )
-                            except Exception:
-                                logger.exception(
-                                    "Failed to set fallback attribute Typ for product %s",
-                                    product_id,
-                                )
-            except Exception as exc:
-                logger.exception("Failed to set product attributes")
+            data = self._send_card_to_shoper(card)
             if isinstance(widget, tk.Text):
                 widget.delete("1.0", tk.END)
                 widget.insert(tk.END, json.dumps(data, indent=2, ensure_ascii=False))
@@ -3195,6 +3108,164 @@ class CardEditorApp:
         except requests.RequestException as e:
             logger.exception("Failed to push product")
             messagebox.showerror("Błąd", str(e))
+
+    def _send_card_to_shoper(self, card: Mapping[str, Any] | dict[str, Any]) -> dict:
+        """Send ``card`` to the Shoper API and assign related attributes."""
+
+        payload = self._build_shoper_payload(card)
+        data = self.shoper_client.add_product(payload)
+        product_id = data.get("product_id") or data.get("id")
+        try:
+            attribute_map = card.get("attributes") if isinstance(card, Mapping) else {}
+            cache: Mapping[str, Any] | dict[str, Any]
+            try:
+                cache = self._refresh_attribute_cache()
+            except Exception as exc:  # pragma: no cover - defensive fallback
+                logger.warning("Failed to refresh attribute cache: %s", exc)
+                cache = getattr(self, "_attribute_cache", {}) or {}
+            attr_defs = cache.get("attributes") if isinstance(cache, Mapping) else {}
+            name_map = cache.get("by_name") if isinstance(cache, Mapping) else {}
+
+            def _sort_key(item: tuple[Any, Any]) -> Any:
+                key = item[0]
+                try:
+                    return int(key)
+                except (TypeError, ValueError):
+                    return str(key)
+
+            seen_attribute_ids: set[int] = set()
+            if product_id and isinstance(attribute_map, Mapping):
+                for _, attributes in sorted(attribute_map.items(), key=_sort_key):
+                    if not isinstance(attributes, Mapping):
+                        continue
+                    for attr_key, raw_value in sorted(attributes.items(), key=_sort_key):
+                        attr_id = self._resolve_attribute_id(attr_key, name_map)
+                        if attr_id is None:
+                            continue
+                        attr_meta = (
+                            attr_defs.get(attr_id) if isinstance(attr_defs, Mapping) else None
+                        )
+                        if not attr_meta:
+                            logger.warning(
+                                "Missing Shoper attribute definition for %s", attr_id
+                            )
+                            continue
+                        values_payload = self._normalize_attribute_payload(
+                            attr_meta, raw_value
+                        )
+                        if not values_payload:
+                            continue
+                        try:
+                            self.shoper_client.add_product_attribute(
+                                product_id, attr_id, values_payload
+                            )
+                            seen_attribute_ids.add(attr_id)
+                        except Exception:
+                            logger.exception(
+                                "Failed to assign attribute %s to product %s",
+                                attr_id,
+                                product_id,
+                            )
+
+            card_type_code = normalize_card_type_code(
+                card.get("card_type") if isinstance(card, Mapping) else None
+            )
+            attr_value = card_type_label(card_type_code)
+            if product_id and attr_value:
+                attr_id = self._resolve_attribute_id("Typ", name_map)
+                if attr_id is not None and attr_id not in seen_attribute_ids:
+                    attr_meta = (
+                        attr_defs.get(attr_id)
+                        if isinstance(attr_defs, Mapping)
+                        else None
+                    )
+                    values_payload = self._normalize_attribute_payload(attr_meta, attr_value)
+                    if values_payload:
+                        try:
+                            self.shoper_client.add_product_attribute(
+                                product_id, attr_id, values_payload
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed to set fallback attribute Typ for product %s",
+                                product_id,
+                            )
+        except Exception:
+            logger.exception("Failed to set product attributes")
+
+        self._update_local_product_caches(card, payload)
+        return data
+
+    def _update_local_product_caches(
+        self, card: Mapping[str, Any] | dict[str, Any], payload: Mapping[str, Any]
+    ) -> None:
+        """Keep local duplicate-detection caches in sync after an API import."""
+
+        product_code: str = ""
+        if isinstance(card, Mapping):
+            raw_code = card.get("product_code")
+            if isinstance(raw_code, str):
+                product_code = raw_code.strip()
+            elif raw_code is not None:
+                product_code = str(raw_code).strip()
+        if not product_code:
+            raw_code = payload.get("product_code")
+            if isinstance(raw_code, str):
+                product_code = raw_code.strip()
+            elif raw_code is not None:
+                product_code = str(raw_code).strip()
+        if not product_code:
+            return
+
+        try:
+            card_snapshot: dict[str, Any]
+            if isinstance(card, Mapping):
+                card_snapshot = dict(card)
+            else:
+                card_snapshot = {"product_code": product_code}
+        except Exception:
+            card_snapshot = {"product_code": product_code}
+
+        if isinstance(getattr(self, "product_code_map", None), dict):
+            self.product_code_map[product_code] = card_snapshot
+        else:  # pragma: no cover - fallback for unexpected state
+            self.product_code_map = {product_code: card_snapshot}
+
+        store_data = getattr(self, "store_data", None)
+        if not isinstance(store_data, dict):
+            self.store_data = {}
+            store_data = self.store_data
+
+        row = dict(store_data.get(product_code) or {})
+        row["product_code"] = product_code
+
+        def _set_field(target_key: str, *source_keys: str) -> None:
+            if row.get(target_key):
+                return
+            value: Any = None
+            if isinstance(card, Mapping):
+                for key in source_keys:
+                    value = card.get(key)
+                    if value not in (None, ""):
+                        break
+                    value = None
+            if value in (None, ""):
+                for key in source_keys:
+                    value = payload.get(key)
+                    if value not in (None, ""):
+                        break
+                    value = None
+            if value in (None, ""):
+                return
+            row[target_key] = str(value)
+
+        _set_field("name", "nazwa", "name")
+        _set_field("price", "cena", "price")
+        _set_field("set", "set")
+        _set_field("number", "numer", "number")
+        _set_field("variant", "variant")
+
+        store_data[product_code] = row
 
     def open_auctions_window(self):
         """Open a queue editor for Discord auctions and save to ``aukcje.csv``."""
@@ -11068,6 +11139,55 @@ class CardEditorApp:
                 except tk.TclError:
                     pass
 
+        def _send_session_cards():
+            if not filtered_rows:
+                try:
+                    messagebox.showinfo(
+                        "Brak danych", "Brak kart do wysłania przez API."
+                    )
+                except tk.TclError:
+                    pass
+                return
+
+            successes: list[str] = []
+            failures: list[str] = []
+            for row in filtered_rows:
+                try:
+                    response = self._send_card_to_shoper(row)
+                except requests.RequestException as exc:
+                    code = str(row.get("product_code") or row.get("code") or "?")
+                    failures.append(f"{code}: {exc}")
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.exception("Failed to send card from summary")
+                    code = str(row.get("product_code") or row.get("code") or "?")
+                    failures.append(f"{code}: {exc}")
+                else:
+                    product_id = response.get("product_id") or response.get("id")
+                    code = str(row.get("product_code") or row.get("code") or "?")
+                    if product_id:
+                        successes.append(f"{code}: ID {product_id}")
+                    else:
+                        successes.append(code)
+
+            summary_lines: list[str] = []
+            if successes:
+                summary_lines.append("Sukcesy:")
+                summary_lines.extend(f" • {item}" for item in successes)
+            if failures:
+                summary_lines.append("Niepowodzenia:")
+                summary_lines.extend(f" • {item}" for item in failures)
+
+            report_text = "\n".join(summary_lines) if summary_lines else "Brak wyników."
+            try:
+                if failures and not successes:
+                    messagebox.showerror("Raport wysyłki", report_text)
+                elif failures:
+                    messagebox.showwarning("Raport wysyłki", report_text)
+                else:
+                    messagebox.showinfo("Raport wysyłki", report_text)
+            except tk.TclError:
+                pass
+
         export_btn = self.create_button(
             button_frame,
             text="Zapisz do CSV",
@@ -11076,13 +11196,21 @@ class CardEditorApp:
         )
         export_btn.grid(row=0, column=0, padx=10)
 
+        send_btn = self.create_button(
+            button_frame,
+            text="Wyślij przez API",
+            command=_send_session_cards,
+            fg_color=FETCH_BUTTON_COLOR,
+        )
+        send_btn.grid(row=0, column=1, padx=10)
+
         return_btn = self.create_button(
             button_frame,
             text="Wróć do edycji",
             command=self.close_session_summary,
             fg_color=NAV_BUTTON_COLOR,
         )
-        return_btn.grid(row=0, column=1, padx=10)
+        return_btn.grid(row=0, column=2, padx=10)
 
     def close_session_summary(self):
         """Hide the session summary and return to the editor view."""
