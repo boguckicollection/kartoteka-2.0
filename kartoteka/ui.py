@@ -7233,52 +7233,31 @@ class CardEditorApp:
 
 
         # Bottom frame for action buttons
-        self.button_frame = tk.Frame(
-            self.frame, bg=self.root.cget("background")
+        self.button_frame = ctk.CTkFrame(
+            self.frame, fg_color="transparent"
         )
         # Do not stretch the button frame so that buttons remain centered
-        self.button_frame.grid(row=15, column=0, columnspan=6, pady=10)
+        self.button_frame.grid(row=15, column=0, columnspan=6, pady=10, sticky="ew")
+        for col in range(5):
+            self.button_frame.grid_columnconfigure(col, weight=1)
 
-        self.end_button = self.create_button(
-            self.button_frame,
-            text="Zakończ i zapisz",
-            command=self.export_csv,
-            fg_color=SAVE_BUTTON_COLOR,
-        )
-        self.end_button.pack(side="left", padx=5)
-
-        self.back_button = self.create_button(
-            self.button_frame,
-            text="Powrót",
-            command=self.back_to_welcome,
-            fg_color=NAV_BUTTON_COLOR,
-        )
-        self.back_button.pack(side="left", padx=5)
-
-        # Navigation buttons to move between loaded scans
-        self.prev_button = self.create_button(
-            self.button_frame,
-            text="\u23ee Poprzednia",
-            command=self.previous_card,
-            fg_color=NAV_BUTTON_COLOR,
-        )
-        self.prev_button.pack(side="left", padx=5)
-
-        self.next_button = self.create_button(
-            self.button_frame,
-            text="Nast\u0119pna \u23ed",
-            command=self.next_card,
-            fg_color=NAV_BUTTON_COLOR,
-        )
-        self.next_button.pack(side="left", padx=5)
-
-        self.cheat_button = self.create_button(
-            self.button_frame,
-            text="\U0001F9FE \u015aci\u0105ga",
-            command=self.toggle_cheatsheet,
-            fg_color=NAV_BUTTON_COLOR,
-        )
-        self.cheat_button.pack(side="left", padx=5)
+        button_specs = [
+            ("Zakończ i zapisz", self.export_csv, SAVE_BUTTON_COLOR),
+            ("Powrót", self.back_to_welcome, NAV_BUTTON_COLOR),
+            ("\u23ee Poprzednia", self.previous_card, NAV_BUTTON_COLOR),
+            ("Nast\u0119pna \u23ed", self.next_card, NAV_BUTTON_COLOR),
+            ("\U0001F9FE \u015aci\u0105ga", self.toggle_cheatsheet, NAV_BUTTON_COLOR),
+        ]
+        self.bottom_buttons: list[ctk.CTkButton] = []
+        for col, (text, command, color) in enumerate(button_specs):
+            btn = self.create_button(
+                self.button_frame,
+                text=text,
+                command=command,
+                fg_color=color,
+            )
+            btn.grid(row=0, column=col, padx=5, sticky="ew")
+            self.bottom_buttons.append(btn)
 
         # Keep a constant label size so the window does not resize when
         # scans of different dimensions are displayed
@@ -7299,7 +7278,14 @@ class CardEditorApp:
         self.info_frame.grid(
             row=2, column=1, columnspan=4, rowspan=12, padx=10, sticky="nsew"
         )
-        ctk.CTkLabel(self.info_frame, text="Informacje o karcie").grid(row=0, column=0, columnspan=8, pady=(0,5))
+        ctk.CTkLabel(self.info_frame, text="Informacje o karcie").grid(
+            row=0, column=0, columnspan=4, pady=(0, 5), sticky="w"
+        )
+        ctk.CTkLabel(
+            self.info_frame,
+            text="Atrybuty Shoper",
+            anchor="e",
+        ).grid(row=0, column=4, columnspan=4, pady=(0, 5), sticky="e")
         start_row = 1
         for i in range(8):
             self.info_frame.columnconfigure(i, weight=1)
@@ -7307,7 +7293,6 @@ class CardEditorApp:
         self.attribute_panel = ctk.CTkScrollableFrame(
             self.frame,
             fg_color=BG_COLOR,
-            label_text="Atrybuty Shoper",
         )
         self.attribute_panel.grid(
             row=2,
@@ -7454,7 +7439,7 @@ class CardEditorApp:
         self.save_button.grid(row=start_row + 9, column=0, columnspan=1, sticky="ew", **grid_opts)
 
         self.eur_entry = ctk.CTkEntry(
-            self.info_frame, width=120, placeholder_text="Kwota w EUR"
+            self.info_frame, width=80, placeholder_text="Kwota w EUR"
         )
         self.eur_entry.grid(
             row=start_row + 10, column=0, columnspan=2, sticky="ew", **grid_opts
@@ -7493,55 +7478,82 @@ class CardEditorApp:
         for i in range(6):
             shoper_frame.columnconfigure(i, weight=1)
 
-        def add_field(row: int, column: int, label_text: str, key: str, *, widget: str = "entry", values: Iterable[str] | None = None, width: int = 160):
+        for col in range(4):
+            shoper_frame.columnconfigure(col, weight=1 if col in (1, 3) else 0)
+
+        def add_field(
+            row: int,
+            slot: int,
+            label_text: str,
+            key: str,
+            *,
+            width: int = 180,
+            values: Iterable[str] | None = None,
+            default: str | None = None,
+            columnspan: int = 1,
+        ) -> tk.Variable:
+            label_col = slot * 2
+            entry_col = label_col + 1
             tk.Label(
                 shoper_frame,
                 text=label_text,
                 bg=FIELD_BG_COLOR,
                 fg=TEXT_COLOR,
-            ).grid(row=row, column=column, sticky="w", padx=5, pady=2)
-            var = tk.StringVar()
-            if widget == "combo":
-                combo = ctk.CTkComboBox(
+            ).grid(row=row, column=label_col, sticky="w", padx=5, pady=2)
+            var = tk.StringVar(value=default if default is not None else "")
+            if values is not None:
+                widget = ctk.CTkComboBox(
                     shoper_frame,
-                    values=list(values or []),
+                    values=list(values),
                     variable=var,
                     width=width,
                 )
-                combo.grid(row=row, column=column + 1, sticky="ew", padx=5, pady=2)
             else:
-                entry = ctk.CTkEntry(
+                widget = ctk.CTkEntry(
                     shoper_frame,
                     textvariable=var,
                     width=width,
                 )
-                entry.grid(row=row, column=column + 1, sticky="ew", padx=5, pady=2)
+            widget.grid(
+                row=row,
+                column=entry_col,
+                columnspan=columnspan,
+                sticky="ew",
+                padx=5,
+                pady=2,
+            )
             self.entries[key] = var
+            return var
 
-        add_field(0, 0, "ID producenta", "producer_id")
-        add_field(0, 2, "ID grupy", "group_id")
-        add_field(0, 4, "ID podatku", "tax_id")
+        add_field(0, 0, "Kod produktu", "product_code")
+        add_field(0, 1, "Nazwa (Shoper)", "name")
 
-        add_field(1, 0, "ID kategorii", "category_id")
-        add_field(1, 2, "ID jednostki", "unit_id")
-        add_field(1, 4, "PKWiU", "pkwiu")
+        add_field(1, 0, "Kod producenta", "producer_code")
+        add_field(1, 1, "Producent", "producer", default="Pokémon")
 
-        add_field(2, 0, "Szerokość (cm)", "dimension_w")
-        add_field(2, 2, "Wysokość (cm)", "dimension_h")
-        add_field(2, 4, "Długość (cm)", "dimension_l")
+        add_field(2, 0, "Kategoria", "category", width=260, columnspan=3)
 
-        add_field(3, 0, "Tagi", "tags", width=220)
-        add_field(3, 2, "Kolekcje", "collections", width=220)
-        add_field(3, 4, "Dodatkowe kody", "additional_codes", width=220)
+        add_field(3, 0, "Krótki opis", "short_description", width=260, columnspan=3)
+        add_field(4, 0, "Opis", "description", width=260, columnspan=3)
 
-        virtual_var = _create_bool_var(False)
-        self.entries["virtual"] = virtual_var
-        virtual_checkbox = ctk.CTkCheckBox(
-            shoper_frame,
-            text="Produkt wirtualny",
-            variable=virtual_var,
-        )
-        virtual_checkbox.grid(row=5, column=0, columnspan=2, sticky="w", padx=5, pady=(6, 2))
+        add_field(5, 0, "Waluta", "currency", default="PLN")
+        add_field(5, 1, "Dostępność", "availability", default="1")
+
+        add_field(6, 0, "Jednostka", "unit", default="szt.")
+        add_field(6, 1, "Dostawa", "delivery", default="3 dni")
+
+        add_field(7, 0, "Stan magazynowy", "stock")
+        add_field(7, 1, "Aktywny", "active", values=["0", "1"], default="1")
+
+        add_field(8, 0, "SEO tytuł", "seo_title", width=260, columnspan=3)
+
+        add_field(9, 0, "VAT", "vat", default="23%")
+        add_field(9, 1, "Obraz 1", "image1", width=220)
+
+        # Alias commonly used fields to Shoper counterparts
+        cena_entry = self.entries.get("cena")
+        if cena_entry is not None:
+            self.entries["price"] = cena_entry
 
         self.eur_entry.bind("<Return>", self.convert_eur_to_pln)
 
@@ -7779,8 +7791,6 @@ class CardEditorApp:
                 text_color=TEXT_COLOR,
             ).grid(row=0, column=0, sticky="w", padx=5, pady=5)
             return
-        font_factory = getattr(ctk, "CTkFont", None)
-
         def _group_sort(item: tuple[Any, Any]) -> Any:
             key = item[0]
             try:
@@ -7794,24 +7804,9 @@ class CardEditorApp:
                 group_id = int(group_id_raw)
             except (TypeError, ValueError):
                 group_id = group_id_raw
-            group_name = (
-                group_meta.get("name")
-                if isinstance(group_meta, Mapping)
-                else f"Grupa {group_id}"
-            )
-            try:
-                group_font = font_factory(size=17, weight="bold") if callable(font_factory) else None
-            except Exception:  # pragma: no cover - fallback for mocks
-                group_font = None
-            ctk.CTkLabel(
-                self._attribute_content,
-                text=str(group_name),
-                font=group_font,
-                text_color=TEXT_COLOR,
-            ).grid(row=row, column=0, sticky="w", padx=5, pady=(0, 4))
-            row += 1
             group_frame = ctk.CTkFrame(self._attribute_content, fg_color="transparent")
-            group_frame.grid(row=row, column=0, sticky="ew", padx=5, pady=(0, 12))
+            top_pad = (6, 12) if row else (0, 12)
+            group_frame.grid(row=row, column=0, sticky="ew", padx=5, pady=top_pad)
             group_frame.grid_columnconfigure(1, weight=1)
             row += 1
             attributes = (
@@ -8962,10 +8957,17 @@ class CardEditorApp:
                 if entry_types and isinstance(entry, entry_types):
                     entry.delete(0, tk.END)
                 elif isinstance(tk.StringVar, type) and isinstance(entry, tk.StringVar):
-                    if key == "stan":
-                        entry.set("NM")
-                    else:
-                        entry.set("")
+                    defaults = {
+                        "stan": "NM",
+                        "producer": "Pokémon",
+                        "currency": "PLN",
+                        "availability": "1",
+                        "unit": "szt.",
+                        "delivery": "3 dni",
+                        "active": "1",
+                        "vat": "23%",
+                    }
+                    entry.set(defaults.get(key, ""))
                 else:
                     bool_var_cls = getattr(tk, "BooleanVar", None)
                     if isinstance(bool_var_cls, type) and isinstance(entry, bool_var_cls):
@@ -10716,24 +10718,69 @@ class CardEditorApp:
         front_file = os.path.basename(front_path)
         self.file_to_key[front_file] = key
 
-        data["image1"] = f"{BASE_IMAGE_URL}/{self.folder_name}/{front_file}"
+        if not _clean_text(data.get("image1")):
+            image_path = f"{BASE_IMAGE_URL}/{self.folder_name}/{front_file}"
+            data["image1"] = image_path
+            _update_entry_value("image1", image_path)
         ball_suffix = ball_value or None
-        data["product_code"] = csv_utils.build_product_code(
+        existing_code = _clean_text(data.get("product_code"))
+        auto_code = csv_utils.build_product_code(
             set_name,
             number,
             card_type_code,
             ball_suffix=ball_suffix,
         )
-        data["unit"] = "szt."
-        data["category"] = f"Karty Pokémon > {data['era']} > {data['set']}"
-        data["producer"] = "Pokémon"
-        data["producer_code"] = data["numer"]
-        data["currency"] = "PLN"
-        data["active"] = 1
-        data["vat"] = "23%"
-        data["seo_title"] = f"{data['nazwa']} {data['numer']} {data['set']}"
-        data["seo_description"] = ""
-        data["seo_keywords"] = ""
+        entry_widget_types: tuple[type, ...] = tuple(
+            t
+            for t in (getattr(tk, "Entry", None), getattr(ctk, "CTkEntry", None))
+            if isinstance(t, type)
+        )
+
+        def _update_entry_value(key: str, value: Any) -> None:
+            entry = self.entries.get(key)
+            if isinstance(entry, tk.StringVar):
+                entry.set(value if value is not None else "")
+            elif entry_widget_types and isinstance(entry, entry_widget_types):
+                try:
+                    entry.delete(0, tk.END)
+                    entry.insert(0, value if value is not None else "")
+                except tk.TclError:
+                    pass
+
+        if existing_code:
+            data["product_code"] = existing_code
+        else:
+            data["product_code"] = auto_code
+            _update_entry_value("product_code", auto_code)
+
+        def _set_if_empty(key: str, value: Any) -> None:
+            current = data.get(key)
+            if _clean_text(current):
+                return
+            data[key] = value
+            _update_entry_value(key, value)
+
+        data.setdefault("name", data.get("nazwa", ""))
+        _set_if_empty("unit", "szt.")
+        _set_if_empty("category", f"Karty Pokémon > {data['era']} > {data['set']}")
+        _set_if_empty("producer", "Pokémon")
+        if not _clean_text(data.get("producer_code")):
+            producer_code = data.get("numer", "")
+            data["producer_code"] = producer_code
+            _update_entry_value("producer_code", producer_code)
+        _set_if_empty("currency", "PLN")
+        _set_if_empty("delivery", "3 dni")
+        _set_if_empty("availability", "1")
+        if not _clean_text(data.get("active")):
+            data["active"] = "1"
+            _update_entry_value("active", "1")
+        _set_if_empty("vat", "23%")
+        _set_if_empty(
+            "seo_title",
+            f"{data['nazwa']} {data['numer']} {data['set']}",
+        )
+        data.setdefault("seo_description", "")
+        data.setdefault("seo_keywords", "")
 
         name = html.escape(data["nazwa"])
         number = html.escape(data["numer"])
@@ -10743,45 +10790,48 @@ class CardEditorApp:
         condition = html.escape(data["stan"])
         psa10_price = html.escape(data.get("psa10_price", "") or "???")
 
-        data["short_description"] = (
-            f'<ul style="margin:0 0 0.7em 1.2em; padding:0; font-size:1.14em;">'
-            f'<li><strong>{name}</strong></li>'
-            f'<li style="margin-top:0.3em;">Zestaw: {set_name}</li>'
-            f'<li style="margin-top:0.3em;">Numer karty: {number}</li>'
-            f'<li style="margin-top:0.3em;">Stan: {condition}</li>'
-            f'<li style="margin-top:0.3em;">Typ: {card_type}</li>'
-            "</ul>"
-        )
+        if not _clean_text(data.get("short_description")):
+            short_description = (
+                f'<ul style="margin:0 0 0.7em 1.2em; padding:0; font-size:1.14em;">'
+                f'<li><strong>{name}</strong></li>'
+                f'<li style="margin-top:0.3em;">Zestaw: {set_name}</li>'
+                f'<li style="margin-top:0.3em;">Numer karty: {number}</li>'
+                f'<li style="margin-top:0.3em;">Stan: {condition}</li>'
+                f'<li style="margin-top:0.3em;">Typ: {card_type}</li>'
+                "</ul>"
+            )
+            data["short_description"] = short_description
+            _update_entry_value("short_description", short_description)
 
         psa10_date = html.escape(datetime.date.today().isoformat())
         slug = raw_set_name.replace(" ", "-")
         link_set = html.escape(f"https://kartoteka.shop/pl/c/{slug}")
         psa_icon_url = html.escape(PSA_ICON_URL)
 
-        data["description"] = (
-            f'<div style="font-size:1.10em;line-height:1.7;">'
-            f'<h2 style="margin:0 0 0.4em 0;">{name} – Pokémon TCG</h2>'
-            f'<p><strong>Zestaw:</strong> {set_name}<br>'
-            f'<strong>Numer karty:</strong> {number}<br>'
-            f'<strong>Typ:</strong> {card_type}<br>'
-            f'<strong>Stan:</strong> {condition}</p>'
-            f'<div style="display:flex;align-items:center;margin:0.5em 0;">'
-            f'<img src="{psa_icon_url}" alt="PSA 10" style="height:24px;width:auto;margin-right:0.4em;"/>'
-            f'<span>Wartość tej karty w ocenie PSA 10 ({psa10_date}): ok. {psa10_price} PLN</span>'
-            f'</div>'
-            '<p>Dlaczego warto kupić w Kartoteka.shop?</p>'
-            '<ul>'
-            '<li>Oryginalne karty Pokémon</li>'
-            '<li>Bezpieczna wysyłka i solidne opakowanie</li>'
-            '<li>Profesjonalna obsługa klienta</li>'
-            '</ul>'
-            f'<p>Jeśli szukasz więcej kart z tego setu – sprawdź '
-            f'<a href="{link_set}">pozostałe oferty</a>.</p>'
-            '</div>'
-        )
-
-        data["availability"] = 1
-        data["delivery"] = "3 dni"
+        if not _clean_text(data.get("description")):
+            description = (
+                f'<div style="font-size:1.10em;line-height:1.7;">'
+                f'<h2 style="margin:0 0 0.4em 0;">{name} – Pokémon TCG</h2>'
+                f'<p><strong>Zestaw:</strong> {set_name}<br>'
+                f'<strong>Numer karty:</strong> {number}<br>'
+                f'<strong>Typ:</strong> {card_type}<br>'
+                f'<strong>Stan:</strong> {condition}</p>'
+                f'<div style="display:flex;align-items:center;margin:0.5em 0;">'
+                f'<img src="{psa_icon_url}" alt="PSA 10" style="height:24px;width:auto;margin-right:0.4em;"/>'
+                f'<span>Wartość tej karty w ocenie PSA 10 ({psa10_date}): ok. {psa10_price} PLN</span>'
+                f'</div>'
+                '<p>Dlaczego warto kupić w Kartoteka.shop?</p>'
+                '<ul>'
+                '<li>Oryginalne karty Pokémon</li>'
+                '<li>Bezpieczna wysyłka i solidne opakowanie</li>'
+                '<li>Profesjonalna obsługa klienta</li>'
+                '</ul>'
+                f'<p>Jeśli szukasz więcej kart z tego setu – sprawdź '
+                f'<a href="{link_set}">pozostałe oferty</a>.</p>'
+                '</div>'
+            )
+            data["description"] = description
+            _update_entry_value("description", description)
 
         price = data.get("cena", "").strip()
         if price:
@@ -10808,6 +10858,8 @@ class CardEditorApp:
                     data["cena"] = str(fetched)
                 else:
                     data["cena"] = ""
+
+        data.setdefault("price", data.get("cena", ""))
 
         self.output_data[self.index] = data
         if getattr(self, "session_csv_path", None):
