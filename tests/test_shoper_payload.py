@@ -60,7 +60,7 @@ def test_build_shoper_payload_forwards_optional_fields():
     assert payload["collections"] == ["coll"]
     assert payload["additional_codes"] == ["A1"]
     assert payload["virtual"] is True
-    assert payload["images"] == "img.jpg"
+    assert "images" not in payload
 
     minimal = {"nazwa": "Sample", "product_code": "PKM-EMPTY"}
     minimal_payload = app._build_shoper_payload(minimal)
