@@ -1,11 +1,10 @@
-import time
-
 import sys
 import time
 from pathlib import Path
 
 import pytest
 import requests
+import json
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from shoper_client import ShoperClient
@@ -187,6 +186,36 @@ def test_list_orders_caps_limit(monkeypatch):
 
     assert captured_params["page"] == 3
     assert captured_params["limit"] == 50
+
+
+def test_get_order_products_handles_pagination(monkeypatch):
+    client = ShoperClient(base_url="https://shop", token="tok")
+
+    calls = []
+
+    def fake_get(endpoint, **kwargs):
+        assert endpoint == "order-products"
+        params = kwargs.get("params", {})
+        calls.append(params["page"])
+        assert params["limit"] == 50
+        assert json.loads(params["filters"]) == {"order_id": 123}
+
+        page = params["page"]
+        if page == 1:
+            return {"list": [{"id": 1}], "page": 1, "pages": 3}
+        if page == 2:
+            return {"list": [{"id": 2}], "page": 2, "pages": 3}
+        if page == 3:
+            return {"list": [{"id": 3}], "page": 3, "pages": 3}
+        return {"list": []}
+
+    monkeypatch.setattr(client, "get", fake_get)
+
+    result = client.get_order_products(123)
+
+    assert calls == [1, 2, 3]
+    assert result["count"] == 3
+    assert [item["id"] for item in result["list"]] == [1, 2, 3]
 
 
 def test_get_orders_accepts_iterable_status(monkeypatch):
