@@ -1,4 +1,5 @@
 import csv
+import importlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -86,53 +87,38 @@ def test_save_current_updates_session_entries():
     assert saved["delivery"] == "3 dni"
 
 
-def test_export_accumulates_between_sessions(tmp_path, monkeypatch):
-    out_path = tmp_path / "out.csv"
-    inv_path = tmp_path / "inv.csv"
-    monkeypatch.setenv("STORE_EXPORT_CSV", str(out_path))
-    monkeypatch.setenv("WAREHOUSE_CSV", str(inv_path))
-    import importlib
-    importlib.reload(csv_utils)
-    importlib.reload(ui)
+def test_export_prefers_session_entries(tmp_path, monkeypatch):
+    monkeypatch.setenv("STORE_CACHE_JSON", str(tmp_path / "cache.json"))
+    globals()["csv_utils"] = importlib.reload(csv_utils)
 
-    base_row = {
-        "nazwa": "Pikachu",
-        "numer": "1",
-        "set": "Base",
-        "era": "Era1",
-        "product_code": "PC1",
-        "cena": "10",
-        "category": "Karty Pokémon > Era1 > Base",
-        "producer": "Pokemon",
-        "short_description": "s",
-        "description": "d",
-        "image1": "img.jpg",
-    }
-    second_row = {
-        "nazwa": "Charmander",
-        "numer": "2",
-        "set": "Base",
-        "era": "Era1",
-        "product_code": "PC2",
-        "cena": "5",
-        "category": "Karty Pokémon > Era1 > Base",
+    session_row = {
+        "nazwa": "Eevee",
+        "numer": "3",
+        "set": "Jungle",
+        "product_code": "PC_SESSION",
+        "cena": "15",
+        "category": "Karty Pokémon > Era1 > Jungle",
         "producer": "Pokemon",
         "short_description": "s",
         "description": "d",
         "image1": "img.jpg",
     }
 
-    dummy1 = SimpleNamespace(output_data=[base_row], back_to_welcome=lambda: None)
-    dummy2 = SimpleNamespace(output_data=[dict(base_row), second_row], back_to_welcome=lambda: None)
+    dummy = SimpleNamespace(
+        session_entries=[session_row],
+        output_data=[{
+            "nazwa": "Fallback",
+            "product_code": "PC_OUTPUT",
+            "cena": "5",
+            "category": "Karty",
+            "producer": "Pokemon",
+            "short_description": "s",
+            "description": "d",
+            "image1": "img.jpg",
+        }],
+    )
 
-    with patch("tkinter.messagebox.showinfo"), \
-         patch("tkinter.messagebox.askyesno", return_value=False):
-        ui.CardEditorApp.export_csv(dummy1)
-        ui.CardEditorApp.export_csv(dummy2)
-
-    with open(out_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter=";")
-        rows = {r["product_code"]: r for r in reader}
-        assert rows["PC1"]["stock"] == "2"
-        assert rows["PC2"]["stock"] == "1"
+    rows = csv_utils.export_csv(dummy)
+    assert len(rows) == 1
+    assert rows[0]["product_code"] == "PC_SESSION"
 

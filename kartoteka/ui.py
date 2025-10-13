@@ -2382,7 +2382,11 @@ class CardEditorApp:
         self.card_cache = {}
         self.file_to_key = {}
         self.product_code_map = {}
-        self.store_data = csv_utils.load_store_export()
+        cache_data = csv_utils.load_store_cache()
+        if cache_data:
+            self.store_data = cache_data
+        else:
+            self.store_data = csv_utils.load_store_export()
         self.card_type_var = _create_string_var(CARD_TYPE_DEFAULT)
         self.card_type_display_var = _create_string_var(DEFAULT_CARD_FINISH_LABEL)
         self._finish_attribute_id: Optional[int] = None
@@ -2391,6 +2395,8 @@ class CardEditorApp:
         self._finish_label_to_value: dict[str, Any] = {}
         self._finish_value_to_label: dict[Any, str] = {}
         self._pending_finish_selection: CardFinishSelection | None = None
+        self._latest_export_rows: list[dict[str, Any]] = []
+        self._summary_warehouse_written = False
         try:
             if HashDB and HASH_DB_FILE:
                 db_path = Path(HASH_DB_FILE)
@@ -7232,6 +7238,8 @@ class CardEditorApp:
             ):
                 return
         self.in_scan = False
+        self._latest_export_rows = []
+        self._summary_warehouse_written = False
         if getattr(self, "pricing_frame", None):
             self.pricing_frame.destroy()
             self.pricing_frame = None
@@ -11024,13 +11032,100 @@ class CardEditorApp:
             data_source = [row for row in self.output_data if isinstance(row, Mapping)]
 
         def _has_basic_fields(row: Mapping[str, Any]) -> bool:
-            for key in ("nazwa", "product_code", "cena", "warehouse_code"):
+            for key in (
+                "nazwa",
+                "name",
+                "product_code",
+                "code",
+                "cena",
+                "price",
+                "warehouse_code",
+                "kod_magazynowy",
+                "location",
+            ):
                 value = str(row.get(key, "") or "").strip()
                 if value:
                     return True
             return False
 
-        filtered_rows = [row for row in data_source if _has_basic_fields(row)]
+        try:
+            exported_rows = csv_utils.export_csv(self)
+        except Exception:
+            logger.exception("Failed to prepare export data for summary")
+            exported_rows = []
+
+        self._latest_export_rows = list(exported_rows)
+
+        session_codes: set[str] = set()
+        code_locations: dict[str, set[str]] = {}
+        for row in data_source:
+            if not isinstance(row, Mapping):
+                continue
+            code = str(row.get("product_code") or row.get("code") or "").strip()
+            if not code:
+                continue
+            session_codes.add(code)
+            raw_locations = (
+                row.get("warehouse_code")
+                or row.get("kod_magazynowy")
+                or row.get("location")
+            )
+            if raw_locations:
+                if isinstance(raw_locations, (list, tuple, set)):
+                    candidates = raw_locations
+                else:
+                    candidates = str(raw_locations).split(";")
+                bucket = code_locations.setdefault(code, set())
+                for candidate in candidates:
+                    text = str(candidate).strip()
+                    if text:
+                        bucket.add(text)
+
+        filtered_rows: list[Mapping[str, Any]] = []
+        if exported_rows:
+            for row in exported_rows:
+                if not isinstance(row, Mapping):
+                    continue
+                code = str(row.get("product_code") or row.get("code") or "").strip()
+                if session_codes and code and code not in session_codes:
+                    continue
+                row_copy = dict(row)
+                locations = code_locations.get(code)
+                if locations:
+                    row_copy["warehouse_code"] = ";".join(sorted(locations))
+                if _has_basic_fields(row_copy):
+                    filtered_rows.append(row_copy)
+        else:
+            filtered_rows = [row for row in data_source if _has_basic_fields(row)]
+
+        try:
+            if filtered_rows and not getattr(self, "_summary_warehouse_written", False):
+                csv_utils.append_warehouse_csv(self, exported_rows=filtered_rows)
+                self._summary_warehouse_written = True
+            elif not getattr(self, "_summary_warehouse_written", False):
+                csv_utils.append_warehouse_csv(self)
+                self._summary_warehouse_written = True
+        except Exception:
+            logger.exception("Failed to append session rows to warehouse")
+
+        try:
+            store_data = self.store_data if isinstance(self.store_data, dict) else {}
+            if exported_rows:
+                for row in exported_rows:
+                    if not isinstance(row, Mapping):
+                        continue
+                    code = str(row.get("product_code") or row.get("code") or "").strip()
+                    if not code:
+                        continue
+                    snapshot = {
+                        key: "" if value is None else str(value)
+                        for key, value in row.items()
+                    }
+                    store_data[code] = snapshot
+                self.store_data = store_data
+                csv_utils.save_store_cache(store_data.values())
+        except Exception:
+            logger.exception("Failed to persist store cache")
 
         if getattr(self, "summary_frame", None) is not None:
             try:
@@ -11126,18 +11221,72 @@ class CardEditorApp:
 
         def _export_session():
             try:
-                csv_utils.export_csv(self, csv_utils.STORE_EXPORT_CSV)
+                rows = [
+                    row
+                    for row in getattr(self, "_latest_export_rows", [])
+                    if isinstance(row, Mapping)
+                ]
             except Exception:
-                logger.exception("Failed to export CSV from summary")
+                rows = []
+
+            if not rows:
+                try:
+                    rows = [
+                        row for row in csv_utils.export_csv(self) if isinstance(row, Mapping)
+                    ]
+                except Exception:
+                    logger.exception("Failed to prepare export rows")
+                    try:
+                        messagebox.showerror("Błąd", "Nie udało się przygotować danych do zapisu.")
+                    except tk.TclError:
+                        pass
+                    return
+
+            if not rows:
+                try:
+                    messagebox.showinfo("Brak danych", "Brak kart do zapisania w pliku CSV.")
+                except tk.TclError:
+                    pass
+                return
+
+            save_path = filedialog.asksaveasfilename(
+                initialfile=os.path.basename(csv_utils.STORE_EXPORT_CSV),
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv")],
+            )
+            if not save_path:
+                return
+
+            self._latest_export_rows = list(rows)
+
+            try:
+                csv_utils.write_store_csv(rows, save_path)
+            except Exception:
+                logger.exception("Failed to write CSV file")
                 try:
                     messagebox.showerror("Błąd", "Nie udało się zapisać pliku CSV.")
                 except tk.TclError:
                     pass
-            else:
+                return
+
+            try:
+                messagebox.showinfo("Sukces", "Zapisano dane do pliku CSV.")
+            except tk.TclError:
+                pass
+
+            try:
+                should_send = messagebox.askyesno("Wysyłka", "Czy wysłać plik do Shoper?")
+            except tk.TclError:
+                should_send = False
+
+            if should_send:
                 try:
-                    messagebox.showinfo("Sukces", "Zapisano dane do pliku CSV.")
-                except tk.TclError:
-                    pass
+                    csv_utils.send_csv_to_shoper(self, save_path)
+                except Exception:
+                    logger.exception("Failed to send CSV to Shoper")
+
+            if hasattr(self, "back_to_welcome"):
+                self.back_to_welcome()
 
         def _send_session_cards():
             if not filtered_rows:
