@@ -1,6 +1,7 @@
 import importlib
 import sys
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -100,6 +101,46 @@ def test_build_shoper_payload_forwards_optional_fields():
     assert minimal_payload["translations"] == {"pl_PL": {"name": "Sample"}}
     for field in ("name", "short_description", "description", "category", "producer", "unit", "vat", "availability"):
         assert field not in minimal_payload
+
+
+def test_build_shoper_payload_resolves_paginated_taxonomy_entries():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    category_pages = iter(
+        [
+            {"page": 1, "pages": 2, "list": [{"category_id": 1, "name": "Visible"}]},
+            {"page": 2, "pages": 2, "list": [{"category_id": 42, "name": "Hidden Jewel"}]},
+        ]
+    )
+
+    recorded_params: List[Optional[Dict[str, Any]]] = []
+
+    def fake_get(endpoint, params=None):
+        if endpoint != "categories":
+            pytest.fail(f"Unexpected endpoint requested: {endpoint}")
+        recorded_params.append(params)
+        try:
+            return next(category_pages)
+        except StopIteration:  # pragma: no cover - sanity guard for failing pagination
+            pytest.fail("Pagination requested more pages than available")
+
+    app.shoper_client = MagicMock()
+    app.shoper_client.get.side_effect = fake_get
+    app._shoper_taxonomy_cache = {
+        "producer": {"by_name": {"pokemon": 11}},
+        "tax": {"by_name": {"23%": 33}},
+        "unit": {"by_name": {"szt.": 55}},
+        "availability": {"by_name": {"dostepny": 3}},
+    }
+
+    card = {"nazwa": "Card", "product_code": "PKM-PAGE", "category": "Hidden Jewel"}
+
+    payload = app._build_shoper_payload(card)
+
+    assert payload["category_id"] == 42
+    assert app._shoper_taxonomy_cache["category"]["by_id"][42]["name"] == "Hidden Jewel"
+    assert app.shoper_client.get.call_count == 2
+    assert recorded_params[0] in (None, {})
+    assert recorded_params[1] == {"page": 2}
 
 
 def test_build_shoper_payload_resolves_category_path_segments():
