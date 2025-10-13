@@ -5131,6 +5131,45 @@ class CardEditorApp:
             if _has_value(value):
                 payload[field] = value
 
+        def _iter_taxonomy_candidate_values(
+            candidate: Any,
+            *,
+            target_field: str,
+            legacy_field: str,
+            cache_key: str,
+        ) -> list[Any]:
+            if not isinstance(candidate, Mapping):
+                return [candidate]
+
+            values: list[Any] = []
+            possible_keys = [
+                target_field,
+                legacy_field,
+                f"{cache_key}_id",
+                "value",
+                "name",
+                "id",
+            ]
+
+            for key in possible_keys:
+                if not key:
+                    continue
+                if key in candidate:
+                    value = candidate[key]
+                    if isinstance(value, Mapping):
+                        continue
+                    if value not in values:
+                        values.append(value)
+
+            if not values:
+                for value in candidate.values():
+                    if isinstance(value, Mapping):
+                        continue
+                    if value not in values:
+                        values.append(value)
+
+            return values or [candidate]
+
         taxonomy_fields = (
             ("category_id", "category", "category"),
             ("producer_id", "producer", "producer"),
@@ -5167,7 +5206,16 @@ class CardEditorApp:
 
             resolved_value: Optional[int] = None
             for candidate in candidates:
-                resolved_value = _resolve_taxonomy_id(cache_key, candidate)
+                candidate_values = _iter_taxonomy_candidate_values(
+                    candidate,
+                    target_field=target_field,
+                    legacy_field=legacy_field,
+                    cache_key=cache_key,
+                )
+                for candidate_value in candidate_values:
+                    resolved_value = _resolve_taxonomy_id(cache_key, candidate_value)
+                    if resolved_value is not None:
+                        break
                 if resolved_value is not None:
                     break
 

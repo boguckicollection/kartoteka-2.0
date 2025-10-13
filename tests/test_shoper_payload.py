@@ -102,6 +102,36 @@ def test_build_shoper_payload_forwards_optional_fields():
         assert field not in minimal_payload
 
 
+def test_build_shoper_payload_accepts_dict_taxonomy_values():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app.shoper_client = MagicMock()
+    app._shoper_taxonomy_cache = {
+        "category": {"by_name": {"karty": 44}},
+        "producer": {"by_name": {"pokemon": 11}},
+        "tax": {"by_name": {"23%": 33}},
+        "unit": {"by_name": {"szt.": 55}},
+        "availability": {"by_name": {"dostępny": 3}},
+    }
+
+    card = {
+        "nazwa": "Sample",
+        "product_code": "PKM-DICT",
+        "category": {"name": "Karty"},
+        "producer": {"producer_id": 11, "name": "Pokemon"},
+        "vat": {"value": "23%"},
+        "unit": {"unit_id": 55},
+        "availability": {"availability_id": 3, "name": "Dostępny"},
+    }
+
+    payload = app._build_shoper_payload(card)
+
+    assert payload["category_id"] == 44
+    assert payload["producer_id"] == 11
+    assert payload["tax_id"] == 33
+    assert payload["unit_id"] == 55
+    assert payload["availability_id"] == 3
+
+
 def test_build_shoper_payload_prefers_translation_locale_content():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
     app.shoper_client = MagicMock()
