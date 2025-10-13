@@ -2377,6 +2377,7 @@ class CardEditorApp:
         self.cards = []
         self.image_objects = []
         self.output_data = []
+        self.session_entries: list[dict[str, Any] | None] = []
         self.card_counts = defaultdict(int)
         self.card_cache = {}
         self.file_to_key = {}
@@ -8828,24 +8829,9 @@ class CardEditorApp:
             if not folder:
                 return
             self.scan_folder_var.set(folder)
-        csv_path = getattr(self, "session_csv_path", None)
-        if not csv_path:
-            try:
-                csv_path = filedialog.asksaveasfilename(
-                    defaultextension=".csv", filetypes=[("CSV files", "*.csv")]
-                )
-            except tk.TclError:  # no display
-                csv_path = os.path.join(folder, "session.csv")
-            if not csv_path:
-                return
-            self.session_csv_path = csv_path
-            with open(csv_path, "w", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(
-                    f, fieldnames=csv_utils.STORE_FIELDNAMES, delimiter=";"
-                )
-                writer.writeheader()
         self.in_scan = True
         CardEditorApp.load_images(self, folder)
+        self.session_entries = [None] * len(self.cards)
 
     def load_images(self, folder):
         self.in_scan = True
@@ -8856,6 +8842,7 @@ class CardEditorApp:
             self.setup_editor_ui()
         self.folder_path = folder
         self.folder_name = os.path.basename(folder)
+        self.session_entries = []
         self.cards = [
             os.path.join(folder, f)
             for f in os.listdir(folder)
@@ -10718,18 +10705,6 @@ class CardEditorApp:
         front_file = os.path.basename(front_path)
         self.file_to_key[front_file] = key
 
-        if not _clean_text(data.get("image1")):
-            image_path = f"{BASE_IMAGE_URL}/{self.folder_name}/{front_file}"
-            data["image1"] = image_path
-            _update_entry_value("image1", image_path)
-        ball_suffix = ball_value or None
-        existing_code = _clean_text(data.get("product_code"))
-        auto_code = csv_utils.build_product_code(
-            set_name,
-            number,
-            card_type_code,
-            ball_suffix=ball_suffix,
-        )
         entry_widget_types: tuple[type, ...] = tuple(
             t
             for t in (getattr(tk, "Entry", None), getattr(ctk, "CTkEntry", None))
@@ -10746,6 +10721,19 @@ class CardEditorApp:
                     entry.insert(0, value if value is not None else "")
                 except tk.TclError:
                     pass
+
+        if not _clean_text(data.get("image1")):
+            image_path = f"{BASE_IMAGE_URL}/{self.folder_name}/{front_file}"
+            data["image1"] = image_path
+            _update_entry_value("image1", image_path)
+        ball_suffix = ball_value or None
+        existing_code = _clean_text(data.get("product_code"))
+        auto_code = csv_utils.build_product_code(
+            set_name,
+            number,
+            card_type_code,
+            ball_suffix=ball_suffix,
+        )
 
         if existing_code:
             data["product_code"] = existing_code
@@ -10862,14 +10850,10 @@ class CardEditorApp:
         data.setdefault("price", data.get("cena", ""))
 
         self.output_data[self.index] = data
-        if getattr(self, "session_csv_path", None):
-            with open(self.session_csv_path, "a", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(
-                    f,
-                    fieldnames=csv_utils.STORE_FIELDNAMES,
-                    delimiter=";",
-                )
-                writer.writerow(csv_utils.format_store_row(data))
+        if isinstance(getattr(self, "session_entries", None), list):
+            if self.index >= len(self.session_entries):
+                self.session_entries.extend([None] * (self.index + 1 - len(self.session_entries)))
+            self.session_entries[self.index] = data.copy()
         if hasattr(self, "current_location"):
             self.current_location = ""
 

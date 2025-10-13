@@ -44,55 +44,46 @@ def make_dummy():
         next_free_location=lambda: "K1R1P1",
         generate_location=lambda idx: "K1R1P1",
         output_data=[None],
+        session_entries=[None],
         get_price_from_db=lambda *a: None,
         fetch_card_price=lambda *a: None,
         fetch_psa10_price=lambda *a, **k: "",
     )
 
 
-def test_session_csv_created(tmp_path):
-    session_path = tmp_path / "session.csv"
+def test_session_entries_initialized_on_browse():
     dummy = SimpleNamespace(
         start_box_var=DummyVar("1"),
         start_col_var=DummyVar("1"),
         start_pos_var=DummyVar("1"),
         scan_folder_var=DummyVar("folder"),
-        load_images=lambda self, folder: None,
+        session_entries=[],
     )
 
-    with patch.object(ui.CardEditorApp, "load_images", lambda self, folder: None), \
-         patch("tkinter.filedialog.asksaveasfilename", return_value=str(session_path)):
+    def fake_load_images(self, folder):
+        self.cards = ["card1.jpg", "card2.jpg", "card3.jpg"]
+
+    with patch.object(ui.CardEditorApp, "load_images", fake_load_images):
         ui.CardEditorApp.browse_scans(dummy)
 
-    assert dummy.session_csv_path == str(session_path)
-    with open(session_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter=";")
-        assert reader.fieldnames == csv_utils.STORE_FIELDNAMES
-        assert "stock" in reader.fieldnames
+    assert dummy.session_entries == [None, None, None]
 
 
-def test_save_current_appends_session(tmp_path):
-    session_path = tmp_path / "session.csv"
+def test_save_current_updates_session_entries():
     dummy = make_dummy()
-    dummy.session_csv_path = str(session_path)
-    with open(session_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=csv_utils.STORE_FIELDNAMES, delimiter=";")
-        writer.writeheader()
 
     ui.CardEditorApp.save_current_data(dummy)
 
-    with open(session_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter=";")
-        rows = list(reader)
-        assert len(rows) == 1
-        assert rows[0]["name"]
-        assert rows[0]["currency"] == "PLN"
-        assert rows[0]["producer_code"] == "4"
-        assert rows[0]["stock"] == "1"
-        assert rows[0]["active"] == "1"
-        assert rows[0]["vat"] == "23%"
-        assert rows[0]["seo_title"] == "Charizard 4 Base"
-        assert rows[0]["delivery"] == "3 dni"
+    saved = dummy.session_entries[0]
+    assert saved is not None
+    assert saved["name"]
+    assert saved["currency"] == "PLN"
+    assert saved["producer_code"] == "4"
+    assert saved["ilość"] == 1
+    assert saved["active"] == "1"
+    assert saved["vat"] == "23%"
+    assert saved["seo_title"] == "Charizard 4 Base"
+    assert saved["delivery"] == "3 dni"
 
 
 def test_export_accumulates_between_sessions(tmp_path, monkeypatch):
