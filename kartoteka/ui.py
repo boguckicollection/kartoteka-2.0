@@ -4672,6 +4672,162 @@ class CardEditorApp:
             self.auction_frame.after(1000, self._update_auction_status)
         return data
 
+    def _ensure_shoper_taxonomy_cache(self) -> Mapping[str, Any]:
+        """Ensure taxonomy cache contains data required to build payloads."""
+
+        cache = getattr(self, "_shoper_taxonomy_cache", None)
+        if not isinstance(cache, Mapping):
+            cache = {}
+
+        required_specs = {
+            "category": {"endpoint": "categories", "id_field": "category_id"},
+            "producer": {"endpoint": "producers", "id_field": "producer_id"},
+            "tax": {"endpoint": "taxes", "id_field": "tax_id"},
+            "unit": {"endpoint": "units", "id_field": "unit_id"},
+            "availability": {
+                "endpoint": "availabilities",
+                "id_field": "availability_id",
+            },
+        }
+
+        def _has_entries(kind: str) -> bool:
+            value = cache.get(kind) if isinstance(cache, Mapping) else None
+            if isinstance(value, Mapping):
+                by_name = value.get("by_name")
+                if isinstance(by_name, Mapping) and by_name:
+                    return True
+            return False
+
+        missing = [kind for kind in required_specs if not _has_entries(kind)]
+        if not missing:
+            self._shoper_taxonomy_cache = dict(cache)
+            return self._shoper_taxonomy_cache
+
+        client = getattr(self, "shoper_client", None)
+        if client is None:
+            raise RuntimeError(
+                "Brak klienta Shoper – nie można pobrać słowników produktów"
+            )
+
+        def _iter_items(items: Iterable[Any]) -> Iterable[Mapping[str, Any]]:
+            for item in items:
+                if isinstance(item, Mapping):
+                    yield item
+                    children = item.get("children")
+                    if isinstance(children, (list, tuple, set)):
+                        yield from _iter_items(children)
+
+        def _collect_strings(value: Any) -> Iterable[str]:
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped:
+                    yield stripped
+            elif isinstance(value, Mapping):
+                for element in value.values():
+                    yield from _collect_strings(element)
+            elif isinstance(value, (list, tuple, set)):
+                for element in value:
+                    yield from _collect_strings(element)
+
+        def _normalize_taxonomy_key(value: Any) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, str):
+                text = value
+            else:
+                text = str(value)
+            text = unicodedata.normalize("NFKD", text)
+            text = "".join(ch for ch in text if not unicodedata.combining(ch))
+            return text.strip().lower()
+
+        def _coerce_int(value: Any) -> Optional[int]:
+            try:
+                if isinstance(value, bool):
+                    return int(value)
+                if isinstance(value, (int, float)):
+                    return int(value)
+                if isinstance(value, str):
+                    stripped = value.strip()
+                    if not stripped:
+                        return None
+                    return int(float(stripped))
+            except (TypeError, ValueError):
+                return None
+            return None
+
+        updated_cache: dict[str, Mapping[str, Any] | dict[str, Any]] = dict(cache)
+        default_name_keys = (
+            "name",
+            "label",
+            "title",
+            "text",
+            "value",
+            "code",
+            "symbol",
+        )
+
+        for kind in missing:
+            spec = required_specs[kind]
+            response = client.get(spec["endpoint"])
+            items: Iterable[Any]
+            if isinstance(response, Mapping):
+                for key in ("list", "items", "data", "results"):
+                    raw_items = response.get(key)
+                    if isinstance(raw_items, (list, tuple, set)):
+                        items = raw_items
+                        break
+                else:
+                    tree = response.get("tree")
+                    items = tree if isinstance(tree, (list, tuple, set)) else []
+            elif isinstance(response, (list, tuple, set)):
+                items = response
+            else:
+                items = []
+
+            by_id: dict[int, Mapping[str, Any]] = {}
+            by_name: dict[str, int] = {}
+            aliases: dict[str, int] = {}
+            default_id: Optional[int] = None
+
+            for entry in _iter_items(items):
+                raw_id = (
+                    entry.get(spec["id_field"]) or entry.get("id") or entry.get("value")
+                )
+                coerced_id = _coerce_int(raw_id)
+                if coerced_id is None:
+                    continue
+                by_id[coerced_id] = entry
+                aliases[str(coerced_id)] = coerced_id
+                if entry.get("default") or entry.get("is_default"):
+                    default_id = coerced_id
+
+                names: set[str] = set()
+                for key in default_name_keys:
+                    if key in entry:
+                        names.update(_collect_strings(entry.get(key)))
+                if "translations" in entry:
+                    names.update(_collect_strings(entry.get("translations")))
+                if "name" not in entry and "translation" in entry:
+                    names.update(_collect_strings(entry.get("translation")))
+
+                for name in names:
+                    normalized = _normalize_taxonomy_key(name)
+                    if not normalized:
+                        continue
+                    if name not in by_name:
+                        by_name[name] = coerced_id
+                    aliases.setdefault(normalized, coerced_id)
+
+            mapping: dict[str, Any] = {"by_id": by_id, "by_name": by_name}
+            if aliases:
+                mapping["aliases"] = aliases
+            if default_id is not None:
+                mapping["default"] = default_id
+            updated_cache[kind] = mapping
+
+        self._shoper_taxonomy_cache = updated_cache
+        return self._shoper_taxonomy_cache
+
     def _build_shoper_payload(self, card: dict) -> dict:
         """Map internal card data to the structure expected by the API."""
         name_parts = [card.get("nazwa", "")]
@@ -4910,12 +5066,56 @@ class CardEditorApp:
             ("availability_id", "availability", "availability"),
         )
 
+        if any(
+            _has_value(card.get(target_field))
+            or _has_value(card.get(legacy_field))
+            for target_field, legacy_field, _ in taxonomy_fields
+        ):
+            taxonomy_cache = self._ensure_shoper_taxonomy_cache()
+            taxonomy_lookup_cache.clear()
+
+        taxonomy_labels = {
+            "category": "kategorii",
+            "producer": "producenta",
+            "tax": "stawki VAT",
+            "unit": "jednostki",
+            "availability": "dostępności",
+        }
+        missing_required: list[tuple[str, Any]] = []
+
         for target_field, legacy_field, cache_key in taxonomy_fields:
-            resolved_value = _resolve_taxonomy_id(cache_key, card.get(target_field))
-            if resolved_value is None:
-                resolved_value = _resolve_taxonomy_id(cache_key, card.get(legacy_field))
+            candidates: list[Any] = []
+            target_value = card.get(target_field)
+            legacy_value = card.get(legacy_field)
+            if _has_value(target_value):
+                candidates.append(target_value)
+            if _has_value(legacy_value):
+                candidates.append(legacy_value)
+
+            resolved_value: Optional[int] = None
+            for candidate in candidates:
+                resolved_value = _resolve_taxonomy_id(cache_key, candidate)
+                if resolved_value is not None:
+                    break
+
+            if resolved_value is None and not candidates:
+                resolved_value = _resolve_taxonomy_id(cache_key, None)
+
             if resolved_value is not None:
                 payload[target_field] = resolved_value
+                continue
+
+            if candidates:
+                missing_required.append((cache_key, candidates[0]))
+
+        if missing_required:
+            details = []
+            for kind, value in missing_required:
+                label = taxonomy_labels.get(kind, kind)
+                text = value if isinstance(value, str) else str(value)
+                details.append(f"{label}: {text}")
+            message = "Nie znaleziono identyfikatorów Shoper dla: " + ", ".join(details)
+            raise RuntimeError(message)
 
         group_value = card.get("group_id")
         if _has_value(group_value):

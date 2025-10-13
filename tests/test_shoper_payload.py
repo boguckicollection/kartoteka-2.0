@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 sys.modules.setdefault("customtkinter", MagicMock())
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 import kartoteka.ui as ui  # noqa: E402
@@ -11,6 +13,7 @@ importlib.reload(ui)
 
 def test_build_shoper_payload_forwards_optional_fields():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app.shoper_client = MagicMock()
     app._shoper_taxonomy_cache = {
         "category": {"by_name": {"karty": 44}},
         "producer": {"by_name": {"pokemon": 11}},
@@ -56,6 +59,8 @@ def test_build_shoper_payload_forwards_optional_fields():
 
     payload = app._build_shoper_payload(card)
 
+    app.shoper_client.get.assert_not_called()
+
     assert payload["translations"] == {
         "pl_PL": {
             "name": "Sample 5",
@@ -95,3 +100,73 @@ def test_build_shoper_payload_forwards_optional_fields():
     assert minimal_payload["translations"] == {"pl_PL": {"name": "Sample"}}
     for field in ("name", "short_description", "description", "category", "producer", "unit", "vat", "availability"):
         assert field not in minimal_payload
+
+
+def test_build_shoper_payload_fetches_taxonomy_when_missing():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    client = MagicMock()
+    responses = {
+        "categories": {"list": [{"category_id": 44, "name": "Karty"}]},
+        "producers": {"list": [{"producer_id": 11, "name": "Pokemon"}]},
+        "taxes": {"list": [{"tax_id": 33, "name": "23%"}]},
+        "units": {"list": [{"unit_id": 55, "name": "szt."}]},
+        "availabilities": {
+            "list": [
+                {"availability_id": 3, "name": "Dostępny"},
+                {"availability_id": 7, "name": "Niedostępny", "default": True},
+            ]
+        },
+    }
+
+    def _fake_get(endpoint, **kwargs):
+        return responses[endpoint]
+
+    client.get.side_effect = _fake_get
+    app.shoper_client = client
+    app._shoper_taxonomy_cache = {}
+
+    card = {
+        "nazwa": "Sample",
+        "product_code": "PKM-TEST",
+        "category": "Karty",
+        "producer": "Pokemon",
+        "vat": "23%",
+        "unit": "szt.",
+        "availability": "Dostepny",
+    }
+
+    payload = app._build_shoper_payload(card)
+
+    assert payload["category_id"] == 44
+    assert payload["producer_id"] == 11
+    assert payload["tax_id"] == 33
+    assert payload["unit_id"] == 55
+    assert payload["availability_id"] == 3
+    assert client.get.call_count == 5
+    for endpoint in ("categories", "producers", "taxes", "units", "availabilities"):
+        assert any(call.args[0] == endpoint for call in client.get.call_args_list)
+
+    cache = app._shoper_taxonomy_cache
+    assert cache["category"]["by_name"]["Karty"] == 44
+    assert cache["availability"]["aliases"]["3"] == 3
+
+
+def test_build_shoper_payload_missing_required_taxonomy_raises():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    client = MagicMock()
+    client.get.return_value = {"list": [{"category_id": 1, "name": "Inna"}]}
+    app.shoper_client = client
+    app._shoper_taxonomy_cache = {}
+
+    card = {
+        "nazwa": "Sample",
+        "product_code": "PKM-TEST",
+        "category": "Nieznana",
+    }
+
+    with pytest.raises(RuntimeError) as excinfo:
+        app._build_shoper_payload(card)
+
+    message = str(excinfo.value)
+    assert "kategorii" in message
+    assert "Nieznana" in message
