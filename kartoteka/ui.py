@@ -2460,6 +2460,7 @@ class CardEditorApp:
         self.current_image_path = ""
         self.current_analysis_thread = None
         self.current_location = ""
+        self.summary_frame: ctk.CTkFrame | None = None
         self.show_loading_screen()
         self.root.after(0, self.startup_tasks)
 
@@ -7243,7 +7244,7 @@ class CardEditorApp:
             self.button_frame.grid_columnconfigure(col, weight=1)
 
         button_specs = [
-            ("Zakończ i zapisz", self.export_csv, SAVE_BUTTON_COLOR),
+            ("Zakończ i zapisz", self.show_session_summary, SAVE_BUTTON_COLOR),
             ("Powrót", self.back_to_welcome, NAV_BUTTON_COLOR),
             ("\u23ee Poprzednia", self.previous_card, NAV_BUTTON_COLOR),
             ("Nast\u0119pna \u23ed", self.next_card, NAV_BUTTON_COLOR),
@@ -8871,7 +8872,7 @@ class CardEditorApp:
                 except tk.TclError:
                     pass
             messagebox.showinfo("Koniec", "Wszystkie karty zostały zapisane.")
-            self.export_csv()
+            self.show_session_summary()
             return
 
         total = len(self.cards) or 1
@@ -10927,9 +10928,181 @@ class CardEditorApp:
         """Load a CSV file and merge duplicate rows."""
         csv_utils.load_csv_data(self)
 
-    def export_csv(self):
+    def show_session_summary(self):
+        """Display a summary of the cards processed in the current session."""
+
         self.in_scan = False
-        csv_utils.export_csv(self, csv_utils.STORE_EXPORT_CSV)
+
+        try:
+            if getattr(self, "cards", None) and 0 <= getattr(self, "index", 0) < len(self.cards):
+                self.save_current_data()
+        except storage.NoFreeLocationError:
+            try:
+                messagebox.showerror("Błąd", "Brak wolnych miejsc w magazynie")
+            except tk.TclError:
+                pass
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to save current card before summary")
+
+        data_source: list[Mapping[str, Any]] = []
+        if isinstance(self.session_entries, list) and any(
+            isinstance(row, Mapping) for row in self.session_entries
+        ):
+            data_source = [row for row in self.session_entries if isinstance(row, Mapping)]
+        elif isinstance(self.output_data, list):
+            data_source = [row for row in self.output_data if isinstance(row, Mapping)]
+
+        def _has_basic_fields(row: Mapping[str, Any]) -> bool:
+            for key in ("nazwa", "product_code", "cena", "warehouse_code"):
+                value = str(row.get(key, "") or "").strip()
+                if value:
+                    return True
+            return False
+
+        filtered_rows = [row for row in data_source if _has_basic_fields(row)]
+
+        if getattr(self, "summary_frame", None) is not None:
+            try:
+                if self.summary_frame.winfo_exists():
+                    self.summary_frame.destroy()
+            except tk.TclError:
+                pass
+            self.summary_frame = None
+
+        if getattr(self, "frame", None) is not None:
+            try:
+                self.frame.pack_forget()
+            except tk.TclError:
+                pass
+
+        self.summary_frame = ctk.CTkFrame(self.root, fg_color=BG_COLOR)
+        self.summary_frame.pack(expand=True, fill="both", padx=20, pady=20)
+
+        ctk.CTkLabel(
+            self.summary_frame,
+            text="Podsumowanie sesji",
+            font=("Segoe UI", 32, "bold"),
+            text_color=TEXT_COLOR,
+        ).pack(pady=(0, 10))
+
+        ctk.CTkLabel(
+            self.summary_frame,
+            text=f"Zapisane karty: {len(filtered_rows)}",
+            font=("Segoe UI", 20),
+            text_color=TEXT_COLOR,
+        ).pack()
+
+        table_container = ctk.CTkScrollableFrame(
+            self.summary_frame,
+            fg_color=LIGHT_BG_COLOR,
+        )
+        table_container.pack(expand=True, fill="both", pady=(20, 10))
+
+        headers = ["Nazwa", "Kod produktu", "Cena", "Kod magazynowy"]
+        for col, header in enumerate(headers):
+            table_container.grid_columnconfigure(col, weight=1)
+            ctk.CTkLabel(
+                table_container,
+                text=header,
+                font=("Segoe UI", 18, "bold"),
+                text_color=TEXT_COLOR,
+            ).grid(row=0, column=col, sticky="ew", padx=8, pady=(4, 6))
+
+        def _format_value(row: Mapping[str, Any], keys: tuple[str, ...]) -> str:
+            for key in keys:
+                value = row.get(key)
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if text:
+                    return text
+            return "-"
+
+        if filtered_rows:
+            for r_index, row in enumerate(filtered_rows, start=1):
+                values = (
+                    _format_value(row, ("nazwa", "name")),
+                    _format_value(row, ("product_code", "code", "producer_code")),
+                    _format_value(row, ("cena", "price")),
+                    _format_value(
+                        row,
+                        (
+                            "warehouse_code",
+                            "kod_magazynowy",
+                            "location",
+                        ),
+                    ),
+                )
+                for col, value in enumerate(values):
+                    ctk.CTkLabel(
+                        table_container,
+                        text=value,
+                        font=("Segoe UI", 16),
+                        text_color=TEXT_COLOR,
+                        anchor="w",
+                        justify="left",
+                    ).grid(row=r_index, column=col, sticky="ew", padx=8, pady=4)
+        else:
+            ctk.CTkLabel(
+                table_container,
+                text="Brak zapisanych kart do wyświetlenia.",
+                font=("Segoe UI", 18),
+                text_color=TEXT_COLOR,
+            ).grid(row=1, column=0, columnspan=4, pady=20)
+
+        button_frame = ctk.CTkFrame(self.summary_frame, fg_color="transparent")
+        button_frame.pack(pady=(10, 0))
+
+        def _export_session():
+            try:
+                csv_utils.export_csv(self, csv_utils.STORE_EXPORT_CSV)
+            except Exception:
+                logger.exception("Failed to export CSV from summary")
+                try:
+                    messagebox.showerror("Błąd", "Nie udało się zapisać pliku CSV.")
+                except tk.TclError:
+                    pass
+            else:
+                try:
+                    messagebox.showinfo("Sukces", "Zapisano dane do pliku CSV.")
+                except tk.TclError:
+                    pass
+
+        export_btn = self.create_button(
+            button_frame,
+            text="Zapisz do CSV",
+            command=_export_session,
+            fg_color=SAVE_BUTTON_COLOR,
+        )
+        export_btn.grid(row=0, column=0, padx=10)
+
+        return_btn = self.create_button(
+            button_frame,
+            text="Wróć do edycji",
+            command=self.close_session_summary,
+            fg_color=NAV_BUTTON_COLOR,
+        )
+        return_btn.grid(row=0, column=1, padx=10)
+
+    def close_session_summary(self):
+        """Hide the session summary and return to the editor view."""
+
+        if getattr(self, "summary_frame", None) is not None:
+            try:
+                if self.summary_frame.winfo_exists():
+                    self.summary_frame.destroy()
+            except tk.TclError:
+                pass
+            self.summary_frame = None
+
+        if getattr(self, "frame", None) is not None:
+            try:
+                self.frame.pack(expand=True, fill="both", padx=10, pady=10)
+            except tk.TclError:
+                pass
+
+    def export_csv(self):  # pragma: no cover - backward compatibility
+        self.show_session_summary()
 
     def open_config_dialog(self):
         """Display a dialog for editing Shoper API configuration."""
