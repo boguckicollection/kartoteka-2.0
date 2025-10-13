@@ -5,10 +5,20 @@ from unittest.mock import MagicMock
 from pathlib import Path
 import sys
 
+import requests
+
+sys.path.append(str(Path(__file__).resolve().parent))
 sys.modules.setdefault("customtkinter", MagicMock())
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import kartoteka.csv_utils as csv_utils
+import kartoteka.ui as ui
+from tests.ctk_mocks import (
+    DummyCTkButton,
+    DummyCTkFrame,
+    DummyCTkLabel,
+    DummyCTkScrollableFrame,
+)
 
 
 def _reload_csv_utils(monkeypatch, tmp_path):
@@ -144,3 +154,155 @@ def test_export_appends_warehouse(tmp_path, monkeypatch):
         assert row["image"] == "img.jpg"
         assert row["variant"] == "common"
         assert row.get("sold", "") == ""
+
+
+def test_session_summary_send_button_handles_errors(tmp_path, monkeypatch):
+    module = _reload_csv_utils(monkeypatch, tmp_path)
+    monkeypatch.setattr(ui, "csv_utils", module)
+
+    append_calls: list[list[dict[str, str]]] = []
+
+    def fake_append(app, path=module.WAREHOUSE_CSV, exported_rows=None, **kwargs):
+        rows = [dict(row) for row in exported_rows or []]
+        append_calls.append(rows)
+
+    monkeypatch.setattr(ui.csv_utils, "append_warehouse_csv", fake_append)
+    saved_cache: list[list[dict[str, str]]] = []
+    monkeypatch.setattr(
+        ui.csv_utils,
+        "save_store_cache",
+        lambda rows: saved_cache.append([dict(row) for row in rows]),
+    )
+
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        ui.messagebox,
+        "showinfo",
+        lambda title, message: messages.append(("info", message)),
+    )
+    monkeypatch.setattr(
+        ui.messagebox,
+        "showwarning",
+        lambda title, message: messages.append(("warning", message)),
+    )
+    monkeypatch.setattr(
+        ui.messagebox,
+        "showerror",
+        lambda title, message: messages.append(("error", message)),
+    )
+
+    monkeypatch.setattr(ui.ctk, "CTkFrame", DummyCTkFrame)
+    monkeypatch.setattr(ui.ctk, "CTkScrollableFrame", DummyCTkScrollableFrame)
+
+    created_labels: list[DummyCTkLabel] = []
+
+    class RecordingLabel(DummyCTkLabel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created_labels.append(self)
+
+    monkeypatch.setattr(ui.ctk, "CTkLabel", RecordingLabel)
+    monkeypatch.setattr(ui.ctk, "CTkButton", DummyCTkButton)
+
+    class DummyShoperClient:
+        def __init__(self):
+            self.calls: list[dict[str, str]] = []
+
+        def add_product(self, payload):
+            self.calls.append(payload)
+            return {"product_id": len(self.calls)}
+
+    class DummyApp:
+        def __init__(self):
+            self.session_entries = [
+                {
+                    "nazwa": "Pikachu",
+                    "numer": "1",
+                    "set": "Base",
+                    "product_code": "PC1",
+                    "cena": "10",
+                    "category": "Karty Pokémon > Era1 > Base",
+                    "producer": "Pokemon",
+                    "short_description": "s",
+                    "description": "d",
+                    "image1": "img1.jpg",
+                    "warehouse_code": "K1R1P1",
+                },
+                {
+                    "nazwa": "Eevee",
+                    "numer": "2",
+                    "set": "Jungle",
+                    "product_code": "PC2",
+                    "cena": "5",
+                    "category": "Karty Pokémon > Era1 > Jungle",
+                    "producer": "Pokemon",
+                    "short_description": "s",
+                    "description": "d",
+                    "image1": "img2.jpg",
+                    "warehouse_code": "K1R1P2",
+                },
+            ]
+            self.output_data = list(self.session_entries)
+            self.cards: list[str] = []
+            self.index = 0
+            self.store_data: dict[str, dict[str, str]] = {}
+            self._latest_export_rows: list[dict[str, str]] = []
+            self._summary_warehouse_written = False
+            self.frame = SimpleNamespace(
+                winfo_exists=lambda: False,
+                pack_forget=lambda *a, **k: None,
+                pack=lambda *a, **k: None,
+            )
+            self.summary_frame = None
+            self.root = SimpleNamespace(cget=lambda key: "#000000")
+            self.in_scan = True
+            self.buttons = {}
+            self.shoper_client = DummyShoperClient()
+            self.sent_rows: list[dict[str, str]] = []
+
+        def save_current_data(self):
+            self.save_called = True
+
+        def back_to_welcome(self):
+            self.back_called = True
+
+        def create_button(self, master=None, **kwargs):
+            button = DummyCTkButton(master, **kwargs)
+            text = kwargs.get("text")
+            if text:
+                self.buttons[text] = kwargs.get("command")
+            return button
+
+        def close_session_summary(self):
+            self.closed = True
+
+        def _send_card_to_shoper(self, card):
+            self.sent_rows.append(dict(card))
+            response = self.shoper_client.add_product(card)
+            if card.get("product_code") == "PC2":
+                raise requests.RequestException("awaria")
+            return response
+
+    app = DummyApp()
+
+    ui.CardEditorApp.show_session_summary(app)
+
+    assert len(append_calls) == 1
+    exported = append_calls[0]
+    assert {row["product_code"] for row in exported} == {"PC1", "PC2"}
+    assert saved_cache and len(saved_cache[0]) == len(exported)
+
+    data_labels = [lbl for lbl in created_labels if lbl.font == ("Segoe UI", 16)]
+    assert len(data_labels) == len(app.session_entries) * 4
+    assert {"Pikachu", "Eevee"}.issubset({lbl.text for lbl in data_labels})
+
+    send_cmd = app.buttons["Wyślij przez API"]
+    send_cmd()
+
+    assert len(app.sent_rows) == 2
+    assert len(app.shoper_client.calls) == 2
+
+    warning_messages = [text for kind, text in messages if kind == "warning"]
+    assert warning_messages
+    assert "PC1" in warning_messages[0]
+    assert "PC2: awaria" in warning_messages[0]

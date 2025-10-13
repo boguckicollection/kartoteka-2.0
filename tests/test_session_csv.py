@@ -85,6 +85,10 @@ def test_save_current_updates_session_entries():
     assert saved["vat"] == "23%"
     assert saved["seo_title"] == "Charizard 4 Base"
     assert saved["delivery"] == "3 dni"
+    assert dummy.output_data[0] is not None
+    assert dummy.output_data[0]["product_code"] == "PKM-BAS-4C"
+    assert dummy.output_data[0]["warehouse_code"] == "K1R1P1"
+    assert dummy.output_data[0]["name"] == "Charizard"
 
 
 def test_export_prefers_session_entries(tmp_path, monkeypatch):
