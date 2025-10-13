@@ -69,9 +69,36 @@ class ShoperClient:
             try:
                 resp.raise_for_status()
             except requests.HTTPError as exc:
-                if exc.response is not None and exc.response.status_code == 404:
+                response = exc.response
+                if response is not None and response.status_code == 404:
                     return {}
-                raise RuntimeError(f"API request failed: {exc}") from exc
+
+                error_message = "API request failed"
+                if response is not None:
+                    error_message = f"API request failed ({response.status_code})"
+
+                    detail: str | None = None
+                    content_type = response.headers.get("Content-Type", "")
+                    if "json" in content_type:
+                        try:
+                            payload = response.json()
+                        except ValueError:
+                            payload = None
+                        if isinstance(payload, dict):
+                            detail = payload.get("error") or payload.get("message")
+                            if not detail:
+                                detail = json.dumps(payload, ensure_ascii=False)
+                        elif isinstance(payload, list):
+                            detail = json.dumps(payload, ensure_ascii=False)
+                    if not detail:
+                        text = response.text.strip()
+                        if text:
+                            detail = text
+                    if detail:
+                        detail = detail[:2000]
+                        error_message = f"{error_message}: {detail}"
+
+                raise RuntimeError(error_message) from exc
 
             logger.info(
                 "Shoper API %s %s succeeded with status %s",
