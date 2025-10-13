@@ -4678,26 +4678,49 @@ class CardEditorApp:
             name_parts.append(card["numer"])
         name = " ".join(part for part in name_parts if part)
 
+        product_code = card.get("product_code")
+        if isinstance(product_code, str):
+            product_code = product_code.strip()
+
+        def _coerce_float(value: Any, *, default: float = 0.0) -> float:
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                raw = value.replace(",", ".").strip()
+                if not raw:
+                    return default
+                try:
+                    return float(raw)
+                except ValueError:
+                    return default
+            return default
+
+        def _coerce_int(value: Any, *, default: int = 0) -> int:
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, (int, float)):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return default
+            if isinstance(value, str):
+                raw = value.strip()
+                if not raw:
+                    return default
+                try:
+                    return int(float(raw))
+                except ValueError:
+                    return default
+            return default
+
         payload = {
-            "product_code": card.get("product_code"),
-            "active": card.get("active", 1),
-            "name": name,
-            "price": card.get("cena", 0),
-            "vat": card.get("vat", "23%"),
-            "unit": card.get("unit", "szt."),
-            "category": card.get("category"),
-            "producer": card.get("producer"),
-            "other_price": card.get("other_price", ""),
-            "weight": card.get("weight", 0.01),
-            "priority": card.get("priority", 0),
-            "short_description": card.get("short_description", ""),
-            "description": card.get("description", ""),
-            "availability": card.get("availability", 1),
-            "delivery": card.get("delivery"),
-            "views": card.get("views", ""),
-            "rank": card.get("rank", ""),
-            "rank_votes": card.get("rank_votes", ""),
-            "warehouse_code": card.get("warehouse_code", ""),
+            "product_code": product_code,
+            "active": _coerce_int(card.get("active", 1), default=1),
+            "name": name or (product_code or ""),
+            "price": _coerce_float(card.get("cena", card.get("price")), default=0.0),
+            "vat": (card.get("vat") or "23%").strip(),
+            "unit": (card.get("unit") or "szt.").strip(),
+            "availability": _coerce_int(card.get("availability", 1), default=1),
         }
 
         def _has_value(value: Any) -> bool:
@@ -4709,18 +4732,48 @@ class CardEditorApp:
                 return bool(value)
             return True
 
+        priority = card.get("priority")
+        if _has_value(priority):
+            payload["priority"] = _coerce_int(priority)
+
+        weight = card.get("weight")
+        weight_value = _coerce_float(weight, default=0.01)
+        if weight_value:
+            payload["weight"] = weight_value
+
+        for field in ("category", "producer", "delivery"):
+            value = card.get(field)
+            if _has_value(value):
+                payload[field] = value.strip() if isinstance(value, str) else value
+
+        for field in ("short_description", "description"):
+            value = card.get(field)
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped:
+                    payload[field] = stripped
+
+        other_price = card.get("other_price")
+        if _has_value(other_price):
+            payload["other_price"] = other_price
+
+        warehouse_code = card.get("warehouse_code")
+        if isinstance(warehouse_code, str):
+            warehouse_code = warehouse_code.strip()
+        if _has_value(warehouse_code):
+            payload["warehouse_code"] = warehouse_code
+
         stock_value = card.get("ilość")
         if stock_value in (None, ""):
             stock_value = card.get("stock")
         if stock_value in (None, ""):
             stock_value = 1
-        stock_block: dict[str, Any] = {"stock": stock_value}
+        stock_block: dict[str, Any] = {"stock": _coerce_int(stock_value, default=1)}
         warnlevel = card.get("stock_warnlevel")
         if _has_value(warnlevel):
-            try:
-                stock_block["warnlevel"] = int(warnlevel)
-            except (TypeError, ValueError):
-                pass
+            coerced_warn = _coerce_int(warnlevel)
+            if coerced_warn:
+                stock_block["warnlevel"] = coerced_warn
         if stock_block:
             payload["stock"] = stock_block
 
@@ -4768,8 +4821,21 @@ class CardEditorApp:
             if dims:
                 payload["dimensions"] = dims
 
-        if card.get("image1"):
-            payload["images"] = card["image1"]
+        image_value = card.get("image1")
+        if isinstance(image_value, str):
+            stripped = image_value.strip()
+            if stripped and urlparse(stripped).scheme in ("http", "https"):
+                payload["images"] = stripped
+        elif isinstance(image_value, (list, tuple, set)):
+            cleaned_images = []
+            for item in image_value:
+                if not isinstance(item, str):
+                    continue
+                candidate = item.strip()
+                if candidate and urlparse(candidate).scheme in ("http", "https"):
+                    cleaned_images.append(candidate)
+            if cleaned_images:
+                payload["images"] = cleaned_images
         return payload
 
     def _extract_order_products(self, order: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
