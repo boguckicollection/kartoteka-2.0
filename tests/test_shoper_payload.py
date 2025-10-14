@@ -166,6 +166,31 @@ def test_build_shoper_payload_resolves_category_path_segments():
     assert payload["category_id"] == 128
 
 
+def test_build_shoper_payload_resolves_numeric_prefix_taxonomy_alias():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app.shoper_client = MagicMock()
+    app._shoper_taxonomy_cache = {
+        "category": {
+            "by_name": {"Paradox Rift": 57},
+            "aliases": {"57": 57, "paradox rift": 57},
+        },
+        "producer": {"by_name": {}},
+        "tax": {"by_name": {}},
+        "unit": {"by_name": {}},
+        "availability": {"by_name": {}},
+    }
+
+    card = {
+        "nazwa": "Card",
+        "product_code": "PKM-ALIAS",
+        "category": "57 Paradox Rift",
+    }
+
+    payload = app._build_shoper_payload(card)
+
+    assert payload["category_id"] == 57
+
+
 def test_build_shoper_payload_accepts_dict_taxonomy_values():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
     app.shoper_client = MagicMock()
