@@ -115,6 +115,30 @@ LANGUAGE_ATTRIBUTE_GROUP_ID = 14
 LANGUAGE_DEFAULT_CODE = "ENG"
 DEFAULT_TRANSLATION_LOCALE = "pl_PL"
 
+# Commonly observed Shoper language identifiers. The API is queried when
+# possible, but the fallback ensures unit tests – and offline usage – still
+# produce valid payloads for the default locales we handle.
+HARDCODED_SHOPER_LANGUAGE_IDS: Mapping[str, int] = {
+    "pl_PL": 1,
+    "pl": 1,
+    "en_GB": 2,
+    "en_US": 2,
+    "en": 2,
+}
+
+
+def _normalize_locale_code(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    text = text.replace("-", "_")
+    if "_" in text:
+        lang_part, country_part = text.split("_", 1)
+        return f"{lang_part.lower()}_{country_part.upper()}"
+    return text.lower()
+
 
 def _normalize_language_label(value: Any) -> Optional[str]:
     if value is None:
@@ -4672,6 +4696,99 @@ class CardEditorApp:
             self.auction_frame.after(1000, self._update_auction_status)
         return data
 
+    def _ensure_shoper_languages_map(self) -> Mapping[str, Mapping[str, int]]:
+        """Return cached Shoper language identifiers keyed by locale."""
+
+        cache = getattr(self, "_shoper_languages_cache", None)
+        if isinstance(cache, Mapping):
+            by_code = cache.get("by_code")
+            by_id = cache.get("by_id")
+            if isinstance(by_code, Mapping) and isinstance(by_id, Mapping):
+                return cache
+
+        by_code: dict[str, int] = {}
+        by_id: dict[int, str] = {}
+
+        def _register(code: Any, language_id: Any) -> None:
+            normalized_code = _normalize_locale_code(code)
+            if not normalized_code:
+                return
+            try:
+                if isinstance(language_id, bool):
+                    return
+                if isinstance(language_id, (int, float)):
+                    coerced_id = int(language_id)
+                elif isinstance(language_id, str):
+                    stripped = language_id.strip()
+                    if not stripped:
+                        return
+                    coerced_id = int(float(stripped))
+                else:
+                    return
+            except (TypeError, ValueError):
+                return
+
+            by_code[normalized_code] = coerced_id
+            by_id.setdefault(coerced_id, normalized_code)
+
+        overrides = getattr(self, "shoper_language_overrides", None)
+        if isinstance(overrides, Mapping):
+            for code, language_id in overrides.items():
+                _register(code, language_id)
+
+        for code, language_id in HARDCODED_SHOPER_LANGUAGE_IDS.items():
+            _register(code, language_id)
+
+        client = getattr(self, "shoper_client", None)
+        if client is not None and not _is_mock_object(client):
+            try:
+                response = client.get("languages")
+            except Exception as exc:  # pragma: no cover - network dependent
+                logger.warning("Failed to fetch Shoper languages: %s", exc)
+            else:
+                def _iter_language_entries(payload: Any) -> Iterable[Mapping[str, Any]]:
+                    if isinstance(payload, Mapping):
+                        for key in ("list", "items", "data", "results", "languages"):
+                            container = payload.get(key)
+                            if isinstance(container, Mapping):
+                                yield from _iter_language_entries(container)
+                            elif isinstance(container, (list, tuple, set)):
+                                for entry in container:
+                                    if isinstance(entry, Mapping):
+                                        yield entry
+                        return
+                    if isinstance(payload, (list, tuple, set)):
+                        for entry in payload:
+                            if isinstance(entry, Mapping):
+                                yield entry
+
+                for entry in _iter_language_entries(response):
+                    language_id = (
+                        entry.get("language_id")
+                        or entry.get("id")
+                        or entry.get("languageId")
+                    )
+                    if isinstance(entry.get("language"), Mapping):
+                        nested = entry.get("language")
+                        language_id = (
+                            language_id
+                            or nested.get("language_id")
+                            or nested.get("id")
+                        )
+                        if not entry.get("code"):
+                            entry = {**entry, **nested}
+
+                    code = (
+                        entry.get("code")
+                        or entry.get("language_code")
+                        or entry.get("lang_code")
+                        or entry.get("symbol")
+                    )
+                    _register(code, language_id)
+
+        self._shoper_languages_cache = {"by_code": by_code, "by_id": by_id}
+        return self._shoper_languages_cache
+
     def _ensure_shoper_taxonomy_cache(self) -> Mapping[str, Any]:
         """Ensure taxonomy cache contains data required to build payloads."""
 
@@ -5101,32 +5218,51 @@ class CardEditorApp:
             "name": name or (product_code or ""),
         }
 
-        def _store_translation(field: str, value: Any, *, overwrite: bool = False) -> None:
+        def _store_translation(
+            entry: dict[str, Any], field: str, value: Any, *, overwrite: bool = False
+        ) -> None:
             if isinstance(value, str):
                 trimmed = value.strip()
                 if not trimmed:
                     return
-                existing = translation_entry.get(field)
+                existing = entry.get(field)
                 if overwrite or not isinstance(existing, str) or not existing.strip():
-                    translation_entry[field] = trimmed
+                    entry[field] = trimmed
 
-        def _normalize_locale_code(value: Any) -> Optional[str]:
-            if value is None:
-                return None
-            text = str(value).strip()
-            if not text:
-                return None
-            text = text.replace("-", "_")
-            if "_" in text:
-                lang_part, country_part = text.split("_", 1)
-                return f"{lang_part.lower()}_{country_part.upper()}"
-            return text.lower()
+        translations_data = card.get("translations")
+        translation_candidates: list[
+            tuple[Optional[str], Optional[int], Mapping[str, Any]]
+        ] = []
 
-        def _match_translation_locale(candidate: Mapping[str, Any]) -> bool:
+        def _collect_translation_candidate(
+            locale_hint: Any, data: Mapping[str, Any]
+        ) -> None:
+            normalized_hint = _normalize_locale_code(locale_hint)
+            language_id: Optional[int] = None
+            for key in ("language_id", "lang_id"):
+                language_id = _coerce_optional_int(data.get(key))
+                if language_id is not None:
+                    break
+            language_info = data.get("language")
+            if language_id is None and isinstance(language_info, Mapping):
+                for key in ("language_id", "id"):
+                    language_id = _coerce_optional_int(language_info.get(key))
+                    if language_id is not None:
+                        break
+                if normalized_hint is None:
+                    normalized_hint = _normalize_locale_code(
+                        language_info.get("code")
+                        or language_info.get("language_code")
+                        or language_info.get("lang_code")
+                        or language_info.get("lang")
+                        or language_info.get("locale")
+                    )
+
+            explicit_locale: Optional[str] = None
             for key in ("language_code", "lang_code", "lang", "language", "locale", "code"):
-                if key not in candidate:
+                if key not in data:
                     continue
-                value = candidate.get(key)
+                value = data.get(key)
                 if isinstance(value, Mapping):
                     value = (
                         value.get("code")
@@ -5135,39 +5271,58 @@ class CardEditorApp:
                         or value.get("lang")
                         or value.get("locale")
                     )
-                normalized = _normalize_locale_code(value)
-                if normalized and normalized == translation_locale:
-                    return True
-            return False
+                explicit_locale = _normalize_locale_code(value)
+                if explicit_locale:
+                    break
 
-        def _extract_translation_from_mapping(data: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
-            direct = data.get(translation_locale)
-            if isinstance(direct, Mapping):
-                return direct
-
-            candidates: Iterable[Any]
-            list_value = data.get("list")
-            if "list" in data and isinstance(list_value, Iterable) and not isinstance(list_value, (str, bytes, bytearray)):
-                candidates = list_value
-            else:
-                candidates = data.values()
-
-            for item in candidates:
-                if isinstance(item, Mapping) and _match_translation_locale(item):
-                    return item
-            return None
-
-        translations_data = card.get("translations")
-        translation_source: Optional[Mapping[str, Any]] = None
+            translation_candidates.append((explicit_locale or normalized_hint, language_id, data))
 
         if isinstance(translations_data, Mapping):
-            translation_source = _extract_translation_from_mapping(translations_data)
-        elif isinstance(translations_data, Iterable) and not isinstance(translations_data, (str, bytes, bytearray)):
+            for key, value in translations_data.items():
+                if key == "list" and isinstance(value, Iterable) and not isinstance(
+                    value, (str, bytes, bytearray)
+                ):
+                    for element in value:
+                        if isinstance(element, Mapping):
+                            _collect_translation_candidate(None, element)
+                elif isinstance(value, Mapping):
+                    _collect_translation_candidate(key, value)
+        elif isinstance(translations_data, Iterable) and not isinstance(
+            translations_data, (str, bytes, bytearray)
+        ):
             for element in translations_data:
                 if isinstance(element, Mapping):
-                    if _match_translation_locale(element):
-                        translation_source = element
-                        break
+                    _collect_translation_candidate(None, element)
+
+        languages_map = self._ensure_shoper_languages_map()
+        language_id_by_code = (
+            languages_map.get("by_code") if isinstance(languages_map, Mapping) else {}
+        )
+        if not isinstance(language_id_by_code, Mapping):
+            language_id_by_code = {}
+        language_code_by_id = (
+            languages_map.get("by_id") if isinstance(languages_map, Mapping) else {}
+        )
+        if not isinstance(language_code_by_id, Mapping):
+            language_code_by_id = {}
+
+        translations_by_locale: dict[str, dict[str, Any]] = {
+            translation_locale: translation_entry
+        }
+        locale_language_ids: dict[str, Optional[int]] = {}
+
+        translation_source: Optional[Mapping[str, Any]] = None
+        for locale_candidate, language_id, data in translation_candidates:
+            resolved_locale = locale_candidate or (
+                language_code_by_id.get(language_id)
+                if language_id is not None
+                else None
+            )
+            if resolved_locale == translation_locale:
+                translation_source = data
+                if language_id is not None:
+                    locale_language_ids[translation_locale] = language_id
+                break
 
         if translation_source:
             for field in (
@@ -5178,22 +5333,75 @@ class CardEditorApp:
                 "seo_keywords",
                 "permalink",
             ):
-                _store_translation(field, translation_source.get(field))
+                _store_translation(translation_entry, field, translation_source.get(field))
 
-        _store_translation("short_description", card.get("short_description"))
-        _store_translation("description", card.get("description"))
-        _store_translation("seo_title", card.get("seo_title"))
-        _store_translation("seo_description", card.get("seo_description"))
-        _store_translation("seo_keywords", card.get("seo_keywords"))
-        _store_translation("permalink", card.get("permalink"))
+        for field in (
+            "short_description",
+            "description",
+            "seo_title",
+            "seo_description",
+            "seo_keywords",
+            "permalink",
+        ):
+            _store_translation(translation_entry, field, card.get(field))
 
-        translations = {translation_locale: translation_entry}
+        for locale_candidate, language_id, data in translation_candidates:
+            resolved_locale = locale_candidate or (
+                language_code_by_id.get(language_id)
+                if language_id is not None
+                else None
+            )
+            if not resolved_locale:
+                continue
+            entry = translations_by_locale.get(resolved_locale)
+            if entry is None:
+                entry = {"name": name or (product_code or "")}
+                translations_by_locale[resolved_locale] = entry
+            if data is translation_source and resolved_locale == translation_locale:
+                continue
+            for field in (
+                "name",
+                "short_description",
+                "description",
+                "seo_title",
+                "seo_description",
+                "seo_keywords",
+                "permalink",
+            ):
+                overwrite = field == "name" and resolved_locale != translation_locale
+                _store_translation(entry, field, data.get(field), overwrite=overwrite)
+            if language_id is not None:
+                locale_language_ids[resolved_locale] = language_id
+            elif resolved_locale not in locale_language_ids:
+                locale_language_ids[resolved_locale] = language_id_by_code.get(
+                    resolved_locale
+                )
+
+        locale_language_ids.setdefault(
+            translation_locale, language_id_by_code.get(translation_locale)
+        )
+
+        translations_payload: list[dict[str, Any]] = []
+        for locale_key, entry in translations_by_locale.items():
+            language_id = locale_language_ids.get(locale_key)
+            if language_id is None:
+                language_id = language_id_by_code.get(locale_key)
+            if language_id is None and "_" not in locale_key:
+                expanded_locale = f"{locale_key.lower()}_{locale_key.upper()}"
+                language_id = language_id_by_code.get(expanded_locale)
+            if language_id is None:
+                continue
+            normalized_entry = dict(entry)
+            normalized_entry.setdefault("name", name or (product_code or ""))
+            normalized_entry["language_id"] = int(language_id)
+            normalized_entry["language_code"] = locale_key
+            translations_payload.append(normalized_entry)
 
         payload = {
             "product_code": product_code,
             "active": _coerce_int(card.get("active", 1), default=1),
             "price": _coerce_float(card.get("cena", card.get("price")), default=0.0),
-            "translations": translations,
+            "translations": translations_payload,
         }
 
         def _has_value(value: Any) -> bool:
