@@ -60,6 +60,7 @@ else:  # pragma: no cover - optional dependency
 from shoper_client import ShoperClient
 from webdav_client import WebDAVClient
 from . import csv_utils, storage, stats_utils
+from .inventory_service import WarehouseInventoryService
 import threading
 from urllib.parse import urlencode, urlparse
 import io
@@ -477,6 +478,7 @@ from fingerprint import compute_fingerprint
 from tooltip import Tooltip
 from .image_utils import load_rgba_image
 from .storage_config import (
+    BOX_CAPACITY,
     BOX_COUNT,
     BOX_COLUMN_CAPACITY,
     SPECIAL_BOX_CAPACITY,
@@ -945,11 +947,11 @@ def draw_box_usage(canvas: "tk.Canvas", box_num: int, occupancy: dict[int, int])
 
     box_w = BOX_THUMB_SIZE
     box_h = BOX_THUMB_SIZE
-    columns = storage.BOX_COLUMNS.get(box_num, STANDARD_BOX_COLUMNS)
-    total_capacity = storage.BOX_CAPACITY.get(
-        box_num, columns * storage.BOX_COLUMN_CAPACITY
+    columns = BOX_COLUMNS.get(box_num, STANDARD_BOX_COLUMNS)
+    total_capacity = BOX_CAPACITY.get(
+        box_num, columns * BOX_COLUMN_CAPACITY
     )
-    col_capacity = total_capacity / columns if columns else storage.BOX_COLUMN_CAPACITY
+    col_capacity = total_capacity / columns if columns else BOX_COLUMN_CAPACITY
 
     # track rectangles for each column so we can update their coordinates/colors
     overlay_ids: dict[int, int] = getattr(canvas, "overlay_ids", {})
@@ -2477,7 +2479,9 @@ class CardEditorApp:
         self.mag_progressbars: dict[tuple[int, int], ctk.CTkProgressBar] = {}
         self.mag_percent_labels: dict[tuple[int, int], ctk.CTkLabel] = {}
         self.mag_labels: list[ctk.CTkLabel] = []
-        self._mag_csv_mtime: Optional[float] = None
+        self.inventory_service = WarehouseInventoryService.create_default()
+        self._mag_inventory_version: Any | None = None
+        self._mag_snapshot = None
         self.log_widget = None
         self.cheat_frame = None
         self.set_logos = {}
@@ -6543,7 +6547,7 @@ class CardEditorApp:
             lbl.pack(anchor="w")
             self.mag_labels.append(lbl)
             for col in range(
-                1, storage.BOX_COLUMNS.get(box_num, STANDARD_BOX_COLUMNS) + 1
+                1, BOX_COLUMNS.get(box_num, STANDARD_BOX_COLUMNS) + 1
             ):
                 row_frame = ctk.CTkFrame(frame, fg_color=BG_COLOR)
                 row_frame.pack(fill="x", padx=2, pady=2)
@@ -6580,8 +6584,8 @@ class CardEditorApp:
         self.mag_card_image_labels: list[Optional[ctk.CTkLabel]] = []
 
     def reload_mag_cards(self) -> None:
-        """(Re)load warehouse card data from CSV and prepare image placeholders."""
-        csv_path = getattr(csv_utils, "WAREHOUSE_CSV", "magazyn.csv")
+        """(Re)load warehouse card data using the configured inventory service."""
+
         thumb_size = CARD_THUMB_SIZE
         placeholder_img = Image.new("RGB", (thumb_size, thumb_size), "#111111")
         self.mag_placeholder_photo = _create_image(placeholder_img)
@@ -6596,91 +6600,140 @@ class CardEditorApp:
                     destroy()
                 except Exception:
                     pass
-        self._mag_frame_pool: list[Optional[ctk.CTkFrame]] = []
+        self._mag_frame_pool = []
 
         self.mag_card_rows = []
         self.mag_card_images = []
         self.mag_card_image_labels = []
         self.mag_card_frames = []
         self._image_threads = []
-        self._mag_column_occ: dict[tuple[int, int], int] = {}
-        self._mag_image_paths: list[str] = []
-        self._mag_loaded_images: dict[int, Any] = {}
-        self._mag_loading_indices: set[int] = set()
+        self._mag_image_paths = []
+        self._mag_loaded_images = {}
+        self._mag_loading_indices = set()
 
-        if not os.path.exists(csv_path):
-            self._mag_prev_thumb = 0
-            self._mag_csv_mtime = None
-            self._mag_column_occ = {}
-            return
+        inventory_service = getattr(self, "inventory_service", None)
+        if inventory_service is None:
+            inventory_service = WarehouseInventoryService.create_default()
+            try:
+                setattr(self, "inventory_service", inventory_service)
+            except Exception:
+                pass
 
-        with open(csv_path, encoding="utf-8") as f:
-            reader = csv.DictReader(f, delimiter=";")
-            groups: dict[tuple[str, ...], list[dict]] = defaultdict(list)
-            column_occ: dict[tuple[int, int], int] = {}
-            for row in reader:
-                if not row.get("name"):
-                    logger.warning("Skipping row with missing name: %s", row)
-                    continue
-                key = (
-                    row.get("name"),
-                    row.get("number"),
-                    row.get("set"),
-                    row.get("variant") or "common",
-                    str(row.get("sold") or ""),
+        try:
+            snapshot = inventory_service.fetch_snapshot()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to fetch warehouse inventory snapshot")
+            snapshot = None
+
+        items = list(getattr(snapshot, "items", ()) or [])
+        column_occ = dict(getattr(snapshot, "column_occupancy", {}) or {})
+        version = getattr(snapshot, "version", None)
+
+        self._mag_snapshot = snapshot
+        self._mag_inventory_version = version
+        self._mag_column_occ = column_occ
+
+        groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
+
+        def _safe_int(value: Any) -> int:
+            try:
+                if isinstance(value, bool):
+                    return int(value)
+                if isinstance(value, (int, float)):
+                    return int(value)
+                if isinstance(value, str):
+                    raw = value.strip()
+                    if not raw:
+                        return 0
+                    return int(float(raw))
+            except (TypeError, ValueError):
+                return 0
+            return 0
+
+        def _normalise_item(item: Any) -> dict[str, Any]:
+            locations = [
+                {
+                    "code": loc.code,
+                    "box": loc.box,
+                    "column": loc.column,
+                    "position": loc.position,
+                }
+                for loc in getattr(item, "locations", ())
+            ]
+            warehouse_code = getattr(item, "warehouse_code", "") or ""
+            if not warehouse_code and locations:
+                warehouse_code = ";".join(
+                    dict.fromkeys(loc.get("code") for loc in locations if loc.get("code"))
                 )
-                groups[key].append(row)
+            price = getattr(item, "price", "")
+            if isinstance(price, (int, float)):
+                price = f"{price}"
+            row = {
+                "name": getattr(item, "name", ""),
+                "number": getattr(item, "number", ""),
+                "set": getattr(item, "set", ""),
+                "variant": getattr(item, "variant", "") or "common",
+                "sold": "1" if getattr(item, "sold", False) else "",
+                "price": price,
+                "image": getattr(item, "image", ""),
+                "added_at": getattr(item, "added_at", ""),
+                "warehouse_code": warehouse_code,
+                "quantity": getattr(item, "quantity", 1) or 1,
+                "_source": getattr(item, "source", ""),
+                "_raw": getattr(item, "raw", {}),
+                "_locations": locations,
+            }
+            return row
 
-                if str(row.get("sold") or "").lower() in {"1", "true", "yes"}:
-                    continue
-                codes = str(row.get("warehouse_code") or "").split(";")
-                for code in codes:
-                    code = code.strip()
-                    if not code:
-                        continue
-                    m = re.match(r"K(\d+)R(\d)P(\d+)", code)
-                    if not m:
-                        continue
-                    box = int(m.group(1))
-                    col = int(m.group(2))
-                    column_occ[(box, col)] = column_occ.get((box, col), 0) + 1
-            self._mag_column_occ = column_occ
+        for item in items:
+            row = _normalise_item(item)
+            key = (
+                row.get("name", ""),
+                row.get("number", ""),
+                row.get("set", ""),
+                row.get("variant", "") or "common",
+                row.get("sold", ""),
+            )
+            groups[key].append(row)
 
-            for rows in groups.values():
-                combined = dict(rows[0])
-                added_dates: list[datetime.date] = []
-                for r in rows:
-                    value = (r.get("added_at") or "").strip()
-                    if not value:
-                        continue
+        for rows in groups.values():
+            combined = dict(rows[0])
+            added_dates: list[datetime.date] = []
+            total_quantity = 0
+            all_locations: list[dict[str, Any]] = []
+            image_path = combined.get("image") or ""
+            for entry in rows:
+                total_quantity += _safe_int(entry.get("quantity", 1))
+                all_locations.extend(entry.get("_locations", []))
+                value = str(entry.get("added_at") or "").strip()
+                if value:
                     try:
                         added_dates.append(datetime.date.fromisoformat(value))
                     except ValueError:
                         logger.warning("Skipping invalid added_at: %s", value)
-                if added_dates:
-                    combined["added_at"] = max(added_dates).isoformat()
-                combined["image"] = next(
-                    (r.get("image") for r in rows if r.get("image")),
-                    "",
+                if not image_path and entry.get("image"):
+                    image_path = entry.get("image")
+            if added_dates:
+                combined["added_at"] = max(added_dates).isoformat()
+            combined["image"] = image_path or ""
+            combined["variant"] = combined.get("variant") or "common"
+            combined["_count"] = len(rows)
+            combined["quantity"] = max(total_quantity, combined.get("_count", 1))
+            combined["_locations"] = all_locations
+            combined["warehouse_code"] = ";".join(
+                dict.fromkeys(
+                    loc.get("code") for loc in all_locations if loc.get("code")
                 )
-                combined["variant"] = combined.get("variant") or "common"
-                codes = [
-                    r.get("warehouse_code", "") for r in rows if r.get("warehouse_code")
-                ]
-                combined["warehouse_code"] = ";".join(dict.fromkeys(codes))
-                combined["_count"] = len(rows)
-                idx = len(self.mag_card_rows)
-                self.mag_card_rows.append(combined)
-                self.mag_card_images.append(self.mag_placeholder_photo)
-                self._mag_image_paths.append(combined.get("image") or "")
-                self.mag_card_image_labels.append(None)
+            )
+
+            idx = len(self.mag_card_rows)
+            self.mag_card_rows.append(combined)
+            self.mag_card_images.append(self.mag_placeholder_photo)
+            self._mag_image_paths.append(combined.get("image") or "")
+            self.mag_card_image_labels.append(None)
 
         self._mag_frame_pool = [None] * len(self.mag_card_rows)
         self._mag_prev_thumb = 0
-        try:
-            self._mag_csv_mtime = os.path.getmtime(csv_path)
-        except OSError:
-            self._mag_csv_mtime = None
 
         def _ensure_image(index: int) -> None:
             if index < 0 or index >= len(self._mag_image_paths):
@@ -7435,29 +7488,66 @@ class CardEditorApp:
         if not getattr(self, "home_percent_labels", None):
             return
 
-        col_occ = storage.compute_column_occupancy()
+        inventory_service = getattr(self, "inventory_service", None)
+        if inventory_service is None:
+            inventory_service = WarehouseInventoryService.create_default()
+            try:
+                setattr(self, "inventory_service", inventory_service)
+            except Exception:
+                pass
+
+        try:
+            snapshot = inventory_service.get_snapshot()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to load inventory snapshot for home preview")
+            snapshot = None
+
+        column_occ: dict[int, dict[int, int]] = {}
+        if snapshot is not None:
+            for (box, column), count in snapshot.column_occupancy.items():
+                column_occ.setdefault(box, {})[column] = count
 
         for box, lbl in self.home_percent_labels.items():
-            columns = storage.BOX_COLUMNS.get(box, 4)
-            total_capacity = storage.BOX_CAPACITY.get(
-                box, columns * storage.BOX_COLUMN_CAPACITY
+            columns = BOX_COLUMNS.get(box, STANDARD_BOX_COLUMNS)
+            total_capacity = BOX_CAPACITY.get(
+                box, columns * BOX_COLUMN_CAPACITY
             )
-            box_used = sum(col_occ.get(box, {}).values())
+            box_data = column_occ.get(box, {})
+            box_used = sum(box_data.values())
             value = box_used / total_capacity if total_capacity else 0
             lbl.configure(text=f"{value * 100:.0f}%", text_color=_occupancy_color(value))
 
             canvas = self.home_box_canvases.get(box)
             if canvas is not None:
-                draw_box_usage(canvas, box, col_occ.get(box, {}))
+                draw_box_usage(canvas, box, box_data)
 
     def refresh_magazyn(self):
         """Refresh storage view and update column usage bars."""
-        csv_path = getattr(csv_utils, "WAREHOUSE_CSV", "magazyn.csv")
+        inventory_service = getattr(self, "inventory_service", None)
+        if inventory_service is None:
+            inventory_service = WarehouseInventoryService.create_default()
+            try:
+                setattr(self, "inventory_service", inventory_service)
+            except Exception:
+                pass
+
         try:
-            current_mtime = os.path.getmtime(csv_path)
-        except OSError:
-            current_mtime = None
-        if getattr(self, "_mag_csv_mtime", None) != current_mtime:
+            current_version = inventory_service.get_version()
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to obtain inventory version")
+            current_version = self._mag_inventory_version
+
+        previous_version = getattr(self, "_mag_inventory_version", None)
+        if previous_version is None:
+            legacy_version = getattr(self, "_mag_csv_mtime", None)
+            if legacy_version is not None:
+                previous_version = legacy_version
+                try:
+                    setattr(self, "_mag_inventory_version", legacy_version)
+                except Exception:
+                    pass
+
+        if previous_version != current_version:
             reload_fn = getattr(self, "reload_mag_cards", None)
             if callable(reload_fn):
                 reload_fn()
@@ -7475,11 +7565,11 @@ class CardEditorApp:
 
         for (box, col), bar in self.mag_progressbars.items():
             filled = col_occ.get((box, col), 0)
-            columns = storage.BOX_COLUMNS.get(box, 4)
-            total_capacity = storage.BOX_CAPACITY.get(
-                box, columns * storage.BOX_COLUMN_CAPACITY
+            columns = BOX_COLUMNS.get(box, STANDARD_BOX_COLUMNS)
+            total_capacity = BOX_CAPACITY.get(
+                box, columns * BOX_COLUMN_CAPACITY
             )
-            col_capacity = total_capacity / columns if columns else storage.BOX_COLUMN_CAPACITY
+            col_capacity = total_capacity / columns if columns else BOX_COLUMN_CAPACITY
             value = filled / col_capacity if col_capacity else 0
             bar.set(value)
             lbl = self.mag_percent_labels.get((box, col))
@@ -9960,7 +10050,7 @@ class CardEditorApp:
             return
 
         if box == SPECIAL_BOX_NUMBER:
-            special_columns = storage.BOX_COLUMNS.get(SPECIAL_BOX_NUMBER, 1)
+            special_columns = BOX_COLUMNS.get(SPECIAL_BOX_NUMBER, 1)
             if not (
                 1 <= column <= special_columns
                 and 1 <= pos <= BOX_COLUMN_CAPACITY
