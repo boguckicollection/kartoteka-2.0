@@ -2404,6 +2404,7 @@ class CardEditorApp:
         self.output_data = []
         self.session_entries: list[dict[str, Any] | None] = []
         self.card_counts = defaultdict(int)
+        self.shoper_language_overrides = self._load_shoper_language_overrides()
         self.card_cache = {}
         self.file_to_key = {}
         self.product_code_map = {}
@@ -4696,6 +4697,73 @@ class CardEditorApp:
             self.auction_frame.after(1000, self._update_auction_status)
         return data
 
+    def _load_shoper_language_overrides(self) -> Mapping[str, int]:
+        """Load user-provided language overrides from configuration."""
+
+        overrides: dict[str, int] = {}
+
+        def _register(code: Any, language_id: Any, *, context: str) -> None:
+            normalized_code = _normalize_locale_code(code)
+            if not normalized_code:
+                return
+            try:
+                if isinstance(language_id, bool):
+                    return
+                if isinstance(language_id, (int, float)):
+                    coerced_id = int(language_id)
+                elif isinstance(language_id, str):
+                    stripped = language_id.strip()
+                    if not stripped:
+                        return
+                    coerced_id = int(float(stripped))
+                else:
+                    return
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Nieprawidłowa wartość language_id w %s: %r", context, language_id
+                )
+                return
+
+            overrides[normalized_code] = coerced_id
+
+        env_code = os.environ.get("SHOPER_LANGUAGE_CODE")
+        env_id = os.environ.get("SHOPER_LANGUAGE_ID")
+        if env_code and env_id:
+            _register(env_code, env_id, context="zmiennych środowiskowych")
+
+        raw_overrides = os.environ.get("SHOPER_LANGUAGE_OVERRIDES")
+        if raw_overrides:
+            try:
+                parsed = json.loads(raw_overrides)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Nie udało się zdekodować SHOPER_LANGUAGE_OVERRIDES jako JSON"
+                )
+            else:
+                if isinstance(parsed, Mapping):
+                    for code, language_id in parsed.items():
+                        _register(code, language_id, context="SHOPER_LANGUAGE_OVERRIDES")
+                elif isinstance(parsed, Iterable) and not isinstance(
+                    parsed, (str, bytes, bytearray)
+                ):
+                    for entry in parsed:
+                        if not isinstance(entry, Mapping):
+                            continue
+                        code = (
+                            entry.get("code")
+                            or entry.get("language_code")
+                            or entry.get("lang_code")
+                            or entry.get("locale")
+                        )
+                        language_id = (
+                            entry.get("language_id")
+                            or entry.get("id")
+                            or entry.get("lang_id")
+                        )
+                        _register(code, language_id, context="SHOPER_LANGUAGE_OVERRIDES")
+
+        return overrides
+
     def _ensure_shoper_languages_map(self) -> Mapping[str, Mapping[str, int]]:
         """Return cached Shoper language identifiers keyed by locale."""
 
@@ -4744,7 +4812,14 @@ class CardEditorApp:
             try:
                 response = client.get("languages")
             except Exception as exc:  # pragma: no cover - network dependent
-                logger.warning("Failed to fetch Shoper languages: %s", exc)
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code == 403:
+                    logger.info(
+                        "Brak uprawnień do pobrania języków Shoper (403). "
+                        "Używam konfiguracji lokalnej i wartości domyślnych."
+                    )
+                else:
+                    logger.warning("Failed to fetch Shoper languages: %s", exc)
             else:
                 def _iter_language_entries(payload: Any) -> Iterable[Mapping[str, Any]]:
                     if isinstance(payload, Mapping):

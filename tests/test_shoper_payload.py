@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
 sys.modules.setdefault("customtkinter", MagicMock())
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -114,6 +115,53 @@ def test_build_shoper_payload_forwards_optional_fields():
     assert minimal_translations["pl_PL"]["name"] == "Sample"
     for field in ("name", "short_description", "description", "category", "producer", "unit", "vat", "availability"):
         assert field not in minimal_payload
+
+
+def test_build_shoper_payload_uses_overrides_when_languages_forbidden():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app.shoper_language_overrides = {"de_DE": 99}
+
+    class _FakeResponse:
+        status_code = 403
+
+    class _FakeClient:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def get(self, endpoint):
+            self.calls.append(endpoint)
+            error = requests.HTTPError("Forbidden")
+            error.response = _FakeResponse()
+            raise error
+
+    fake_client = _FakeClient()
+    app.shoper_client = fake_client
+    app._shoper_taxonomy_cache = {
+        "producer": {"by_name": {}},
+        "tax": {"by_name": {}},
+        "unit": {"by_name": {}},
+        "availability": {"by_name": {}},
+    }
+
+    card = {
+        "nazwa": "Karta",
+        "product_code": "PKM-DE",
+        "translation_locale": "de_DE",
+        "translations": [
+            {
+                "language_code": "de_DE",
+                "name": "Karte",
+                "short_description": "Kurzbeschreibung",
+            }
+        ],
+    }
+
+    payload = app._build_shoper_payload(card)
+
+    assert fake_client.calls == ["languages"]
+    translations = _translation_dict(payload["translations"])
+    assert translations["de_DE"]["language_id"] == 99
+    assert translations["de_DE"]["short_description"] == "Kurzbeschreibung"
 
 
 def test_build_shoper_payload_resolves_paginated_taxonomy_entries():
