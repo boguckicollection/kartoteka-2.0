@@ -12,6 +12,18 @@ import kartoteka.ui as ui  # noqa: E402
 importlib.reload(ui)
 
 
+def _translation_dict(translations):
+    mapping = {}
+    for entry in translations:
+        if not isinstance(entry, dict):
+            continue
+        code = entry.get("language_code")
+        if not code:
+            continue
+        mapping[code] = entry
+    return mapping
+
+
 def test_build_shoper_payload_forwards_optional_fields():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
     app.shoper_client = MagicMock()
@@ -62,17 +74,17 @@ def test_build_shoper_payload_forwards_optional_fields():
 
     app.shoper_client.get.assert_not_called()
 
-    assert payload["translations"] == {
-        "pl_PL": {
-            "name": "Sample 5",
-            "short_description": "short",
-            "description": "desc",
-            "seo_title": "SEO Title",
-            "seo_description": "SEO Desc",
-            "seo_keywords": "key1, key2",
-            "permalink": "sample-product",
-        }
-    }
+    translations = _translation_dict(payload["translations"])
+    assert "pl_PL" in translations
+    pl_translation = translations["pl_PL"]
+    assert pl_translation["language_id"] == 1
+    assert pl_translation["name"] == "Sample 5"
+    assert pl_translation["short_description"] == "short"
+    assert pl_translation["description"] == "desc"
+    assert pl_translation["seo_title"] == "SEO Title"
+    assert pl_translation["seo_description"] == "SEO Desc"
+    assert pl_translation["seo_keywords"] == "key1, key2"
+    assert pl_translation["permalink"] == "sample-product"
     assert payload["stock"] == {"stock": 2, "warn_level": 1}
     assert "ean" not in payload
     assert "type" not in payload
@@ -98,7 +110,8 @@ def test_build_shoper_payload_forwards_optional_fields():
     assert minimal_payload["stock"] == {"stock": 1}
     assert "ean" not in minimal_payload
     assert "dimensions" not in minimal_payload
-    assert minimal_payload["translations"] == {"pl_PL": {"name": "Sample"}}
+    minimal_translations = _translation_dict(minimal_payload["translations"])
+    assert minimal_translations["pl_PL"]["name"] == "Sample"
     for field in ("name", "short_description", "description", "category", "producer", "unit", "vat", "availability"):
         assert field not in minimal_payload
 
@@ -254,14 +267,19 @@ def test_build_shoper_payload_prefers_translation_locale_content():
 
     payload = app._build_shoper_payload(card)
 
-    translation = payload["translations"]["pl_PL"]
-    assert translation["name"] == "Sample"
-    assert translation["short_description"] == "translated short"
-    assert translation["description"] == "translated desc"
-    assert translation["seo_title"] == "translated title"
-    assert translation["seo_description"] == "translated seo desc"
-    assert translation["seo_keywords"] == "translated keywords"
-    assert translation["permalink"] == "translated-link"
+    translations = _translation_dict(payload["translations"])
+    pl_translation = translations["pl_PL"]
+    assert pl_translation["name"] == "Sample"
+    assert pl_translation["short_description"] == "translated short"
+    assert pl_translation["description"] == "translated desc"
+    assert pl_translation["seo_title"] == "translated title"
+    assert pl_translation["seo_description"] == "translated seo desc"
+    assert pl_translation["seo_keywords"] == "translated keywords"
+    assert pl_translation["permalink"] == "translated-link"
+
+    en_translation = translations["en_US"]
+    assert en_translation["language_id"] == 2
+    assert en_translation["short_description"] == "english short"
 
 
 def test_build_shoper_payload_fetches_taxonomy_when_missing():
