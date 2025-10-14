@@ -164,6 +164,21 @@ def test_build_shoper_payload_uses_overrides_when_languages_forbidden():
     assert translations["de_DE"]["short_description"] == "Kurzbeschreibung"
 
 
+def test_build_shoper_payload_raises_for_unknown_translation_locale():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app._ensure_shoper_languages_map = lambda: {"by_code": {}, "by_id": {}}
+
+    card = {
+        "nazwa": "Karta", 
+        "product_code": "PKM-NO-ID",
+        "translation_locale": "de_DE",
+        "translations": [{"language_code": "de_DE", "name": "Karte"}],
+    }
+
+    with pytest.raises(RuntimeError, match=r"SHOPER_LANGUAGE_OVERRIDES"):
+        app._build_shoper_payload(card)
+
+
 def test_build_shoper_payload_resolves_paginated_taxonomy_entries():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
     category_pages = iter(
