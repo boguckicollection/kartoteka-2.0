@@ -4971,6 +4971,12 @@ class CardEditorApp:
                         return int(raw)
                     except ValueError:
                         return None
+                match = re.search(r"(?:^|\s)([-+]?\d+)(?=\s|$)", raw)
+                if match:
+                    try:
+                        return int(match.group(1))
+                    except ValueError:
+                        return None
                 try:
                     return int(float(raw))
                 except ValueError:
