@@ -5457,6 +5457,7 @@ class CardEditorApp:
         )
 
         translations_payload: list[dict[str, Any]] = []
+        has_selected_locale = False
         for locale_key, entry in translations_by_locale.items():
             language_id = locale_language_ids.get(locale_key)
             if language_id is None:
@@ -5471,6 +5472,16 @@ class CardEditorApp:
             normalized_entry["language_id"] = int(language_id)
             normalized_entry["language_code"] = locale_key
             translations_payload.append(normalized_entry)
+            if locale_key == translation_locale:
+                has_selected_locale = True
+
+        if not has_selected_locale:
+            raise RuntimeError(
+                "Nieznany identyfikator języka Shoper dla "
+                f"'{translation_locale}'. Dodaj mapowanie języka poprzez "
+                "SHOPER_LANGUAGE_OVERRIDES lub ustaw zmienne "
+                "SHOPER_LANGUAGE_CODE/SHOPER_LANGUAGE_ID."
+            )
 
         payload = {
             "product_code": product_code,
