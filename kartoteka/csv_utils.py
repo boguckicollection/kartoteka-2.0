@@ -1,9 +1,12 @@
 import csv
+import csv
 import json
 import os
 import re
+from collections.abc import Iterable, Mapping
 from datetime import date, timedelta
-from typing import Any, Iterable, Mapping, Optional, Tuple
+from numbers import Number
+from typing import Any, Optional, Tuple
 from tkinter import filedialog, messagebox, TclError
 import unicodedata
 
@@ -110,37 +113,8 @@ def _ensure_warehouse_csv_exists(path: str = WAREHOUSE_CSV) -> None:
 _ensure_warehouse_csv_exists()
 
 
-def load_store_export(path: str = STORE_EXPORT_CSV) -> dict[str, dict[str, str]]:
-    """Return mapping of ``product_code`` to rows from the store export CSV.
-
-    Parameters
-    ----------
-    path:
-        Optional path to the store export CSV.  Defaults to
-        :data:`STORE_EXPORT_CSV`.
-
-    Returns
-    -------
-    dict[str, dict[str, str]]
-        Mapping where keys are product codes and values are the corresponding
-        CSV rows.  Missing files result in an empty mapping.
-    """
-
-    data: dict[str, dict[str, str]] = {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            reader = csv.DictReader(f, delimiter=";")
-            for row in reader:
-                code = (row.get("product_code") or "").strip()
-                if code:
-                    data[code] = row
-    except OSError:
-        return {}
-    return data
-
-
 def load_store_cache(path: str = STORE_CACHE_JSON) -> dict[str, dict[str, str]]:
-    """Return cached store data stored as JSON."""
+    """Return cached product data stored as JSON."""
 
     try:
         with open(path, encoding="utf-8") as fh:
@@ -191,6 +165,264 @@ def save_store_cache(
 
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(serialisable, fh, ensure_ascii=False, indent=2)
+
+
+def normalize_store_cache_row(
+    product_code: str, row: Mapping[str, Any] | None
+) -> dict[str, str]:
+    """Normalise ``row`` for use in the local product cache."""
+
+    code = str(product_code or "").strip()
+    data: dict[str, str] = {"product_code": code, "code": code}
+    if not row:
+        return data
+
+    for key, value in row.items():
+        key_text = str(key or "").strip()
+        if not key_text:
+            continue
+        if isinstance(value, str):
+            data[key_text] = value
+        elif value is None:
+            data[key_text] = ""
+        elif isinstance(value, Number):
+            data[key_text] = str(value)
+        else:
+            data[key_text] = str(value)
+    if "product_code" not in data:
+        data["product_code"] = code
+    if "code" not in data:
+        data["code"] = code
+    return data
+
+
+def _coerce_scalar(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, Number):
+        return str(value)
+    return None
+
+
+def _extract_from_translations(translations: Any) -> Optional[str]:
+    if not isinstance(translations, Mapping):
+        return None
+    preferred_locales = ["pl_PL", "pl", "en_GB", "en_US", "en"]
+    for locale in preferred_locales:
+        entry = translations.get(locale)
+        if isinstance(entry, Mapping):
+            for key in ("name", "title"):
+                value = entry.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    for entry in translations.values():
+        if not isinstance(entry, Mapping):
+            continue
+        for key in ("name", "title"):
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _extract_product_name(product: Mapping[str, Any]) -> Optional[str]:
+    name = product.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return _extract_from_translations(product.get("translations"))
+
+
+def _extract_product_price(product: Mapping[str, Any]) -> Optional[str]:
+    price_fields = [
+        "price",
+        "price_brutto",
+        "price_gross",
+        "price_net",
+        "price_value",
+        "priceValue",
+    ]
+    for field in price_fields:
+        value = product.get(field)
+        coerced = _coerce_scalar(value)
+        if coerced is not None:
+            return coerced
+        if isinstance(value, Mapping):
+            for sub_key in ("gross", "brutto", "net", "value", "amount", "price"):
+                coerced = _coerce_scalar(value.get(sub_key))
+                if coerced is not None:
+                    return coerced
+    return None
+
+
+def _extract_product_category(product: Mapping[str, Any]) -> Optional[str]:
+    direct = product.get("category") or product.get("category_full_name")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    categories = product.get("categories")
+    if isinstance(categories, list):
+        collected: list[str] = []
+        for entry in categories:
+            if isinstance(entry, Mapping):
+                for key in ("path", "name", "title", "label"):
+                    value = entry.get(key)
+                    if isinstance(value, str) and value.strip():
+                        collected.append(value.strip())
+                        break
+            elif isinstance(entry, str) and entry.strip():
+                collected.append(entry.strip())
+        if collected:
+            if len(collected) == 1:
+                return collected[0]
+            return " > ".join(collected)
+    return None
+
+
+def _extract_product_stock(product: Mapping[str, Any]) -> Optional[str]:
+    stock_fields = ["stock", "qty", "quantity", "stock_qty"]
+    for field in stock_fields:
+        value = product.get(field)
+        coerced = _coerce_scalar(value)
+        if coerced is not None:
+            return coerced
+        if isinstance(value, Mapping):
+            coerced = _coerce_scalar(value.get("stock"))
+            if coerced is not None:
+                return coerced
+    return None
+
+
+def _extract_product_image(product: Mapping[str, Any]) -> Optional[str]:
+    for key in ("images 1", "image", "image_url", "main_image", "image1"):
+        value = product.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    images = product.get("images")
+    if isinstance(images, list):
+        for entry in images:
+            if isinstance(entry, Mapping):
+                for key in ("url", "src", "image", "path"):
+                    value = entry.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+            elif isinstance(entry, str) and entry.strip():
+                return entry.strip()
+    return None
+
+
+def normalise_api_product(
+    product: Mapping[str, Any]
+) -> Optional[tuple[str, dict[str, str]]]:
+    """Transform a Shoper API product payload into a cache-friendly row."""
+
+    if not isinstance(product, Mapping):
+        return None
+
+    code = str(product.get("product_code") or product.get("code") or "").strip()
+    if not code:
+        return None
+
+    row: dict[str, Any] = {"product_code": code, "code": code}
+    name = _extract_product_name(product)
+    if name:
+        row["name"] = name
+    price = _extract_product_price(product)
+    if price is not None:
+        row["price"] = price
+    category = _extract_product_category(product)
+    if category:
+        row["category"] = category
+    stock = _extract_product_stock(product)
+    if stock is not None:
+        row["stock"] = stock
+    image = _extract_product_image(product)
+    if image:
+        row["images 1"] = image
+
+    normalised = normalize_store_cache_row(code, row)
+    return code, normalised
+
+
+def iter_api_products(response: Mapping[str, Any] | None) -> Iterable[Mapping[str, Any]]:
+    """Yield product payloads from a Shoper API response."""
+
+    if not isinstance(response, Mapping):
+        return []
+
+    items: list[Any] = []
+    for key in ("list", "items", "products", "data"):
+        value = response.get(key)
+        if isinstance(value, list):
+            items = value
+            break
+    else:
+        single = response.get("product")
+        if isinstance(single, Mapping):
+            items = [single]
+
+    def _iterator() -> Iterable[Mapping[str, Any]]:
+        for item in items:
+            if isinstance(item, Mapping):
+                yield item
+
+    return _iterator()
+
+
+def api_pagination(response: Mapping[str, Any] | None) -> tuple[int | None, int | None]:
+    """Extract current and total pages from an API response."""
+
+    if not isinstance(response, Mapping):
+        return (None, None)
+
+    current = None
+    total = None
+    for key in ("page", "current_page", "currentPage"):
+        value = response.get(key)
+        if value is None:
+            continue
+        try:
+            current = int(value)
+            break
+        except (TypeError, ValueError):
+            continue
+    for key in ("pages", "total_pages", "totalPages"):
+        value = response.get(key)
+        if value is None:
+            continue
+        try:
+            total = int(value)
+            break
+        except (TypeError, ValueError):
+            continue
+    return current, total
+
+
+def product_image_url(row: Mapping[str, Any] | None) -> Optional[str]:
+    """Return best-effort image URL from cached product ``row``."""
+
+    if not isinstance(row, Mapping):
+        return None
+
+    for key in ("images 1", "image", "image_url", "main_image", "image1"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    images = row.get("images")
+    if isinstance(images, list):
+        for entry in images:
+            if isinstance(entry, Mapping):
+                for key in ("url", "src", "image", "path"):
+                    value = entry.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+            elif isinstance(entry, str) and entry.strip():
+                return entry.strip()
+    return None
 
 
 def _sanitize_number(value: str) -> str:

@@ -1,4 +1,3 @@
-import csv
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,43 +31,35 @@ class DummyVar:
         self.value = value
 
 
-def _create_store_csv(path):
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=csv_utils.STORE_FIELDNAMES, delimiter=";")
-        writer.writeheader()
-        writer.writerow({
-            "product_code": "PKM-PAL-1C",
+def test_normalise_api_product_extracts_fields():
+    product = {
+        "code": "PKM-PAL-1C",
+        "translations": {"pl_PL": {"name": "Pikachu"}},
+        "price": "99",
+        "categories": [{"path": "Karty Pokémon > EraX > Paldea Evolved"}],
+        "images": [{"url": "https://example.com/pikachu.png"}],
+    }
+
+    result = csv_utils.normalise_api_product(product)
+    assert result is not None
+    code, row = result
+    assert code == "PKM-PAL-1C"
+    assert row["name"] == "Pikachu"
+    assert row["price"] == "99"
+    assert row["category"] == "Karty Pokémon > EraX > Paldea Evolved"
+    assert csv_utils.product_image_url(row) == "https://example.com/pikachu.png"
+
+
+def test_analyze_and_fill_uses_store_cache(monkeypatch):
+    store_row = csv_utils.normalize_store_cache_row(
+        "PKM-PAL-1C",
+        {
             "name": "Pikachu",
-            "producer_code": "1",
-            "category": "Karty Pokémon > EraX > Paldea Evolved",
-            "producer": "",
-            "short_description": "",
-            "description": "",
             "price": "99",
-            "currency": "PLN",
-            "availability": "1",
-            "unit": "szt.",
-            "delivery": "",
-            "stock": "1",
-            "active": "1",
-            "seo_title": "",
-            "vat": "23%",
-            "images 1": "",
-        })
-
-
-def test_load_store_export(tmp_path):
-    csv_path = tmp_path / "store_export.csv"
-    _create_store_csv(csv_path)
-    data = csv_utils.load_store_export(str(csv_path))
-    assert "PKM-PAL-1C" in data
-    assert data["PKM-PAL-1C"]["price"] == "99"
-
-
-def test_analyze_and_fill_uses_store_export(monkeypatch, tmp_path):
-    csv_path = tmp_path / "store_export.csv"
-    _create_store_csv(csv_path)
-    store_data = csv_utils.load_store_export(str(csv_path))
+            "category": "Karty Pokémon > EraX > Paldea Evolved",
+        },
+    )
+    store_data = {"PKM-PAL-1C": store_row}
 
     name_entry = MagicMock()
     num_entry = MagicMock()
@@ -102,6 +93,18 @@ def test_analyze_and_fill_uses_store_export(monkeypatch, tmp_path):
     dummy._get_card_type_code = ui.CardEditorApp._get_card_type_code.__get__(dummy, ui.CardEditorApp)
     dummy._set_card_type_code = ui.CardEditorApp._set_card_type_code.__get__(dummy, ui.CardEditorApp)
     dummy._set_card_type_from_mapping = ui.CardEditorApp._set_card_type_from_mapping.__get__(dummy, ui.CardEditorApp)
+
+    dummy._persist_store_cache = lambda: None
+
+    def get_store_product(code):
+        return store_data.get(code)
+
+    def cache_store_product(code, row, persist=True):
+        store_data[code] = csv_utils.normalize_store_cache_row(code, row)
+        return store_data[code]
+
+    dummy._get_store_product = get_store_product
+    dummy._cache_store_product = cache_store_product
 
     monkeypatch.setattr(
         ui,
