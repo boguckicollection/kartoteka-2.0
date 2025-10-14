@@ -27,7 +27,8 @@ from itertools import combinations
 import html
 import difflib
 import sys
-from typing import Any, Iterable, Mapping, Optional, Awaitable, NamedTuple
+from collections.abc import Iterable, Mapping
+from typing import Any, Optional, Awaitable, NamedTuple
 from types import SimpleNamespace
 from pydantic import BaseModel
 import pytesseract
@@ -2409,10 +2410,12 @@ class CardEditorApp:
         self.file_to_key = {}
         self.product_code_map = {}
         cache_data = csv_utils.load_store_cache()
-        if cache_data:
-            self.store_data = cache_data
-        else:
-            self.store_data = csv_utils.load_store_export()
+        self.store_data = dict(cache_data) if isinstance(cache_data, dict) else {}
+        if not self.store_data:
+            fetched = self._load_store_products_from_api()
+            if fetched:
+                self.store_data.update(fetched)
+                self._persist_store_cache()
         self.card_type_var = _create_string_var(CARD_TYPE_DEFAULT)
         self.card_type_display_var = _create_string_var(DEFAULT_CARD_FINISH_LABEL)
         self._finish_attribute_id: Optional[int] = None
@@ -3263,12 +3266,10 @@ class CardEditorApp:
         else:  # pragma: no cover - fallback for unexpected state
             self.product_code_map = {product_code: card_snapshot}
 
-        store_data = getattr(self, "store_data", None)
-        if not isinstance(store_data, dict):
-            self.store_data = {}
-            store_data = self.store_data
-
-        row = dict(store_data.get(product_code) or {})
+        existing_row = self._get_store_product(product_code)
+        row: dict[str, Any] = {}
+        if isinstance(existing_row, Mapping):
+            row.update(existing_row)
         row["product_code"] = product_code
 
         def _set_field(target_key: str, *source_keys: str) -> None:
@@ -3297,7 +3298,158 @@ class CardEditorApp:
         _set_field("number", "numer", "number")
         _set_field("variant", "variant")
 
-        store_data[product_code] = row
+        self._cache_store_product(product_code, row, persist=True)
+
+    def _get_product_client(self) -> ShoperClient | None:
+        client = getattr(self, "shoper_client", None)
+        if client is not None:
+            return client
+        return self._create_shoper_client_for_cache()
+
+    def _create_shoper_client_for_cache(self) -> ShoperClient | None:
+        url = os.getenv("SHOPER_API_URL", "").strip()
+        token = os.getenv("SHOPER_API_TOKEN", "").strip()
+        client_id = os.getenv("SHOPER_CLIENT_ID", "").strip()
+        if not url or not token:
+            return None
+        try:
+            return ShoperClient(url, token, client_id or None)
+        except Exception as exc:
+            logger.warning("Failed to initialize ShoperClient for cache: %s", exc)
+            return None
+
+    def _fetch_inventory_page(
+        self, client: ShoperClient, page: int, per_page: int
+    ) -> Mapping[str, Any] | None:
+        try:
+            response = client.get_inventory(page=page, per_page=per_page)
+            if response:
+                return response
+        except Exception as exc:
+            logger.warning("Shoper get_inventory page %s failed: %s", page, exc)
+        try:
+            return client.search_products(page=page, per_page=per_page)
+        except Exception as exc:
+            logger.warning("Shoper search_products page %s failed: %s", page, exc)
+            return None
+
+    def _load_store_products_from_api(self) -> dict[str, dict[str, str]]:
+        client = self._get_product_client()
+        if client is None:
+            return {}
+
+        products: dict[str, dict[str, str]] = {}
+        page = 1
+        per_page = 100
+        max_pages = 50
+
+        while page <= max_pages:
+            response = self._fetch_inventory_page(client, page, per_page)
+            if not response:
+                break
+
+            new_items = 0
+            for product in csv_utils.iter_api_products(response):
+                normalised = csv_utils.normalise_api_product(product)
+                if not normalised:
+                    continue
+                code, row = normalised
+                products[code] = row
+                new_items += 1
+
+            current, total = csv_utils.api_pagination(response)
+            if total is not None and current is not None and current >= total:
+                break
+            if new_items < per_page:
+                break
+            page = (current + 1) if current is not None else (page + 1)
+
+        return products
+
+    def _ensure_store_cache(self) -> None:
+        store_data = getattr(self, "store_data", None)
+        if isinstance(store_data, dict) and store_data:
+            return
+
+        fetched = self._load_store_products_from_api()
+        if not fetched:
+            return
+
+        if not isinstance(store_data, dict):
+            self.store_data = {}
+            store_data = self.store_data
+
+        store_data.update(fetched)
+        self._persist_store_cache()
+
+    def _fetch_product_from_api(self, product_code: str) -> dict[str, str] | None:
+        client = self._get_product_client()
+        if client is None:
+            return None
+
+        try:
+            response = client.search_products(
+                filters={"code": product_code}, page=1, per_page=1
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to query Shoper for product %s: %s", product_code, exc
+            )
+            return None
+
+        for product in csv_utils.iter_api_products(response):
+            normalised = csv_utils.normalise_api_product(product)
+            if not normalised:
+                continue
+            code, row = normalised
+            if code.strip() == product_code:
+                return row
+        return None
+
+    def _cache_store_product(
+        self,
+        product_code: str,
+        row: Mapping[str, Any] | None,
+        *,
+        persist: bool,
+    ) -> dict[str, str]:
+        if not isinstance(self.store_data, dict):
+            self.store_data = {}
+        normalised = csv_utils.normalize_store_cache_row(
+            product_code, row if isinstance(row, Mapping) else None
+        )
+        self.store_data[normalised.get("product_code", product_code)] = normalised
+        if persist:
+            self._persist_store_cache()
+        return normalised
+
+    def _persist_store_cache(self) -> None:
+        store_data = getattr(self, "store_data", None)
+        if not isinstance(store_data, dict):
+            return
+        try:
+            csv_utils.save_store_cache(store_data.values())
+        except Exception:
+            logger.exception("Failed to persist store cache")
+
+    def _get_store_product(self, product_code: str) -> Mapping[str, Any] | None:
+        code = str(product_code or "").strip()
+        if not code:
+            return None
+
+        store_data = getattr(self, "store_data", None)
+        if not isinstance(store_data, dict):
+            self.store_data = {}
+            store_data = self.store_data
+
+        row = store_data.get(code)
+        if isinstance(row, Mapping):
+            return row
+
+        fetched = self._fetch_product_from_api(code)
+        if fetched:
+            return self._cache_store_product(code, fetched, persist=True)
+        return None
 
     def open_auctions_window(self):
         """Open a queue editor for Discord auctions and save to ``aukcje.csv``."""
@@ -5988,19 +6140,15 @@ class CardEditorApp:
         print("\n--- DIAGNOSTYKA DOPASOWANIA PRODUKTÓW ---")
         
         # Krok 1: Sprawdzenie, czy dane z store_export.csv są w ogóle załadowane
+        self._ensure_store_cache()
         if not self.store_data:
-            print("[BŁĄD KRYTYCZNY] Dane z pliku store_export.csv (self.store_data) nie zostały załadowane!")
-            ctk.CTkLabel(items_frame, text="BŁĄD: Nie wczytano danych z pliku store_export.csv!", text_color="red").pack()
+            print("[BŁĄD KRYTYCZNY] Nie udało się zbudować lokalnego bufora produktów Shoper.")
+            ctk.CTkLabel(items_frame, text="BŁĄD: Nie wczytano danych produktów z Shoper!", text_color="red").pack()
             return
 
-        print(f"Załadowano {len(self.store_data)} produktów z store_export.csv.")
+        print(f"Załadowano {len(self.store_data)} produktów z API Shoper (cache).")
         sample_codes = list(self.store_data.keys())[:3]
-        print(f"Przykładowe kody z wczytanego pliku: {sample_codes}")
-
-        # Mapa: kod produktu -> link do obrazka
-        product_code_to_image = {
-            p_code.strip(): data.get('images 1') for p_code, data in self.store_data.items() if data and data.get('images 1')
-        }
+        print(f"Przykładowe kody z cache: {sample_codes}")
 
         if not items:
             ctk.CTkLabel(items_frame, text="Brak produktów w zamówieniu.", font=ctk.CTkFont(size=16)).pack(pady=20)
@@ -6029,9 +6177,15 @@ class CardEditorApp:
                     elif not bucket:
                         warehouse_map.setdefault(code, [])
 
-                image_path = None
+                product_info_map: dict[str, Mapping[str, Any]] = {}
                 for lookup_code in product_codes:
-                    image_path = product_code_to_image.get(lookup_code)
+                    product_info = self._get_store_product(lookup_code)
+                    if product_info:
+                        product_info_map[lookup_code] = product_info
+
+                image_path = None
+                for lookup_code, info in product_info_map.items():
+                    image_path = csv_utils.product_image_url(info)
                     if image_path:
                         break
 
@@ -6039,10 +6193,15 @@ class CardEditorApp:
                     print(f"   - ZNALEZIONO DOPASOWANIE! Link do obrazka: {image_path}")
                 else:
                     print("   - NIE ZNALEZIONO OBRAZKA. Sprawdzam, dlaczego...")
-                    if clean_shoper_code in self.store_data:
-                        print(f"   - Błąd: Kod '{clean_shoper_code}' istnieje w CSV, ale w jego wierszu brakuje linku w kolumnie 'images 1'.")
+                    cached_row = getattr(self, "store_data", {}).get(clean_shoper_code)
+                    if cached_row:
+                        print(
+                            f"   - Błąd: Kod '{clean_shoper_code}' istnieje w buforze, ale w jego danych brakuje linku do obrazka."
+                        )
                     else:
-                        print(f"   - Błąd: Kod '{clean_shoper_code}' nie został znaleziony jako klucz w danych z pliku CSV.")
+                        print(
+                            f"   - Błąd: Kod '{clean_shoper_code}' nie został znaleziony w lokalnym buforze produktów."
+                        )
 
                 if product_codes:
                     print(f"   - Rozpoznane kody produktu: {product_codes}")
@@ -10447,13 +10606,14 @@ class CardEditorApp:
             ball_suffix=ball_suffix,
         )
         result["product_code"] = product_code
-        store_row = getattr(self, "store_data", {}).get(product_code)
-        if store_row:
+        store_row = self._get_store_product(product_code)
+        if isinstance(store_row, Mapping):
             result.update(store_row)
             cat = store_row.get("category", "")
-            parts = [p.strip() for p in cat.split(">")]
-            if len(parts) >= 2:
-                result["era"] = parts[1]
+            if isinstance(cat, str):
+                parts = [p.strip() for p in cat.split(">")]
+                if len(parts) >= 2:
+                    result["era"] = parts[1]
         if update_progress:
             self.root.after(0, lambda: update_progress(1.0))
 
@@ -12033,7 +12193,6 @@ class CardEditorApp:
             logger.exception("Failed to append session rows to warehouse")
 
         try:
-            store_data = self.store_data if isinstance(self.store_data, dict) else {}
             if exported_rows:
                 for row in exported_rows:
                     if not isinstance(row, Mapping):
@@ -12045,9 +12204,8 @@ class CardEditorApp:
                         key: "" if value is None else str(value)
                         for key, value in row.items()
                     }
-                    store_data[code] = snapshot
-                self.store_data = store_data
-                csv_utils.save_store_cache(store_data.values())
+                    self._cache_store_product(code, snapshot, persist=False)
+                self._persist_store_cache()
         except Exception:
             logger.exception("Failed to persist store cache")
 
