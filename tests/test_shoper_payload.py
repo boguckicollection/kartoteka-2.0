@@ -117,6 +117,33 @@ def test_build_shoper_payload_forwards_optional_fields():
         assert field not in minimal_payload
 
 
+def test_build_shoper_payload_rejects_unknown_availability_id():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app.shoper_client = MagicMock()
+    app._shoper_taxonomy_cache = {
+        "category": {"by_name": {"placeholder": 1}},
+        "producer": {"by_name": {"placeholder": 1}},
+        "tax": {"by_name": {"placeholder": 1}},
+        "unit": {"by_name": {"placeholder": 1}},
+        "availability": {
+            "by_id": {5: {"availability_id": 5}},
+            "by_name": {"dostepny": 5},
+            "aliases": {"dostepny": 5, "5": 5},
+        },
+    }
+
+    card = {
+        "nazwa": "Sample",
+        "product_code": "PKM-AVAIL",
+        "availability": "999",
+    }
+
+    with pytest.raises(
+        RuntimeError, match=r"Nie znaleziono identyfikatorów Shoper dla: dostępności: 999"
+    ):
+        app._build_shoper_payload(card)
+
+
 def test_build_shoper_payload_uses_overrides_when_languages_forbidden():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
     app.shoper_language_overrides = {"de_DE": 99}
@@ -248,6 +275,7 @@ def test_build_shoper_payload_resolves_numeric_prefix_taxonomy_alias():
     app._shoper_taxonomy_cache = {
         "category": {
             "by_name": {"Paradox Rift": 57},
+            "by_id": {57: {"category_id": 57}},
             "aliases": {"57": 57, "paradox rift": 57},
         },
         "producer": {"by_name": {}},
@@ -271,11 +299,27 @@ def test_build_shoper_payload_accepts_dict_taxonomy_values():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
     app.shoper_client = MagicMock()
     app._shoper_taxonomy_cache = {
-        "category": {"by_name": {"karty": 44}},
-        "producer": {"by_name": {"pokemon": 11}},
+        "category": {
+            "by_name": {"karty": 44},
+            "by_id": {44: {"category_id": 44}},
+            "aliases": {"44": 44},
+        },
+        "producer": {
+            "by_name": {"pokemon": 11},
+            "by_id": {11: {"producer_id": 11}},
+            "aliases": {"11": 11},
+        },
         "tax": {"by_name": {"23%": 33}},
-        "unit": {"by_name": {"szt.": 55}},
-        "availability": {"by_name": {"dostępny": 3}},
+        "unit": {
+            "by_name": {"szt.": 55},
+            "by_id": {55: {"unit_id": 55}},
+            "aliases": {"55": 55},
+        },
+        "availability": {
+            "by_name": {"dostępny": 3},
+            "by_id": {3: {"availability_id": 3}},
+            "aliases": {"3": 3},
+        },
     }
 
     card = {
