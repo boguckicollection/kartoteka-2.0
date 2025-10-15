@@ -2471,6 +2471,14 @@ class CardEditorApp:
         self.shoper_language_overrides = self._load_shoper_language_overrides()
         self.card_cache = {}
         self._default_availability_value: Optional[str] = None
+        self._default_availability_id: Optional[int] = getattr(
+            csv_utils, "get_default_availability_id", lambda: None
+        )()
+        initial_availability = csv_utils.get_default_availability()
+        if isinstance(initial_availability, str):
+            initial_availability = initial_availability.strip()
+            if initial_availability:
+                self._default_availability_value = initial_availability
         self.file_to_key = {}
         self.product_code_map = {}
         cache_data = csv_utils.load_store_cache()
@@ -5236,19 +5244,99 @@ class CardEditorApp:
         return self._shoper_languages_cache
 
     def _update_default_availability_value(self, value: Any) -> None:
-        if isinstance(value, str):
-            cleaned = value.strip()
-        elif value is None:
-            cleaned = ""
-        else:
-            cleaned = str(value).strip()
+        def _coerce_optional_int(raw: Any) -> Optional[int]:
+            if raw in (None, ""):
+                return None
+            if isinstance(raw, bool):
+                return int(raw)
+            if isinstance(raw, (int, float)):
+                try:
+                    return int(raw)
+                except (TypeError, ValueError):
+                    return None
+            if isinstance(raw, str):
+                text = raw.strip()
+                if not text:
+                    return None
+                if text.isdigit():
+                    try:
+                        return int(text)
+                    except ValueError:
+                        return None
+                try:
+                    return int(float(text))
+                except ValueError:
+                    return None
+            return None
+
+        label: Optional[str] = None
+        identifier: Optional[int] = None
+
+        if isinstance(value, Mapping):
+            label_keys = (
+                "available_label",
+                "label",
+                "name",
+                "title",
+                "value",
+                "text",
+                "code",
+            )
+            for key in label_keys:
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    label = candidate.strip()
+                    break
+
+            id_keys = (
+                "available_id",
+                "availability_id",
+                "id",
+                "value",
+                "default",
+            )
+            for key in id_keys:
+                identifier = _coerce_optional_int(value.get(key))
+                if identifier is not None:
+                    break
+        elif isinstance(value, (list, tuple)):
+            if value:
+                first = value[0]
+                if isinstance(first, str) and first.strip():
+                    label = first.strip()
+                elif first is not None:
+                    label = str(first).strip()
+            if len(value) > 1:
+                identifier = _coerce_optional_int(value[1])
+        elif isinstance(value, str):
+            label = value.strip()
+        elif value is not None:
+            label = str(value).strip()
+
+        cleaned = label or (str(identifier) if identifier is not None else "")
 
         if not cleaned:
             return
 
         self._default_availability_value = cleaned
+        if identifier is not None:
+            self._default_availability_id = identifier
+        elif cleaned.isdigit():
+            try:
+                self._default_availability_id = int(cleaned)
+            except ValueError:
+                self._default_availability_id = None
+        else:
+            self._default_availability_id = None
+
+        payload: Any
+        if label is not None or identifier is not None:
+            payload = {"available_label": label, "available_id": identifier}
+        else:
+            payload = cleaned
+
         try:
-            csv_utils.set_default_availability(cleaned)
+            csv_utils.set_default_availability(payload)
         except Exception:
             pass
 
@@ -5378,6 +5466,87 @@ class CardEditorApp:
             if isinstance(resolved, str) and resolved.strip():
                 return resolved
             return value
+
+        def _coerce_optional_int(raw: Any) -> Optional[int]:
+            if raw in (None, ""):
+                return None
+            if isinstance(raw, bool):
+                return int(raw)
+            if isinstance(raw, (int, float)):
+                try:
+                    return int(raw)
+                except (TypeError, ValueError):
+                    return None
+            if isinstance(raw, str):
+                text = raw.strip()
+                if not text:
+                    return None
+                if text.isdigit():
+                    try:
+                        return int(text)
+                    except ValueError:
+                        return None
+                try:
+                    return int(float(text))
+                except ValueError:
+                    return None
+            return None
+
+        cache = getattr(self, "_shoper_taxonomy_cache", {})
+        mapping = cache.get("availability") if isinstance(cache, Mapping) else None
+        fallback_label: Optional[str] = None
+        fallback_id: Optional[int] = None
+
+        if isinstance(mapping, Mapping):
+            stored_label = mapping.get("available_label")
+            if isinstance(stored_label, str) and stored_label.strip():
+                fallback_label = stored_label.strip()
+
+            stored_id = _coerce_optional_int(mapping.get("available_id"))
+            if stored_id is not None:
+                fallback_id = stored_id
+                if not fallback_label:
+                    by_id = mapping.get("by_id")
+                    if isinstance(by_id, Mapping):
+                        entry = by_id.get(stored_id) or by_id.get(str(stored_id))
+                        if isinstance(entry, Mapping):
+                            for key in ("label", "name", "title", "value", "text", "code"):
+                                candidate = entry.get(key)
+                                if isinstance(candidate, str) and candidate.strip():
+                                    fallback_label = candidate.strip()
+                                    break
+
+            if not fallback_label:
+                default_candidate = mapping.get("default")
+                if isinstance(default_candidate, str) and default_candidate.strip():
+                    fallback_label = default_candidate.strip()
+                else:
+                    coerced_default = _coerce_optional_int(default_candidate)
+                    if coerced_default is not None and fallback_id is None:
+                        fallback_id = coerced_default
+
+        if not fallback_label and fallback_id is None:
+            csv_default = csv_utils.get_default_availability()
+            if isinstance(csv_default, str) and csv_default.strip():
+                fallback_label = csv_default.strip()
+            else:
+                fallback_id = _coerce_optional_int(csv_default)
+
+        if fallback_label or fallback_id is not None:
+            payload: dict[str, Any] = {}
+            if fallback_label:
+                payload["available_label"] = fallback_label
+            if fallback_id is not None:
+                payload["available_id"] = fallback_id
+            if payload:
+                self._update_default_availability_value(payload)
+                resolved = getattr(self, "_default_availability_value", None)
+                if isinstance(resolved, str) and resolved.strip():
+                    return resolved.strip()
+                if fallback_label:
+                    return fallback_label
+                if fallback_id is not None:
+                    return str(fallback_id)
 
         fallback = "1"
         self._update_default_availability_value(fallback)

@@ -444,6 +444,47 @@ def test_build_shoper_payload_fetches_taxonomy_when_missing():
     assert ui.csv_utils.get_default_availability() == "Dostępny"
 
 
+def test_build_shoper_payload_uses_cached_default_availability_when_missing():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app._default_availability_value = None
+    app._default_availability_id = None
+    ui.csv_utils.set_default_availability({"available_label": "Dostępny", "available_id": 1})
+
+    availability_mapping = {
+        "available_label": "Przedsprzedaż",
+        "available_id": 9,
+        "default": 9,
+        "by_name": {"Przedsprzedaż": 9},
+        "by_id": {
+            9: {"availability_id": 9, "name": "Przedsprzedaż"},
+        },
+        "aliases": {"przedsprzedaz": 9, "9": 9},
+    }
+
+    app._shoper_taxonomy_cache = {
+        "category": {"by_name": {"Karty": 44}},
+        "producer": {"by_name": {"Pokemon": 11}},
+        "tax": {"by_name": {"23%": 33}},
+        "unit": {"by_name": {"szt.": 55}},
+        "availability": availability_mapping,
+    }
+
+    card = {
+        "nazwa": "Sample",
+        "product_code": "PKM-TEST",
+        "category": "Karty",
+        "producer": "Pokemon",
+        "vat": "23%",
+        "unit": "szt.",
+    }
+
+    payload = app._build_shoper_payload(card)
+
+    assert payload["availability_id"] == 9
+    assert getattr(app, "_default_availability_value", None) == "Przedsprzedaż"
+    assert ui.csv_utils.get_default_availability() == "Przedsprzedaż"
+
+
 def test_build_shoper_payload_missing_required_taxonomy_raises():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
     client = MagicMock()

@@ -78,22 +78,103 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_AVAILABILITY_VALUE = "1"
+DEFAULT_AVAILABILITY_ID: Optional[int] = None
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            try:
+                return int(raw)
+            except ValueError:
+                return None
+        try:
+            return int(float(raw))
+        except ValueError:
+            return None
+    return None
 
 
 def set_default_availability(value: Any) -> None:
     """Update the fallback availability value used when exporting rows."""
 
-    global DEFAULT_AVAILABILITY_VALUE
+    global DEFAULT_AVAILABILITY_VALUE, DEFAULT_AVAILABILITY_ID
 
-    if isinstance(value, str):
-        cleaned = value.strip()
-    elif value is None:
-        cleaned = ""
-    else:
-        cleaned = str(value).strip()
+    label: Optional[str] = None
+    identifier: Optional[int] = None
+
+    if isinstance(value, Mapping):
+        label_keys = (
+            "available_label",
+            "label",
+            "name",
+            "title",
+            "value",
+            "text",
+            "code",
+        )
+        for key in label_keys:
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                label = candidate.strip()
+                break
+
+        id_keys = (
+            "available_id",
+            "availability_id",
+            "id",
+            "value",
+            "default",
+        )
+        for key in id_keys:
+            identifier = _coerce_optional_int(value.get(key))
+            if identifier is not None:
+                break
+    elif isinstance(value, (list, tuple)):
+        if value:
+            first = value[0]
+            if isinstance(first, str) and first.strip():
+                label = first.strip()
+            elif first is not None and label is None:
+                label = str(first).strip()
+        if len(value) > 1:
+            identifier = _coerce_optional_int(value[1])
+    elif isinstance(value, str):
+        label = value.strip()
+    elif value is not None:
+        label = str(value).strip()
+
+    cleaned = label or (str(identifier) if identifier is not None else "")
 
     if cleaned:
         DEFAULT_AVAILABILITY_VALUE = cleaned
+        if identifier is not None:
+            DEFAULT_AVAILABILITY_ID = identifier
+        elif cleaned.isdigit():
+            try:
+                DEFAULT_AVAILABILITY_ID = int(cleaned)
+            except ValueError:
+                DEFAULT_AVAILABILITY_ID = None
+        else:
+            DEFAULT_AVAILABILITY_ID = None
+
+
+def get_default_availability_id() -> Optional[int]:
+    """Return the numeric identifier of the default availability when known."""
+
+    return DEFAULT_AVAILABILITY_ID
 
 
 def get_default_availability() -> str:
