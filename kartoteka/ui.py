@@ -3169,7 +3169,47 @@ class CardEditorApp:
         """Send ``card`` to the Shoper API and assign related attributes."""
 
         payload = self._build_shoper_payload(card)
-        data = self.shoper_client.add_product(payload)
+
+        product_code: str = ""
+        if isinstance(card, Mapping):
+            raw_code = card.get("product_code")
+            if isinstance(raw_code, str):
+                product_code = raw_code.strip()
+            elif raw_code is not None:
+                product_code = str(raw_code).strip()
+        if not product_code:
+            raw_code = payload.get("product_code")
+            if isinstance(raw_code, str):
+                product_code = raw_code.strip()
+            elif raw_code is not None:
+                product_code = str(raw_code).strip()
+
+        existing_product: Mapping[str, Any] | None = None
+        if product_code:
+            existing_product = self._get_store_product(product_code)
+
+        existing_product_id: str | None = None
+        if isinstance(existing_product, Mapping):
+            for key in ("product_id", "id"):
+                raw_id = existing_product.get(key)
+                if raw_id in (None, ""):
+                    continue
+                text_id = str(raw_id).strip()
+                if text_id:
+                    existing_product_id = text_id
+                    break
+
+        if existing_product_id:
+            response = self.shoper_client.update_product(existing_product_id, payload)
+            if isinstance(response, Mapping):
+                data = dict(response)
+            else:
+                data = {}
+            data.setdefault("product_id", existing_product_id)
+            data.setdefault("id", existing_product_id)
+        else:
+            data = self.shoper_client.add_product(payload)
+
         product_id = data.get("product_id") or data.get("id")
         try:
             attribute_map = card.get("attributes") if isinstance(card, Mapping) else {}
