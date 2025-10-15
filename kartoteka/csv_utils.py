@@ -1,5 +1,4 @@
 import csv
-import csv
 import json
 import os
 import re
@@ -76,6 +75,31 @@ WAREHOUSE_FIELDNAMES = [
 
 
 logger = logging.getLogger(__name__)
+
+
+DEFAULT_AVAILABILITY_VALUE = "1"
+
+
+def set_default_availability(value: Any) -> None:
+    """Update the fallback availability value used when exporting rows."""
+
+    global DEFAULT_AVAILABILITY_VALUE
+
+    if isinstance(value, str):
+        cleaned = value.strip()
+    elif value is None:
+        cleaned = ""
+    else:
+        cleaned = str(value).strip()
+
+    if cleaned:
+        DEFAULT_AVAILABILITY_VALUE = cleaned
+
+
+def get_default_availability() -> str:
+    """Return the currently configured fallback availability value."""
+
+    return DEFAULT_AVAILABILITY_VALUE
 
 
 def get_warehouse_inventory():
@@ -795,7 +819,7 @@ def format_store_row(row):
         "description": row["description"],
         "price": row["cena"],
         "currency": row.get("currency", "PLN"),
-        "availability": row.get("availability", 1),
+        "availability": row.get("availability", DEFAULT_AVAILABILITY_VALUE),
         "unit": row.get("unit", "szt."),
         "delivery": "3 dni",
         "stock": row.get("stock", 1),
