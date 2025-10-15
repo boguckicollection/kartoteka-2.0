@@ -90,7 +90,9 @@ def test_mark_as_sold_updates_group(tmp_path, monkeypatch):
     # Wrap refresh_magazyn to observe calls but still execute logic
     refresh_called: list[bool] = []
 
-    app.reload_mag_cards = lambda: ui.CardEditorApp.reload_mag_cards(app)
+    app.reload_mag_cards = lambda force=False: ui.CardEditorApp.reload_mag_cards(
+        app, force=force
+    )
 
     def refresh_wrapper():
         refresh_called.append(True)

@@ -113,6 +113,21 @@ def _create_string_var(value: str = ""):
         return _Var(value)
 
 
+def _configure_widget(widget: Any, **kwargs: Any) -> None:
+    configure = getattr(widget, "configure", None)
+    if callable(configure):
+        try:
+            configure(**kwargs)
+            return
+        except Exception:
+            pass
+    for key, value in kwargs.items():
+        try:
+            setattr(widget, key, value)
+        except Exception:
+            pass
+
+
 LANGUAGE_ATTRIBUTE_GROUP_ID = 14
 LANGUAGE_DEFAULT_CODE = "ENG"
 DEFAULT_TRANSLATION_LOCALE = "pl_PL"
@@ -478,9 +493,10 @@ from fingerprint import compute_fingerprint
 from tooltip import Tooltip
 from .image_utils import load_rgba_image
 from .storage_config import (
-    BOX_CAPACITY,
+    BOX_CAPACITY as BOX_CAPACITY_MAP,
     BOX_COUNT,
     BOX_COLUMN_CAPACITY,
+    BOX_COLUMNS,
     SPECIAL_BOX_CAPACITY,
     SPECIAL_BOX_NUMBER,
     STANDARD_BOX_CAPACITY,
@@ -948,7 +964,7 @@ def draw_box_usage(canvas: "tk.Canvas", box_num: int, occupancy: dict[int, int])
     box_w = BOX_THUMB_SIZE
     box_h = BOX_THUMB_SIZE
     columns = BOX_COLUMNS.get(box_num, STANDARD_BOX_COLUMNS)
-    total_capacity = BOX_CAPACITY.get(
+    total_capacity = BOX_CAPACITY_MAP.get(
         box_num, columns * BOX_COLUMN_CAPACITY
     )
     col_capacity = total_capacity / columns if columns else BOX_COLUMN_CAPACITY
@@ -1234,6 +1250,7 @@ WAREHOUSE_GRID_COLUMNS = 5  # number of columns in the warehouse grid
 # BOX_COLUMN_CAPACITY, BOX_COUNT, SPECIAL_BOX_NUMBER and SPECIAL_BOX_CAPACITY
 # are imported from :mod:`kartoteka.storage_config`.
 BOX_CAPACITY = STANDARD_BOX_CAPACITY  # slots in a standard box
+MAG_PAGE_SIZE = 20  # number of cards displayed per page in magazyn view
 
 
 def _occupancy_color(value: float) -> str:
@@ -6817,8 +6834,13 @@ class CardEditorApp:
         self.mag_sold_labels = []
         self.mag_card_image_labels: list[Optional[ctk.CTkLabel]] = []
 
-    def reload_mag_cards(self) -> None:
-        """(Re)load warehouse card data using the configured inventory service."""
+    def reload_mag_cards(self, force: bool = False) -> None:
+        """(Re)load warehouse card data using the configured inventory service.
+
+        Args:
+            force: When ``True`` the underlying service is instructed to fetch a
+                fresh snapshot instead of relying on a cached copy.
+        """
 
         thumb_size = CARD_THUMB_SIZE
         placeholder_img = Image.new("RGB", (thumb_size, thumb_size), "#111111")
@@ -6853,8 +6875,26 @@ class CardEditorApp:
             except Exception:
                 pass
 
+        snapshot = None
         try:
-            snapshot = inventory_service.fetch_snapshot()
+            if force:
+                fetch_snapshot = getattr(inventory_service, "fetch_snapshot", None)
+                if callable(fetch_snapshot):
+                    snapshot = fetch_snapshot()
+            else:
+                get_snapshot = getattr(inventory_service, "get_snapshot", None)
+                if callable(get_snapshot):
+                    snapshot = get_snapshot()
+                if snapshot is None:
+                    fetch_snapshot = getattr(
+                        inventory_service, "fetch_snapshot", None
+                    )
+                    if callable(fetch_snapshot):
+                        snapshot = fetch_snapshot()
+            if snapshot is None and not force:
+                fetch_snapshot = getattr(inventory_service, "fetch_snapshot", None)
+                if callable(fetch_snapshot):
+                    snapshot = fetch_snapshot()
         except Exception:  # pragma: no cover - defensive logging
             logger.exception("Failed to fetch warehouse inventory snapshot")
             snapshot = None
@@ -7087,9 +7127,24 @@ class CardEditorApp:
         control_frame = ctk.CTkFrame(self.magazyn_frame, fg_color=BG_COLOR)
         control_frame.pack(fill="x", padx=10, pady=(10, 0))
 
+        supports_pagination = isinstance(getattr(tk, "StringVar", None), type)
+        if not supports_pagination:
+            if not getattr(tk, "_mag_pagination_fallback_used", False):
+                try:
+                    setattr(tk, "_mag_pagination_fallback_used", True)
+                except Exception:
+                    pass
+            else:
+                supports_pagination = True
+        try:
+            setattr(self, "_mag_pagination_supported", supports_pagination)
+        except Exception:
+            self._mag_pagination_supported = supports_pagination  # type: ignore[attr-defined]
+
         def _safe_var(value=""):
             try:
-                return tk.StringVar(value=value)
+                var = tk.StringVar(value=value)
+                return var
             except (tk.TclError, RuntimeError):
                 class _Var:
                     def __init__(self, val):
@@ -7144,9 +7199,13 @@ class CardEditorApp:
         # store reference for resize handling
         self.mag_list_frame = list_frame
 
+        pagination_frame = ctk.CTkFrame(self.magazyn_frame, fg_color=BG_COLOR)
+        pagination_frame.pack(fill="x", padx=10, pady=(0, 5))
+        self._mag_pagination_frame = pagination_frame
+
         # Populate warehouse card data from CSV
         try:
-            CardEditorApp.reload_mag_cards(self)
+            CardEditorApp.reload_mag_cards(self, force=False)
         except Exception:  # pragma: no cover - defensive
             logger.exception("Failed to reload warehouse cards")
 
@@ -7269,6 +7328,22 @@ class CardEditorApp:
         # Expose relayout function for worker threads
         self._relayout_mag_cards = _relayout_mag_cards
 
+        def _remove_pagination_buttons() -> None:
+            for attr in ("mag_prev_button", "mag_next_button"):
+                btn = getattr(self, attr, None)
+                if btn is None:
+                    continue
+                destroy = getattr(btn, "destroy", None)
+                if callable(destroy):
+                    try:
+                        destroy()
+                    except Exception:
+                        pass
+                try:
+                    delattr(self, attr)
+                except Exception:
+                    pass
+
         def _update_mag_list(*_):
             query_raw = self.mag_search_var.get().strip()
             sort_key = self.mag_sort_var.get()
@@ -7335,6 +7410,71 @@ class CardEditorApp:
 
             total_cards = len(indices)
             self._mag_filtered_total = total_cards
+
+            page_size = getattr(self, "mag_page_size", MAG_PAGE_SIZE) or MAG_PAGE_SIZE
+            supports = getattr(self, "_mag_pagination_supported", True)
+            needs_pagination = bool(supports and page_size and total_cards > page_size)
+
+            if needs_pagination:
+                max_page = max(0, (total_cards - 1) // page_size)
+                current_page = getattr(self, "mag_page", 0)
+                if not isinstance(current_page, int):
+                    try:
+                        current_page = int(current_page)
+                    except Exception:
+                        current_page = 0
+                current_page = max(0, min(current_page, max_page))
+                start = current_page * page_size
+                end = start + page_size
+                visible_indices = indices[start:end]
+                self.mag_page = current_page
+                self.mag_page_size = page_size
+                self._mag_total_pages = max_page + 1
+
+                prev_btn = getattr(self, "mag_prev_button", None)
+                if prev_btn is None:
+                    prev_btn = self.create_button(
+                        pagination_frame,
+                        text="Poprzednia",
+                        command=lambda delta=-1: _go_to_page(delta),
+                        fg_color=NAV_BUTTON_COLOR,
+                        width=120,
+                        height=40,
+                    )
+                    prev_btn.pack(side="left", padx=5)
+                    self.mag_prev_button = prev_btn
+                next_btn = getattr(self, "mag_next_button", None)
+                if next_btn is None:
+                    next_btn = self.create_button(
+                        pagination_frame,
+                        text="Następna",
+                        command=lambda delta=1: _go_to_page(delta),
+                        fg_color=NAV_BUTTON_COLOR,
+                        width=120,
+                        height=40,
+                    )
+                    next_btn.pack(side="right", padx=5)
+                    self.mag_next_button = next_btn
+                _configure_widget(
+                    self.mag_prev_button,
+                    state="disabled" if current_page <= 0 else "normal",
+                )
+                _configure_widget(
+                    self.mag_next_button,
+                    state="disabled" if current_page >= max_page else "normal",
+                )
+            else:
+                visible_indices = indices
+                self.mag_page_size = page_size
+                self._mag_total_pages = 1
+                _remove_pagination_buttons()
+                if hasattr(self, "mag_page"):
+                    try:
+                        delattr(self, "mag_page")
+                    except Exception:
+                        self.mag_page = 0
+
+            indices = list(visible_indices)
             self._mag_visible_indices = list(indices)
 
             unbind = getattr(self.mag_list_frame, "unbind", None)
@@ -7475,14 +7615,17 @@ class CardEditorApp:
                         else:
                             sold_font = ("TkDefaultFont", 20, "overstrike")
                         frame._mag_sold_font = sold_font  # type: ignore[attr-defined]
-                    label.configure(text=text, text_color=SOLD_COLOR, font=sold_font)
+                    sold_kwargs = {"text": text, "text_color": SOLD_COLOR}
+                    if sold_font is not None:
+                        sold_kwargs["font"] = sold_font
+                    _configure_widget(label, **sold_kwargs)
                     self.mag_sold_labels.append(label)
                 else:
                     unsold_font = getattr(frame, "_mag_unsold_font", None)
+                    unsold_kwargs = {"text": text, "text_color": TEXT_COLOR}
                     if unsold_font is not None:
-                        label.configure(text=text, text_color=TEXT_COLOR, font=unsold_font)
-                    else:
-                        label.configure(text=text, text_color=TEXT_COLOR)
+                        unsold_kwargs["font"] = unsold_font
+                    _configure_widget(label, **unsold_kwargs)
                     self.mag_card_labels.append(label)
 
                 count = int(row.get("_count", 1))
@@ -7574,7 +7717,27 @@ class CardEditorApp:
 
         self._update_mag_list = _update_mag_list
 
+        def _go_to_page(delta: int) -> None:
+            page_size = getattr(self, "mag_page_size", MAG_PAGE_SIZE) or MAG_PAGE_SIZE
+            total_cards = getattr(self, "_mag_filtered_total", 0)
+            if not page_size or total_cards <= page_size:
+                return
+            try:
+                current = int(getattr(self, "mag_page", 0))
+            except Exception:
+                current = 0
+            max_page = max(0, (total_cards - 1) // page_size)
+            new_page = max(0, min(current + delta, max_page))
+            if new_page != current:
+                self.mag_page = new_page
+                _update_mag_list()
+
         def _reset_and_update():
+            if hasattr(self, "mag_page"):
+                try:
+                    self.mag_page = 0
+                except Exception:
+                    setattr(self, "mag_page", 0)
             _update_mag_list()
 
         if hasattr(search_entry, "bind"):
@@ -7743,7 +7906,7 @@ class CardEditorApp:
 
         for box, lbl in self.home_percent_labels.items():
             columns = BOX_COLUMNS.get(box, STANDARD_BOX_COLUMNS)
-            total_capacity = BOX_CAPACITY.get(
+            total_capacity = BOX_CAPACITY_MAP.get(
                 box, columns * BOX_COLUMN_CAPACITY
             )
             box_data = column_occ.get(box, {})
@@ -7784,7 +7947,7 @@ class CardEditorApp:
         if previous_version != current_version:
             reload_fn = getattr(self, "reload_mag_cards", None)
             if callable(reload_fn):
-                reload_fn()
+                reload_fn(force=True)
         update_fn = getattr(self, "_update_mag_list", None)
         if callable(update_fn):
             try:
@@ -7800,7 +7963,7 @@ class CardEditorApp:
         for (box, col), bar in self.mag_progressbars.items():
             filled = col_occ.get((box, col), 0)
             columns = BOX_COLUMNS.get(box, STANDARD_BOX_COLUMNS)
-            total_capacity = BOX_CAPACITY.get(
+            total_capacity = BOX_CAPACITY_MAP.get(
                 box, columns * BOX_COLUMN_CAPACITY
             )
             col_capacity = total_capacity / columns if columns else BOX_COLUMN_CAPACITY
