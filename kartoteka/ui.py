@@ -5827,11 +5827,24 @@ class CardEditorApp:
             if isinstance(value, (int, float)):
                 return float(value)
             if isinstance(value, str):
-                raw = value.replace(",", ".").strip()
+                raw = value.strip()
                 if not raw:
                     return default
+                normalized = raw.replace("−", "-").replace(",", ".")
+                cleaned = re.sub(r"[^0-9.\-]", "", normalized)
+                if cleaned.count("-") > 1:
+                    cleaned = cleaned.replace("-", "")
+                if "-" in cleaned and not cleaned.startswith("-"):
+                    cleaned = cleaned.replace("-", "")
+                if cleaned.count(".") > 1:
+                    dot_parts = cleaned.split(".")
+                    cleaned = "".join(dot_parts[:-1]) + "." + dot_parts[-1]
+                if not re.search(r"\d", cleaned):
+                    return default
+                if cleaned in {"-", ".", "-."}:
+                    return default
                 try:
-                    return float(raw)
+                    return float(cleaned)
                 except ValueError:
                     return default
             return default
