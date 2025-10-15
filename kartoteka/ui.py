@@ -5498,11 +5498,29 @@ class CardEditorApp:
             return lookup
 
         def _resolve_taxonomy_id(kind: str, raw_value: Any) -> Optional[int]:
-            coerced = _coerce_optional_int(raw_value)
-            if coerced is not None:
-                return coerced
-            normalized_value = _normalize_taxonomy_key(raw_value)
             mapping = taxonomy_cache.get(kind) if isinstance(taxonomy_cache, Mapping) else {}
+            coerced = _coerce_optional_int(raw_value)
+            if coerced is not None and isinstance(mapping, Mapping):
+                by_id = mapping.get("by_id") if isinstance(mapping, Mapping) else None
+                if isinstance(by_id, Mapping) and coerced in by_id:
+                    return coerced
+                aliases_map = mapping.get("aliases") if isinstance(mapping, Mapping) else None
+                if isinstance(aliases_map, Mapping):
+                    normalized_numeric = _normalize_taxonomy_key(str(raw_value))
+                    candidate_keys = []
+                    if normalized_numeric:
+                        candidate_keys.append(normalized_numeric)
+                    candidate_keys.append(str(coerced))
+                    for candidate_key in candidate_keys:
+                        alias_target = aliases_map.get(candidate_key)
+                        if alias_target is None:
+                            for key, value in aliases_map.items():
+                                if _normalize_taxonomy_key(key) == candidate_key:
+                                    alias_target = value
+                                    break
+                        if _coerce_optional_int(alias_target) == coerced:
+                            return coerced
+            normalized_value = _normalize_taxonomy_key(raw_value)
             if not normalized_value:
                 default_val = None
                 if isinstance(mapping, Mapping):
