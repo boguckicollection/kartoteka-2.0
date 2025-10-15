@@ -3455,6 +3455,119 @@ class CardEditorApp:
             return self._cache_store_product(code, fetched, persist=True)
         return None
 
+    def _find_existing_products(
+        self,
+        *,
+        product_code: str,
+        name: str,
+        number: str,
+        set_name: str,
+        variant_code: str | None = None,
+    ) -> list[Mapping[str, Any]]:
+        sanitized_code = str(product_code or "").strip()
+        normalized_name = normalize(name) if name else ""
+        normalized_set = normalize(set_name) if set_name else ""
+        normalized_number = sanitize_number(str(number or ""))
+        matches: dict[str, Mapping[str, Any]] = {}
+        _ = variant_code  # kept for signature compatibility
+
+        def _coerce_row(row: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+            if not isinstance(row, Mapping):
+                return None
+            if isinstance(row, dict):
+                return row
+            try:
+                return dict(row)
+            except Exception:
+                return None
+
+        def _append_candidate(row: Mapping[str, Any] | None) -> None:
+            candidate = _coerce_row(row)
+            if not candidate:
+                return
+            code_value = str(
+                candidate.get("product_code")
+                or candidate.get("code")
+                or candidate.get("producer_code")
+                or ""
+            ).strip()
+            if not code_value:
+                return
+
+            candidate_name = normalize(str(candidate.get("name") or candidate.get("nazwa") or ""))
+            candidate_number = sanitize_number(
+                str(
+                    candidate.get("producer_code")
+                    or candidate.get("number")
+                    or candidate.get("numer")
+                    or ""
+                )
+            )
+            candidate_set = normalize(str(candidate.get("set") or candidate.get("set_name") or ""))
+            if sanitized_code and code_value != sanitized_code:
+                if normalized_number and candidate_number and candidate_number != normalized_number:
+                    return
+                if normalized_name and candidate_name and candidate_name != normalized_name:
+                    return
+                if normalized_set and candidate_set and candidate_set != normalized_set:
+                    return
+
+            if code_value not in matches:
+                matches[code_value] = candidate
+
+        if sanitized_code:
+            cached = self._get_store_product(sanitized_code)
+            if cached:
+                _append_candidate(cached)
+
+        product_map = getattr(self, "product_code_map", {})
+        if isinstance(product_map, Mapping) and sanitized_code:
+            existing = product_map.get(sanitized_code)
+            if isinstance(existing, Mapping):
+                _append_candidate(existing)
+
+        store_cache = getattr(self, "store_data", {})
+        if isinstance(store_cache, Mapping):
+            for row in store_cache.values():
+                _append_candidate(row)
+
+        client = self._get_product_client()
+        if client is not None:
+            queries: list[dict[str, str]] = []
+            if sanitized_code:
+                queries.append({"filters[code]": sanitized_code})
+            if normalized_number:
+                queries.append({"filters[producer_code]": normalized_number})
+            phrase_parts = [part for part in (name, number, set_name) if part]
+            if phrase_parts:
+                queries.append({"filters[search]": " ".join(phrase_parts)})
+
+            for params in queries:
+                try:
+                    response = client.search_products(filters=params, page=1, per_page=20)
+                except Exception as exc:
+                    logger.warning("Shoper duplicate lookup failed: %s", exc)
+                    continue
+
+                for product in csv_utils.iter_api_products(response):
+                    normalised = csv_utils.normalise_api_product(product)
+                    if not normalised:
+                        continue
+                    code_value, row = normalised
+                    cached = self._cache_store_product(code_value, row, persist=False)
+                    _append_candidate(cached)
+
+        try:
+            csv_matches = csv_utils.find_duplicates(
+                name, number, set_name, variant_code
+            )
+        except Exception:
+            csv_matches = []
+        for row in csv_matches:
+            _append_candidate(row)
+
+        return list(matches.values())
+
     def open_auctions_window(self):
         """Open a queue editor for Discord auctions and save to ``aukcje.csv``."""
         if self.start_frame is not None:
@@ -6250,12 +6363,38 @@ class CardEditorApp:
         buttons.grid_columnconfigure((0, 1, 2), weight=1)
 
         def _mark_selected():
-            products_to_sell = { code: data['quantity'] for code, data in selection_vars.items() if data['var'].get() }
+            products_to_sell = {
+                code: data["quantity"]
+                for code, data in selection_vars.items()
+                if data["var"].get()
+            }
             if not products_to_sell:
                 messagebox.showwarning("Zamówienia", "Zaznacz przynajmniej jedną kartę.")
                 return
-            self.complete_order(order, products_to_sell=products_to_sell)
-            top.destroy()
+
+            selected_codes: list[str] = []
+            for product_code, quantity in products_to_sell.items():
+                available = list(warehouse_map.get(product_code, []))
+                taken = 0
+                for option in available:
+                    raw_code = option.get("warehouse_code") if isinstance(option, Mapping) else None
+                    if not raw_code:
+                        continue
+                    code_text = str(raw_code).strip()
+                    if not code_text or code_text in selected_codes:
+                        continue
+                    selected_codes.append(code_text)
+                    taken += 1
+                    if taken >= quantity:
+                        break
+
+            success = self.complete_order(
+                order,
+                selected_warehouses=selected_codes,
+                product_counts=Counter(products_to_sell),
+            )
+            if success:
+                top.destroy()
 
         def _print_list():
             any_unselected = any(not data["var"].get() for data in selection_vars.values())
@@ -6314,34 +6453,127 @@ class CardEditorApp:
     def complete_order(
         self,
         order: Mapping[str, Any],
-        selected_warehouses: list[str],
-        product_counts: Counter,
-    ):
-        """Finalizes the order by updating CSV files."""
-        if not selected_warehouses:
+        selected_warehouses: list[str] | None = None,
+        product_counts: Mapping[str, int] | None = None,
+    ) -> bool:
+        """Finalize the order using Shoper API operations."""
+
+        selected_codes = [
+            str(code).strip()
+            for code in (selected_warehouses or [])
+            if str(code).strip()
+        ]
+        counts = Counter(product_counts or {})
+        if not selected_codes and not counts:
             messagebox.showwarning("Błąd", "Nie wybrano żadnych kart do oznaczenia.")
-            return
+            return False
 
-        # 1. Oznacz jako sprzedane w magazyn.csv
-        marked_count = csv_utils.mark_warehouse_codes_as_sold(selected_warehouses)
-        if not marked_count:
-            messagebox.showerror("Błąd", "Nie udało się oznaczyć kart w magazyn.csv.")
-            return
+        self.ensure_shoper_client()
+        client = getattr(self, "shoper_client", None)
+        if client is None:
+            messagebox.showerror("Błąd", "Brak konfiguracji połączenia z API Shoper.")
+            return False
 
-        # 2. Zmniejsz stany w store_export.csv (z potwierdzeniem)
-        csv_utils.decrement_store_stock(product_counts)
+        marked_count = 0
+        if selected_codes:
+            try:
+                response = client.mark_products_sold(selected_codes)
+            except Exception as exc:
+                logger.exception("Failed to mark items as sold via Shoper: %s", exc)
+                messagebox.showerror(
+                    "Błąd",
+                    _("Nie udało się oznaczyć kart jako sprzedanych: {err}").format(err=exc),
+                )
+                return False
+            if isinstance(response, Mapping):
+                raw_count = (
+                    response.get("count")
+                    or response.get("marked")
+                    or response.get("success")
+                )
+                try:
+                    marked_count = int(raw_count)
+                except (TypeError, ValueError):
+                    marked_count = len(selected_codes)
+            else:
+                marked_count = len(selected_codes)
 
-        # 3. Odświeżenie interfejsu
+        updated_products: list[str] = []
+        for product_code, quantity in counts.items():
+            try:
+                qty_int = int(quantity)
+            except (TypeError, ValueError):
+                continue
+            if qty_int <= 0:
+                continue
+
+            row = self._get_store_product(product_code)
+            if not isinstance(row, Mapping):
+                logger.warning(
+                    "Product %s not found in Shoper when completing order", product_code
+                )
+                continue
+
+            product_id = row.get("product_id") or row.get("id")
+            if not product_id:
+                logger.warning("Missing product_id for %s", product_code)
+                continue
+
+            stock_value = _coerce_quantity(row.get("stock"))
+            new_stock = max(0, stock_value - qty_int)
+            warn_level = row.get("warn_level") or row.get("stock_warnlevel")
+            try:
+                client.update_product_stock(product_id, new_stock, warn_level=warn_level)
+            except Exception as exc:
+                logger.exception("Failed to update stock for %s: %s", product_code, exc)
+                messagebox.showerror(
+                    "Błąd",
+                    _(
+                        "Nie udało się zaktualizować stanu produktu {code}: {err}"
+                    ).format(code=product_code, err=exc),
+                )
+                return False
+
+            updated_row = dict(row)
+            updated_row["stock"] = str(new_stock)
+            updated_row["product_id"] = str(product_id)
+            self._cache_store_product(product_code, updated_row, persist=True)
+            updated_products.append(product_code)
+
         if hasattr(self, "update_inventory_stats"):
-            self.update_inventory_stats(force=True)
+            try:
+                self.update_inventory_stats(force=True)
+            except Exception:
+                logger.exception("Failed to refresh inventory stats")
 
-        messagebox.showinfo("Operacja zakończona", f"Oznaczono {marked_count} kart jako sprzedane.")
+        if getattr(self, "inventory_service", None):
+            try:
+                self.inventory_service.fetch_snapshot()
+            except Exception:
+                logger.debug("Inventory snapshot refresh failed", exc_info=True)
+
+        summary_parts: list[str] = []
+        if marked_count:
+            summary_parts.append(
+                _("Oznaczono jako sprzedane: {count}").format(count=marked_count)
+            )
+        if updated_products:
+            summary_parts.append(
+                _("Zaktualizowano stany produktów: {codes}").format(
+                    codes=", ".join(updated_products)
+                )
+            )
+        if not summary_parts:
+            summary_parts.append(_("Brak zmian"))
+
+        messagebox.showinfo("Operacja zakończona", "; ".join(summary_parts))
 
         if hasattr(self, "show_orders") and self.orders_output:
             try:
                 self.show_orders(self.orders_output)
             except Exception:
-                pass
+                logger.exception("Failed to refresh order list")
+        return True
 
     def confirm_order(self):
         """Confirm the first pending order and mark codes as sold."""
@@ -6350,7 +6582,9 @@ class CardEditorApp:
         if not orders:
             return
         order = orders.pop(0)
-        self.complete_order(order)
+        success = self.complete_order(order)
+        if not success:
+            orders.insert(0, order)
 
     def print_order_items(
         self,
@@ -7773,13 +8007,15 @@ class CardEditorApp:
             if c.strip()
         ]
         target = warehouse_code or (codes[0] if codes else "")
-        marked = csv_utils.mark_warehouse_codes_as_sold([target])
-        if not marked:
-            return
-
         product_code = csv_utils.infer_product_code(row)
-        if product_code:
-            csv_utils.decrement_store_stock({product_code: 1})
+        counts = Counter({product_code: 1}) if product_code else Counter()
+        success = self.complete_order(
+            row,
+            selected_warehouses=[target] if target else [],
+            product_counts=counts,
+        )
+        if not success:
+            return
 
         if window is not None:
             try:
@@ -7802,50 +8038,19 @@ class CardEditorApp:
                 logger.exception("Failed to display magazyn view")
 
     def toggle_sold(self, row: dict, window=None):
-        """Toggle the sold flag for a warehouse card and update CSV."""
+        """Inform the user that manual CSV toggling is no longer available."""
 
-        csv_path = getattr(csv_utils, "WAREHOUSE_CSV", "magazyn.csv")
-        try:
-            with open(csv_path, newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f, delimiter=";")
-                rows = list(reader)
-                fieldnames = reader.fieldnames or []
-        except FileNotFoundError:
-            return
-
-        if "sold" not in fieldnames:
-            fieldnames.append("sold")
-
-        target = str(row.get("warehouse_code", ""))
-        for r in rows:
-            if r.get("warehouse_code") == target:
-                current = str(r.get("sold") or "").lower() in {"1", "true", "yes"}
-                r["sold"] = "" if current else "1"
-                row["sold"] = r["sold"]
-                break
-
-        with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")
-            writer.writeheader()
-            writer.writerows(rows)
-
+        messagebox.showinfo(
+            "Magazyn",
+            _(
+                "Zmiana statusu sprzedane musi zostać wykonana bezpośrednio w panelu Shoper."
+            ),
+        )
         if window is not None:
             try:
                 window.destroy()
             except tk.TclError:
                 pass
-
-        # Refresh main view to reflect the change without recreating the root
-        if hasattr(self, "refresh_magazyn"):
-            try:
-                self.refresh_magazyn()
-            except Exception:
-                logger.exception("Failed to refresh magazyn view")
-        elif hasattr(self, "show_magazyn_view"):
-            try:
-                self.show_magazyn_view()
-            except Exception:
-                logger.exception("Failed to display magazyn view")
 
     def setup_pricing_ui(self):
         """UI for quick card price lookup."""
@@ -10350,16 +10555,38 @@ class CardEditorApp:
                     set_name = meta.get("set", meta.get("set_name", ""))
                 variant_source = csv_row if csv_row else meta
                 variant_code = infer_card_type_code(variant_source)
-                duplicates = csv_utils.find_duplicates(
-                    name, number, set_name, variant_code
+                product_code = csv_utils.build_product_code(
+                    set_name,
+                    number,
+                    variant_source.get("variant") if isinstance(variant_source, Mapping) else None,
+                )
+                duplicates = self._find_existing_products(
+                    product_code=product_code,
+                    name=name,
+                    number=number,
+                    set_name=set_name,
+                    variant_code=variant_code,
                 )
                 if duplicates:
                     codes = ", ".join(
-                        [d.get("warehouse_code", "") for d in duplicates if d.get("warehouse_code")]
+                        [
+                            str(
+                                duplicate.get("product_code")
+                                or duplicate.get("code")
+                                or duplicate.get("warehouse_code")
+                                or ""
+                            ).strip()
+                            for duplicate in duplicates
+                            if (
+                                duplicate.get("product_code")
+                                or duplicate.get("code")
+                                or duplicate.get("warehouse_code")
+                            )
+                        ]
                     )
                     msg = _(
-                        "Card already exists in magazyn: {codes}. Add anyway?"
-                    ).format(codes=codes)
+                        "Product already exists in Shoper: {codes}. Add anyway?"
+                    ).format(codes=codes or "?")
                     if not messagebox.askyesno(_("Duplicate"), msg):
                         logger.info(
                             "Skipping duplicate card %s #%s in set %s", name, number, set_name
@@ -10738,6 +10965,44 @@ class CardEditorApp:
             self.update_set_options()
             self.entries["set"].set(set_name)
 
+            field_sources: dict[str, tuple[str, ...]] = {
+                "producer": ("producer", "manufacturer"),
+                "category": ("category", "producer_category"),
+                "short_description": ("short_description",),
+                "description": ("description",),
+                "price": ("price", "cena"),
+            }
+            entry_map = {
+                "producer": "producer",
+                "category": "category",
+                "short_description": "short_description",
+                "description": "description",
+                "price": "cena",
+            }
+            for target, source_keys in field_sources.items():
+                value = None
+                for key in source_keys:
+                    candidate = result.get(key)
+                    if isinstance(candidate, str) and candidate.strip():
+                        value = candidate
+                        break
+                if target == "category" and not value and era_name and set_name:
+                    value = f"Karty Pokémon > {era_name} > {set_name}"
+                if target == "price" and value is None and price is not None:
+                    value = str(price)
+                if value is None:
+                    continue
+                entry_key = entry_map.get(target)
+                entry_widget = self.entries.get(entry_key) if entry_key else None
+                if isinstance(entry_widget, (tk.Entry, ctk.CTkEntry)):
+                    entry_widget.delete(0, tk.END)
+                    entry_widget.insert(0, value)
+                elif hasattr(entry_widget, "set") and callable(entry_widget.set):
+                    entry_widget.set(value)
+                result[target] = value
+                if target == "price":
+                    price = value
+
             code = result.get("warehouse_code")
             if code:
                 self.current_location = code
@@ -10746,8 +11011,12 @@ class CardEditorApp:
 
             self._set_card_type_from_mapping(result)
             variant_code = infer_card_type_code(result)
-            duplicates = csv_utils.find_duplicates(
-                name, number, set_name, variant_code
+            duplicates = self._find_existing_products(
+                product_code=result.get("product_code", ""),
+                name=name,
+                number=number,
+                set_name=set_name,
+                variant_code=variant_code,
             )
             if duplicates:
                 if progress_cb:
@@ -10764,10 +11033,23 @@ class CardEditorApp:
                         price_entry.delete(0, tk.END)
                         price_entry.insert(0, csv_price)
                 codes = ", ".join(
-                    [d.get("warehouse_code", "") for d in duplicates if d.get("warehouse_code")]
+                    [
+                        str(
+                            duplicate.get("product_code")
+                            or duplicate.get("code")
+                            or duplicate.get("warehouse_code")
+                            or ""
+                        ).strip()
+                        for duplicate in duplicates
+                        if (
+                            duplicate.get("product_code")
+                            or duplicate.get("code")
+                            or duplicate.get("warehouse_code")
+                        )
+                    ]
                 )
-                msg = _("Card already exists in magazyn: {codes}. Add anyway?").format(
-                    codes=codes
+                msg = _("Product already exists in Shoper: {codes}. Add anyway?").format(
+                    codes=codes or "?"
                 )
                 if not messagebox.askyesno(_("Duplicate"), msg):
                     logger.info(
