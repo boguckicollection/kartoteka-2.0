@@ -34,6 +34,37 @@ class DummyResponse:
         return self._data
 
 
+def test_request_error_message_includes_details(monkeypatch):
+    client = ShoperClient(base_url="https://shop", token="tok")
+
+    payload = {
+        "error": "invalid_request",
+        "error_description": "Detailed explanation",
+        "error_descriptions": {"pl_PL": "Szczegóły po polsku"},
+        "errors": {
+            "field_one": ["first issue", "second issue"],
+            "field_two": {"pl_PL": "Polski komunikat"},
+        },
+    }
+
+    response = DummyResponse(status_code=400, data=payload)
+    response.headers["Content-Type"] = "application/json"
+
+    def fake_request(*args, **kwargs):
+        return response
+
+    monkeypatch.setattr(client.session, "request", fake_request)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        client.get("fail")
+
+    message = str(excinfo.value)
+    assert "invalid_request" in message
+    assert "Detailed explanation" in message
+    assert "pl_PL: Szczegóły po polsku" in message
+    assert "errors: field_one: first issue; second issue | field_two: pl_PL: Polski komunikat" in message
+
+
 def test_env_vars_trimmed(monkeypatch):
     monkeypatch.setenv("SHOPER_API_URL", " https://example.com  ")
     monkeypatch.setenv("SHOPER_API_TOKEN", "  tok  ")

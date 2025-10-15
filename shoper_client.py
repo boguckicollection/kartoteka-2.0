@@ -77,25 +77,78 @@ class ShoperClient:
                 if response is not None:
                     error_message = f"API request failed ({response.status_code})"
 
-                    detail: str | None = None
+                    detail_parts: list[str] = []
                     content_type = response.headers.get("Content-Type", "")
+                    payload = None
                     if "json" in content_type:
                         try:
                             payload = response.json()
                         except ValueError:
                             payload = None
-                        if isinstance(payload, dict):
-                            detail = payload.get("error") or payload.get("message")
-                            if not detail:
-                                detail = json.dumps(payload, ensure_ascii=False)
-                        elif isinstance(payload, list):
-                            detail = json.dumps(payload, ensure_ascii=False)
-                    if not detail:
+                    if isinstance(payload, dict):
+                        base_detail = payload.get("error") or payload.get("message")
+                        if isinstance(base_detail, str) and base_detail.strip():
+                            detail_parts.append(base_detail.strip())
+
+                        error_description = payload.get("error_description")
+                        if isinstance(error_description, str) and error_description.strip():
+                            detail_parts.append(error_description.strip())
+
+                        localized = payload.get("error_descriptions") or payload.get(
+                            "error_description_translations"
+                        )
+                        if isinstance(localized, dict):
+                            for locale, description in localized.items():
+                                if not description:
+                                    continue
+                                description_text = str(description).strip()
+                                if description_text:
+                                    detail_parts.append(f"{locale}: {description_text}")
+
+                        errors = payload.get("errors")
+                        if errors:
+                            formatted_errors: list[str] = []
+                            if isinstance(errors, dict):
+                                for field, messages in errors.items():
+                                    if messages is None:
+                                        continue
+                                    if isinstance(messages, (list, tuple, set)):
+                                        msg_text = "; ".join(
+                                            str(msg).strip()
+                                            for msg in messages
+                                            if str(msg).strip()
+                                        )
+                                    elif isinstance(messages, dict):
+                                        msg_text = "; ".join(
+                                            f"{key}: {value}"
+                                            for key, value in messages.items()
+                                            if value not in (None, "")
+                                        )
+                                    else:
+                                        msg_text = str(messages).strip()
+                                    if msg_text:
+                                        formatted_errors.append(f"{field}: {msg_text}")
+                                if formatted_errors:
+                                    detail_parts.append(
+                                        "errors: " + " | ".join(formatted_errors)
+                                    )
+                            else:
+                                detail_parts.append(
+                                    "errors: " + json.dumps(errors, ensure_ascii=False)
+                                )
+
+                        if not detail_parts:
+                            detail_parts.append(json.dumps(payload, ensure_ascii=False))
+                    elif isinstance(payload, list):
+                        detail_parts.append(json.dumps(payload, ensure_ascii=False))
+
+                    if not detail_parts:
                         text = response.text.strip()
                         if text:
-                            detail = text
-                    if detail:
-                        detail = detail[:2000]
+                            detail_parts.append(text)
+
+                    if detail_parts:
+                        detail = " | ".join(detail_parts)[:2000]
                         error_message = f"{error_message}: {detail}"
 
                 raise RuntimeError(error_message) from exc
@@ -179,6 +232,14 @@ class ShoperClient:
             params["limit"] = limit
         if filters:
             params.update(filters)
+        if include_products:
+            with_value = params.get("with")
+            if isinstance(with_value, (list, tuple, set)):
+                params["with"] = ",".join(
+                    dict.fromkeys(str(value).strip() for value in with_value if value)
+                )
+            elif not with_value:
+                params["with"] = "products,delivery_address,billing_address"
         self._normalise_status_filters(params)
 
         # Krok 1: Pobieramy podstawową listę zamówień
