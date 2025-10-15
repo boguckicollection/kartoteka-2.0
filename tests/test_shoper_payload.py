@@ -33,7 +33,9 @@ def test_build_shoper_payload_forwards_optional_fields():
         "producer": {"by_name": {"pokemon": 11}},
         "tax": {"by_name": {"23%": 33}},
         "unit": {"by_name": {"szt.": 55}},
-        "availability": {"by_name": {"3": 3, "dostepny": 3}},
+        "availability": {
+            "by_name": {"3": 3, "dostępny": 3, "dostepny": 3},
+        },
     }
     card = {
         "nazwa": "Sample",
@@ -50,7 +52,7 @@ def test_build_shoper_payload_forwards_optional_fields():
         "seo_description": "SEO Desc",
         "seo_keywords": "key1, key2",
         "permalink": "sample-product",
-        "availability": "Dostepny",
+        "availability": "Dostępny",
         "delivery": "24h",
         "ilość": 2,
         "stock_warnlevel": 1,
@@ -419,7 +421,7 @@ def test_build_shoper_payload_fetches_taxonomy_when_missing():
         "producer": "Pokemon",
         "vat": "23%",
         "unit": "szt.",
-        "availability": "Dostepny",
+        "availability": "Dostępny",
     }
 
     payload = app._build_shoper_payload(card)
@@ -436,6 +438,10 @@ def test_build_shoper_payload_fetches_taxonomy_when_missing():
     cache = app._shoper_taxonomy_cache
     assert cache["category"]["by_name"]["Karty"] == 44
     assert cache["availability"]["aliases"]["3"] == 3
+    assert cache["availability"]["available_label"] == "Dostępny"
+    assert cache["availability"]["available_id"] == 3
+    assert getattr(app, "_default_availability_value", None) == "Dostępny"
+    assert ui.csv_utils.get_default_availability() == "Dostępny"
 
 
 def test_build_shoper_payload_missing_required_taxonomy_raises():

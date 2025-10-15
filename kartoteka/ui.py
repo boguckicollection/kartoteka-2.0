@@ -198,6 +198,50 @@ def _normalize_language_label(value: Any) -> Optional[str]:
         return "JP"
     if "japon" in lowered or "japan" in lowered:
         return "JP"
+
+
+def _normalize_availability_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    else:
+        text = str(value)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return text.strip().lower()
+
+
+def _looks_like_available_label(value: Any) -> bool:
+    normalized = _normalize_availability_text(value)
+    if not normalized:
+        return False
+    compact = normalized.replace(" ", "")
+    negative_tokens = (
+        "niedostep",
+        "unavail",
+        "brak",
+        "outofstock",
+        "preorder",
+        "przedsprzedaz",
+        "oczekiw",
+        "soon",
+        "wyprzedane",
+        "sprzedane",
+        "czasowo",
+    )
+    if any(token in compact for token in negative_tokens):
+        return False
+    positive_tokens = (
+        "dostep",
+        "avail",
+        "instock",
+        "magazyn",
+        "stanie",
+        "skladzie",
+        "stock",
+    )
+    return any(token in compact for token in positive_tokens)
     return None
 
 
@@ -2426,6 +2470,7 @@ class CardEditorApp:
         self.card_counts = defaultdict(int)
         self.shoper_language_overrides = self._load_shoper_language_overrides()
         self.card_cache = {}
+        self._default_availability_value: Optional[str] = None
         self.file_to_key = {}
         self.product_code_map = {}
         cache_data = csv_utils.load_store_cache()
@@ -5190,6 +5235,154 @@ class CardEditorApp:
         self._shoper_languages_cache = {"by_code": by_code, "by_id": by_id}
         return self._shoper_languages_cache
 
+    def _update_default_availability_value(self, value: Any) -> None:
+        if isinstance(value, str):
+            cleaned = value.strip()
+        elif value is None:
+            cleaned = ""
+        else:
+            cleaned = str(value).strip()
+
+        if not cleaned:
+            return
+
+        self._default_availability_value = cleaned
+        try:
+            csv_utils.set_default_availability(cleaned)
+        except Exception:
+            pass
+
+    def _determine_default_availability_from_cache(
+        self, cache: Mapping[str, Any] | None = None
+    ) -> Optional[str]:
+        if cache is None:
+            cache = getattr(self, "_shoper_taxonomy_cache", {})
+        if not isinstance(cache, Mapping):
+            return None
+
+        mapping = cache.get("availability") if isinstance(cache, Mapping) else None
+        if not isinstance(mapping, Mapping):
+            return None
+
+        label = mapping.get("available_label")
+        if isinstance(label, str) and label.strip():
+            return label.strip()
+
+        def _coerce_int_value(raw: Any) -> Optional[int]:
+            if raw in (None, ""):
+                return None
+            if isinstance(raw, bool):
+                return int(raw)
+            if isinstance(raw, (int, float)):
+                try:
+                    return int(raw)
+                except (TypeError, ValueError):
+                    return None
+            if isinstance(raw, str):
+                stripped = raw.strip()
+                if not stripped:
+                    return None
+                if stripped.isdigit():
+                    try:
+                        return int(stripped)
+                    except ValueError:
+                        return None
+                try:
+                    return int(float(stripped))
+                except ValueError:
+                    return None
+            return None
+
+        available_id = _coerce_int_value(mapping.get("available_id"))
+        if available_id is not None:
+            by_id = mapping.get("by_id") if isinstance(mapping.get("by_id"), Mapping) else None
+            if isinstance(by_id, Mapping):
+                entry = by_id.get(available_id)
+                if isinstance(entry, Mapping):
+                    for key in ("label", "name", "title", "value", "text", "code"):
+                        candidate = entry.get(key)
+                        if isinstance(candidate, str) and candidate.strip():
+                            mapping.setdefault("available_label", candidate.strip())
+                            mapping.setdefault("available_id", available_id)
+                            return candidate.strip()
+            mapping.setdefault("available_id", available_id)
+            return str(available_id)
+
+        by_name = mapping.get("by_name") if isinstance(mapping.get("by_name"), Mapping) else None
+        if isinstance(by_name, Mapping):
+            for name, value in by_name.items():
+                if not isinstance(name, str):
+                    continue
+                if not _looks_like_available_label(name):
+                    continue
+                candidate_name = name.strip()
+                if not candidate_name:
+                    continue
+                coerced_id = _coerce_int_value(value)
+                if coerced_id is not None:
+                    mapping.setdefault("available_id", coerced_id)
+                mapping.setdefault("available_label", candidate_name)
+                return candidate_name
+
+        by_id_mapping = mapping.get("by_id") if isinstance(mapping.get("by_id"), Mapping) else None
+        if isinstance(by_id_mapping, Mapping):
+            for key, entry in by_id_mapping.items():
+                if not isinstance(entry, Mapping):
+                    continue
+                for field in ("label", "name", "title", "value", "text", "code"):
+                    candidate = entry.get(field)
+                    if not isinstance(candidate, str) or not candidate.strip():
+                        continue
+                    if not _looks_like_available_label(candidate):
+                        continue
+                    candidate_name = candidate.strip()
+                    mapping.setdefault("available_label", candidate_name)
+                    coerced_id = _coerce_int_value(key)
+                    if coerced_id is not None:
+                        mapping.setdefault("available_id", coerced_id)
+                    return candidate_name
+
+        default_candidate = mapping.get("default")
+        if isinstance(default_candidate, str):
+            trimmed = default_candidate.strip()
+            return trimmed or None
+        coerced_default = _coerce_int_value(default_candidate)
+        if coerced_default is not None:
+            mapping.setdefault("available_id", coerced_default)
+            return str(coerced_default)
+        return None
+
+    def _refresh_default_availability_from_cache(self) -> None:
+        value = self._determine_default_availability_from_cache()
+        if value:
+            self._update_default_availability_value(value)
+
+    def _get_default_availability_value(self) -> str:
+        current = getattr(self, "_default_availability_value", None)
+        if isinstance(current, str) and current.strip():
+            return current
+
+        value = self._determine_default_availability_from_cache()
+        if not value:
+            try:
+                cache = self._ensure_shoper_taxonomy_cache()
+            except Exception:
+                cache = getattr(self, "_shoper_taxonomy_cache", {})
+                value = self._determine_default_availability_from_cache(cache)
+            else:
+                value = self._determine_default_availability_from_cache(cache)
+
+        if value:
+            self._update_default_availability_value(value)
+            resolved = getattr(self, "_default_availability_value", value)
+            if isinstance(resolved, str) and resolved.strip():
+                return resolved
+            return value
+
+        fallback = "1"
+        self._update_default_availability_value(fallback)
+        return fallback
+
     def _ensure_shoper_taxonomy_cache(self) -> Mapping[str, Any]:
         """Ensure taxonomy cache contains data required to build payloads."""
 
@@ -5219,6 +5412,7 @@ class CardEditorApp:
         missing = [kind for kind in required_specs if not _has_entries(kind)]
         if not missing:
             self._shoper_taxonomy_cache = dict(cache)
+            self._refresh_default_availability_from_cache()
             return self._shoper_taxonomy_cache
 
         client = getattr(self, "shoper_client", None)
@@ -5388,6 +5582,8 @@ class CardEditorApp:
             by_name: dict[str, int] = {}
             aliases: dict[str, int] = {}
             default_id: Optional[int] = None
+            available_id: Optional[int] = None
+            available_label: Optional[str] = None
 
             for entry in _iter_items(items):
                 raw_id = (
@@ -5410,6 +5606,19 @@ class CardEditorApp:
                 if "name" not in entry and "translation" in entry:
                     names.update(_collect_strings(entry.get("translation")))
 
+                if kind == "availability" and names:
+                    has_available = any(_looks_like_available_label(name) for name in names)
+                    if has_available:
+                        if available_id is None:
+                            available_id = coerced_id
+                        if available_label is None:
+                            for candidate_name in names:
+                                if _looks_like_available_label(candidate_name):
+                                    stripped_candidate = str(candidate_name).strip()
+                                    if stripped_candidate:
+                                        available_label = stripped_candidate
+                                        break
+
                 for name in names:
                     normalized = _normalize_taxonomy_key(name)
                     if not normalized:
@@ -5423,9 +5632,15 @@ class CardEditorApp:
                 mapping["aliases"] = aliases
             if default_id is not None:
                 mapping["default"] = default_id
+            if kind == "availability":
+                if available_id is not None:
+                    mapping["available_id"] = available_id
+                if available_label:
+                    mapping["available_label"] = available_label
             updated_cache[kind] = mapping
 
         self._shoper_taxonomy_cache = updated_cache
+        self._refresh_default_availability_from_cache()
         return self._shoper_taxonomy_cache
 
     def _build_shoper_payload(self, card: dict) -> dict:
@@ -9217,7 +9432,8 @@ class CardEditorApp:
         add_field(4, 0, "Opis", "description", width=260, columnspan=3)
 
         add_field(5, 0, "Waluta", "currency", default="PLN")
-        add_field(5, 1, "Dostępność", "availability", default="1")
+        availability_default = self._get_default_availability_value()
+        add_field(5, 1, "Dostępność", "availability", default=availability_default)
 
         add_field(6, 0, "Jednostka", "unit", default="szt.")
         add_field(6, 1, "Dostawa", "delivery", default="3 dni")
@@ -10627,7 +10843,7 @@ class CardEditorApp:
                         "stan": "NM",
                         "producer": "Pokémon",
                         "currency": "PLN",
-                        "availability": "1",
+                        "availability": self._get_default_availability_value(),
                         "unit": "szt.",
                         "delivery": "3 dni",
                         "active": "1",
@@ -12506,6 +12722,7 @@ class CardEditorApp:
             _update_entry_value(key, value)
 
         data.setdefault("name", data.get("nazwa", ""))
+        availability_default = self._get_default_availability_value()
         _set_if_empty("unit", "szt.")
         _set_if_empty("category", f"Karty Pokémon > {data['era']} > {data['set']}")
         _set_if_empty("producer", "Pokémon")
@@ -12515,7 +12732,7 @@ class CardEditorApp:
             _update_entry_value("producer_code", producer_code)
         _set_if_empty("currency", "PLN")
         _set_if_empty("delivery", "3 dni")
-        _set_if_empty("availability", "1")
+        _set_if_empty("availability", availability_default)
         if not _clean_text(data.get("active")):
             data["active"] = "1"
             _update_entry_value("active", "1")
