@@ -117,8 +117,39 @@ class ShoperClient:
     def post(self, endpoint, **kwargs):
         return self._request("POST", endpoint, **kwargs)
 
+    def put(self, endpoint, **kwargs):
+        return self._request("PUT", endpoint, **kwargs)
+
+    def patch(self, endpoint, **kwargs):
+        return self._request("PATCH", endpoint, **kwargs)
+
     def add_product(self, data):
         return self.post("products", json=data)
+
+    def update_product(self, product_id, data):
+        if not product_id:
+            raise ValueError("product_id is required")
+        return self.put(f"products/{product_id}", json=data)
+
+    def update_product_stock(self, product_id, stock, warn_level=None):
+        try:
+            stock_int = int(float(stock))
+        except (TypeError, ValueError):
+            raise ValueError("stock must be numeric") from None
+
+        payload = {"stock": {"stock": stock_int}}
+        if warn_level is not None:
+            try:
+                payload["stock"]["warn_level"] = int(float(warn_level))
+            except (TypeError, ValueError):
+                raise ValueError("warn_level must be numeric") from None
+        return self.update_product(product_id, payload)
+
+    def mark_products_sold(self, codes):
+        codes_list = [str(code).strip() for code in (codes or []) if str(code).strip()]
+        if not codes_list:
+            return {"count": 0}
+        return self.post("warehouse/sold", json={"codes": codes_list})
 
     def get_inventory(self, page=1, per_page=50):
         """Return products with optional pagination."""

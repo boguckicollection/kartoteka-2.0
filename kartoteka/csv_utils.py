@@ -327,6 +327,9 @@ def normalise_api_product(
         return None
 
     row: dict[str, Any] = {"product_code": code, "code": code}
+    product_id = product.get("product_id") or product.get("id")
+    if product_id is not None and product_id != "":
+        row["product_id"] = str(product_id)
     name = _extract_product_name(product)
     if name:
         row["name"] = name
@@ -339,6 +342,29 @@ def normalise_api_product(
     stock = _extract_product_stock(product)
     if stock is not None:
         row["stock"] = stock
+    producer_code = _coerce_scalar(
+        product.get("producer_code")
+        or product.get("symbol")
+        or product.get("sku")
+        or product.get("ean")
+    )
+    if producer_code is not None:
+        row["producer_code"] = producer_code
+    warehouse_code = _coerce_scalar(product.get("warehouse_code") or product.get("warehouse"))
+    if warehouse_code is not None:
+        row["warehouse_code"] = warehouse_code
+    description = _coerce_scalar(
+        product.get("description")
+        or product.get("long_description")
+        or product.get("full_description")
+    )
+    if description is not None:
+        row["description"] = description
+    short_description = _coerce_scalar(
+        product.get("short_description") or product.get("intro")
+    )
+    if short_description is not None:
+        row["short_description"] = short_description
     image = _extract_product_image(product)
     if image:
         row["images 1"] = image
@@ -540,123 +566,21 @@ def infer_product_code(data: Mapping[str, Any] | None) -> str:
 
 
 def decrement_store_stock(product_counts: Mapping[str, int]):
-    """Zmniejsza stan magazynowy ('availability') w store_export.csv i prosi o potwierdzenie."""
-    if not product_counts:
-        return
-    try:
-        with open(STORE_EXPORT_CSV, "r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f, delimiter=";")
-            rows = list(reader)
-            fieldnames = reader.fieldnames
-    except FileNotFoundError:
-        logger.warning(f"Plik {STORE_EXPORT_CSV} nie został znaleziony.")
-        return
+    """Legacy helper kept for backwards compatibility."""
 
-    if not fieldnames or "product_code" not in fieldnames or "availability" not in fieldnames:
-        logger.error(f"Plik {STORE_EXPORT_CSV} ma nieprawidłowe nagłówki.")
-        return
-
-    for row in rows:
-        product_code = row.get("product_code")
-        if product_code in product_counts:
-            current_stock = int(row.get("availability", 0))
-            sold_quantity = product_counts[product_code]
-            row["availability"] = str(max(0, current_stock - sold_quantity))
-
-    if messagebox.askyesno("Potwierdzenie zapisu", f"Czy na pewno chcesz zapisać zmiany stanów magazynowych w pliku {os.path.basename(STORE_EXPORT_CSV)}?"):
-        try:
-            with open(STORE_EXPORT_CSV, "w", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")
-                writer.writeheader()
-                writer.writerows(rows)
-            logger.info(f"Plik {STORE_EXPORT_CSV} został zaktualizowany.")
-        except OSError as e:
-            logger.error(f"Błąd zapisu do pliku {STORE_EXPORT_CSV}: {e}")
-    else:
-        logger.info("Zapis do store_export.csv anulowany przez użytkownika.")
+    raise RuntimeError(
+        "CSV-based stock management has been replaced with direct Shoper API "
+        "integration. Use ShoperClient.update_product_stock instead."
+    )
 
 
 def mark_warehouse_codes_as_sold(codes, *, path: str | None = None) -> int:
-    """Mark cards associated with ``codes`` as sold in the warehouse CSV.
+    """Legacy helper kept for backwards compatibility."""
 
-    The helper understands grouped entries where multiple warehouse codes are
-    stored in a single CSV row.  When such a row contains both sold and unsold
-    codes the function keeps the unsold codes together and duplicates the row
-    with the sold flag set for each sold code.  This mirrors how the magazyn
-    view groups cards while ensuring sold entries are removed from future
-    exports.
-
-    Parameters
-    ----------
-    codes:
-        Iterable with warehouse codes to mark as sold.  Empty or falsy entries
-        are ignored.
-    path:
-        Optional explicit path to the CSV file.  When omitted the configured
-        :data:`WAREHOUSE_CSV` is used.
-
-    Returns
-    -------
-    int
-        Number of codes that were successfully marked as sold.
-    """
-
-    codes_to_mark = [c.strip() for c in (codes or []) if str(c).strip()]
-    if not codes_to_mark:
-        return 0
-
-    csv_path = path or WAREHOUSE_CSV
-    if not csv_path:
-        return 0
-
-    try:
-        with open(csv_path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f, delimiter=";")
-            rows = list(reader)
-            fieldnames = reader.fieldnames or WAREHOUSE_FIELDNAMES
-    except FileNotFoundError:
-        return 0
-
-    sold_codes: set[str] = set()
-    updated_rows: list[dict[str, str]] = []
-
-    for row in rows:
-        raw_codes = str(row.get("warehouse_code") or "")
-        split_codes = [c.strip() for c in raw_codes.split(";") if c.strip()]
-        matches = [c for c in split_codes if c in codes_to_mark]
-
-        if not matches:
-            updated_rows.append(row)
-            continue
-
-        remaining = [c for c in split_codes if c not in matches]
-        if remaining:
-            unsold_row = dict(row)
-            unsold_row["warehouse_code"] = ";".join(remaining)
-            # ensure unsold row does not inherit a sold flag
-            if str(unsold_row.get("sold") or "").lower() in {"1", "true", "yes"}:
-                unsold_row["sold"] = ""
-            updated_rows.append(unsold_row)
-
-        for code in matches:
-            sold_row = dict(row)
-            sold_row["warehouse_code"] = code
-            sold_row["sold"] = "1"
-            updated_rows.append(sold_row)
-            sold_codes.add(code)
-
-    if not sold_codes:
-        return 0
-
-    if "sold" not in fieldnames:
-        fieldnames = list(fieldnames) + ["sold"]
-
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")
-        writer.writeheader()
-        writer.writerows(updated_rows)
-
-    return len(sold_codes)
+    raise RuntimeError(
+        "Warehouse CSV updates are no longer supported. Use the Shoper API "
+        "via ShoperClient.mark_products_sold instead."
+    )
 
 
 def find_duplicates(
