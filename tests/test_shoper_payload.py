@@ -13,6 +13,14 @@ import kartoteka.ui as ui  # noqa: E402
 importlib.reload(ui)
 
 
+@pytest.fixture
+def shoper_availability_entries() -> List[Dict[str, Any]]:
+    return [
+        {"availability_id": 1, "name": "Dostępny"},
+        {"availability_id": 4, "name": "Średnia ilość"},
+    ]
+
+
 def _translation_dict(translations):
     mapping = {}
     for entry in translations:
@@ -23,6 +31,32 @@ def _translation_dict(translations):
             continue
         mapping[code] = entry
     return mapping
+
+
+def test_ensure_taxonomy_cache_prefers_high_priority_availability(
+    shoper_availability_entries: List[Dict[str, Any]]
+):
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app._shoper_taxonomy_cache = {
+        "category": {"by_name": {"placeholder": 1}},
+        "producer": {"by_name": {"placeholder": 1}},
+        "tax": {"by_name": {"placeholder": 1}},
+        "unit": {"by_name": {"placeholder": 1}},
+    }
+
+    def _fake_get(endpoint: str, params: Optional[Dict[str, Any]] = None):
+        if endpoint == "availabilities":
+            return {"list": shoper_availability_entries}
+        return {"list": []}
+
+    app.shoper_client = MagicMock()
+    app.shoper_client.get.side_effect = _fake_get
+
+    cache = app._ensure_shoper_taxonomy_cache()
+    availability = cache.get("availability", {})
+
+    assert availability.get("available_id") == 4
+    assert availability.get("available_label") == "Średnia ilość"
 
 
 def test_build_shoper_payload_forwards_optional_fields():
