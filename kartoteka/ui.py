@@ -6041,61 +6041,73 @@ class CardEditorApp:
                         if _coerce_optional_int(alias_target) == coerced:
                             return coerced
             normalized_value = _normalize_taxonomy_key(raw_value)
-            if not normalized_value:
-                default_val = None
+            has_explicit_value = False
+            if isinstance(raw_value, str):
+                has_explicit_value = bool(raw_value.strip())
+            elif raw_value not in (None,):
+                has_explicit_value = True
+
+            if normalized_value:
+                lookup = _taxonomy_lookup(kind)
+                aliases = None
                 if isinstance(mapping, Mapping):
-                    default_val = mapping.get("default")
-                return _coerce_optional_int(default_val)
-            lookup = _taxonomy_lookup(kind)
-            aliases = None
-            if isinstance(mapping, Mapping):
-                aliases = mapping.get("aliases")
+                    aliases = mapping.get("aliases")
 
-            def _try_lookup(normalized_key: str) -> Optional[int]:
-                if not normalized_key:
+                def _try_lookup(normalized_key: str) -> Optional[int]:
+                    if not normalized_key:
+                        return None
+                    candidate = lookup.get(normalized_key)
+                    if candidate is not None:
+                        resolved = _coerce_optional_int(candidate)
+                        if resolved is not None:
+                            return resolved
+                    if isinstance(aliases, Mapping):
+                        alias_target = aliases.get(normalized_key)
+                        if alias_target is None:
+                            for key, value in aliases.items():
+                                if _normalize_taxonomy_key(key) == normalized_key:
+                                    alias_target = value
+                                    break
+                        if alias_target is not None and alias_target != raw_value:
+                            resolved = _resolve_taxonomy_id(kind, alias_target)
+                            if resolved is not None:
+                                return resolved
                     return None
-                candidate = lookup.get(normalized_key)
-                if candidate is not None:
-                    resolved = _coerce_optional_int(candidate)
-                    if resolved is not None:
-                        return resolved
-                if isinstance(aliases, Mapping):
-                    alias_target = aliases.get(normalized_key)
-                    if alias_target is None:
-                        for key, value in aliases.items():
-                            if _normalize_taxonomy_key(key) == normalized_key:
-                                alias_target = value
-                                break
-                    if alias_target is not None and alias_target != raw_value:
-                        resolved = _resolve_taxonomy_id(kind, alias_target)
-                        if resolved is not None:
-                            return resolved
-                return None
 
-            resolved = _try_lookup(normalized_value)
-            if resolved is not None:
-                return resolved
+                resolved = _try_lookup(normalized_value)
+                if resolved is not None:
+                    return resolved
 
-            if kind == "category" and isinstance(raw_value, str):
-                path_segments = [
-                    segment.strip()
-                    for segment in re.split(r"[>/]", raw_value)
-                    if isinstance(segment, str) and segment.strip()
-                ]
-                if path_segments:
-                    for start_index in range(len(path_segments) - 1, -1, -1):
-                        candidate_value = " > ".join(path_segments[start_index:])
-                        normalized_candidate = _normalize_taxonomy_key(candidate_value)
-                        if normalized_candidate == normalized_value:
-                            continue
-                        resolved = _try_lookup(normalized_candidate)
-                        if resolved is not None:
-                            return resolved
+                if kind == "category" and isinstance(raw_value, str):
+                    path_segments = [
+                        segment.strip()
+                        for segment in re.split(r"[>/]", raw_value)
+                        if isinstance(segment, str) and segment.strip()
+                    ]
+                    if path_segments:
+                        for start_index in range(len(path_segments) - 1, -1, -1):
+                            candidate_value = " > ".join(path_segments[start_index:])
+                            normalized_candidate = _normalize_taxonomy_key(candidate_value)
+                            if normalized_candidate == normalized_value:
+                                continue
+                            resolved = _try_lookup(normalized_candidate)
+                            if resolved is not None:
+                                return resolved
 
-            default_val = None
+            fallback_candidates: list[Any] = []
+            if kind == "availability" and not has_explicit_value:
+                if isinstance(mapping, Mapping):
+                    fallback_candidates.append(mapping.get("available_id"))
+                csv_default = csv_utils.get_default_availability_id()
+                if csv_default is not None:
+                    fallback_candidates.append(csv_default)
             if isinstance(mapping, Mapping):
-                default_val = mapping.get("default")
-            return _coerce_optional_int(default_val)
+                fallback_candidates.append(mapping.get("default"))
+            for candidate in fallback_candidates:
+                resolved = _coerce_optional_int(candidate)
+                if resolved is not None:
+                    return resolved
+            return None
 
         translation_locale = (
             card.get("translation_locale")

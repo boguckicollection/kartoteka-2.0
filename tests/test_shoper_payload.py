@@ -521,6 +521,46 @@ def test_build_shoper_payload_fetches_taxonomy_when_missing():
     assert ui.csv_utils.get_default_availability() == "Dostępny"
 
 
+def test_build_shoper_payload_prefers_cached_available_over_default():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app._default_availability_value = None
+    app._default_availability_id = None
+    ui.csv_utils.set_default_availability({"available_label": "Domyślny", "available_id": 1})
+
+    availability_mapping = {
+        "available_label": "Dostępny od ręki",
+        "available_id": 4,
+        "default": 1,
+        "by_name": {"Dostępny od ręki": 4, "Domyślny": 1},
+        "by_id": {
+            1: {"availability_id": 1, "name": "Domyślny"},
+            4: {"availability_id": 4, "name": "Dostępny od ręki"},
+        },
+        "aliases": {"dostepny od reki": 4, "4": 4, "domyslny": 1, "1": 1},
+    }
+
+    app._shoper_taxonomy_cache = {
+        "category": {"by_name": {"Karty": 44}},
+        "producer": {"by_name": {"Pokemon": 11}},
+        "tax": {"by_name": {"23%": 33}},
+        "unit": {"by_name": {"szt.": 55}},
+        "availability": availability_mapping,
+    }
+
+    card = {
+        "nazwa": "Sample",
+        "product_code": "PKM-CACHED",
+        "category": "Karty",
+        "producer": "Pokemon",
+        "vat": "23%",
+        "unit": "szt.",
+    }
+
+    payload = app._build_shoper_payload(card)
+
+    assert payload["availability_id"] == 4
+
+
 def test_build_shoper_payload_uses_cached_default_availability_when_missing():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
     app._default_availability_value = None
