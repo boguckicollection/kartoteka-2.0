@@ -80,6 +80,52 @@ def test_export_csv_overrides_cached_price(tmp_path, monkeypatch):
     assert row["vat"] == "8%"
 
 
+def test_export_csv_overrides_cached_cena(tmp_path, monkeypatch):
+    module = _reload_csv_utils(monkeypatch, tmp_path)
+
+    cached_row = {
+        "product_code": "PC1",
+        "name": "Pikachu",
+        "category": "Karty Pokémon > Era1 > Base",
+        "producer": "Pokemon",
+        "short_description": "s",
+        "description": "d",
+        "price": "0.10",
+        "cena": "0.10",
+        "currency": "PLN",
+        "vat": "5%",
+        "stock": "3",
+    }
+
+    session_row = {
+        "nazwa": "Pikachu",
+        "numer": "1",
+        "set": "Base",
+        "era": "Era1",
+        "product_code": "PC1",
+        "cena": "10",
+        "category": "Karty Pokémon > Era1 > Base",
+        "producer": "Pokemon",
+        "short_description": "s",
+        "description": "d",
+        "image1": "img.jpg",
+    }
+
+    app = SimpleNamespace(
+        output_data=[session_row],
+        session_entries=[],
+        store_data={"PC1": cached_row},
+    )
+
+    rows = module.export_csv(app)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["product_code"] == "PC1"
+    assert row["price"] == "10"
+    assert row["cena"] == "10"
+
+
 def test_export_includes_new_fields(tmp_path, monkeypatch):
     module = _reload_csv_utils(monkeypatch, tmp_path)
 
