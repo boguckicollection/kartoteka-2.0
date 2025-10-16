@@ -6227,7 +6227,7 @@ class CardEditorApp:
         payload = {
             "product_code": product_code,
             "active": _coerce_int(card.get("active", 1), default=1),
-            "price": _coerce_float(card.get("cena", card.get("price")), default=0.0),
+            "price": _coerce_float(card.get("price", card.get("cena")), default=0.0),
             "translations": translations_payload,
         }
 

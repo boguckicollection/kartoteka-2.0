@@ -140,6 +140,28 @@ def test_build_shoper_payload_coerces_currency_suffixed_price():
     assert payload["price"] == pytest.approx(14.99)
 
 
+def test_build_shoper_payload_prefers_price_field():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app.shoper_client = MagicMock()
+    app._shoper_taxonomy_cache = {
+        "producer": {"by_name": {}},
+        "tax": {"by_name": {}},
+        "unit": {"by_name": {}},
+        "availability": {"by_name": {}},
+    }
+
+    card = {
+        "nazwa": "Sample",
+        "product_code": "PKM-PRICE",
+        "cena": "0.10",
+        "price": "10",
+    }
+
+    payload = app._build_shoper_payload(card)
+
+    assert payload["price"] == pytest.approx(10.0)
+
+
 def test_build_shoper_payload_rejects_unknown_availability_id():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
     app.shoper_client = MagicMock()
