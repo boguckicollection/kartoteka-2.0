@@ -528,6 +528,39 @@ def test_build_shoper_payload_uses_cached_default_availability_when_missing():
     assert ui.csv_utils.get_default_availability() == "Przedsprzedaż"
 
 
+def test_build_shoper_payload_recognises_average_quantity_default():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app.shoper_client = MagicMock()
+    app._default_availability_value = None
+    app._default_availability_id = None
+    ui.csv_utils.set_default_availability("1")
+
+    availability_mapping = {
+        "default": "Średnia ilość",
+        "by_name": {"Średnia ilość": 4},
+        "by_id": {4: {"availability_id": 4, "name": "Średnia ilość"}},
+    }
+
+    app._shoper_taxonomy_cache = {
+        "category": {"by_name": {}},
+        "producer": {"by_name": {}},
+        "tax": {"by_name": {}},
+        "unit": {"by_name": {}},
+        "availability": availability_mapping,
+    }
+
+    app._refresh_default_availability_from_cache()
+    availability_mapping["default"] = availability_mapping.get("available_id") or availability_mapping.get(
+        "default"
+    )
+
+    card = {"nazwa": "Sample", "product_code": "PKM-AVERAGE"}
+
+    payload = app._build_shoper_payload(card)
+
+    assert payload["availability_id"] == 4
+
+
 def test_build_shoper_payload_missing_required_taxonomy_raises():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
     client = MagicMock()

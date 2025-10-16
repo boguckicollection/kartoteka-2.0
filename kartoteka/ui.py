@@ -240,6 +240,8 @@ def _looks_like_available_label(value: Any) -> bool:
         "stanie",
         "skladzie",
         "stock",
+        "ilosc",
+        "sredn",
     )
     return any(token in compact for token in positive_tokens)
     return None
