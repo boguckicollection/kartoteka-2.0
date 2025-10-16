@@ -1102,7 +1102,7 @@ def export_csv(app, path: str = STORE_EXPORT_CSV) -> list[dict[str, str]]:
 
     session_rows = list(_iter_session_rows(app))
 
-    session_override_fields = {"price", "currency", "vat"}
+    session_override_fields = {"price", "currency", "vat", "cena"}
 
     for raw in session_rows:
         try:
@@ -1132,7 +1132,10 @@ def export_csv(app, path: str = STORE_EXPORT_CSV) -> list[dict[str, str]]:
             except (TypeError, ValueError):
                 stock_value = 0
             existing["stock"] = stock_value + 1
-            for key, value in format_store_row(row).items():
+            formatted_row = format_store_row(row)
+            if "cena" not in formatted_row and "cena" in row:
+                formatted_row["cena"] = row["cena"]
+            for key, value in formatted_row.items():
                 if key in session_override_fields:
                     existing[key] = value
                     continue
