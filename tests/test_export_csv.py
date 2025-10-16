@@ -1,5 +1,6 @@
 import csv
 import importlib
+from collections.abc import Mapping
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from pathlib import Path
@@ -29,6 +30,54 @@ def _reload_csv_utils(monkeypatch, tmp_path):
 
 def _make_app(rows):
     return SimpleNamespace(output_data=rows, session_entries=[])
+
+
+def test_export_csv_overrides_cached_price(tmp_path, monkeypatch):
+    module = _reload_csv_utils(monkeypatch, tmp_path)
+
+    cached_row = {
+        "product_code": "PC1",
+        "name": "Pikachu",
+        "category": "Karty Pokémon > Era1 > Base",
+        "producer": "Pokemon",
+        "short_description": "s",
+        "description": "d",
+        "price": "0.10",
+        "currency": "PLN",
+        "vat": "5%",
+        "stock": "3",
+    }
+
+    session_row = {
+        "nazwa": "Pikachu",
+        "numer": "1",
+        "set": "Base",
+        "era": "Era1",
+        "product_code": "PC1",
+        "cena": "10",
+        "category": "Karty Pokémon > Era1 > Base",
+        "producer": "Pokemon",
+        "short_description": "s",
+        "description": "d",
+        "image1": "img.jpg",
+        "currency": "EUR",
+        "vat": "8%",
+    }
+
+    app = SimpleNamespace(
+        output_data=[session_row],
+        session_entries=[],
+        store_data={"PC1": cached_row},
+    )
+
+    rows = module.export_csv(app)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["product_code"] == "PC1"
+    assert row["price"] == "10"
+    assert row["currency"] == "EUR"
+    assert row["vat"] == "8%"
 
 
 def test_export_includes_new_fields(tmp_path, monkeypatch):
@@ -245,7 +294,21 @@ def test_session_summary_send_button_handles_errors(tmp_path, monkeypatch):
             self.output_data = list(self.session_entries)
             self.cards: list[str] = []
             self.index = 0
-            self.store_data: dict[str, dict[str, str]] = {}
+            self.store_data: dict[str, dict[str, str]] = {
+                "PC1": {
+                    "product_code": "PC1",
+                    "name": "Pikachu",
+                    "category": "Karty Pokémon > Era1 > Base",
+                    "producer": "Pokemon",
+                    "short_description": "s",
+                    "description": "d",
+                    "price": "0.10",
+                    "currency": "PLN",
+                    "vat": "5%",
+                    "stock": "3",
+                }
+            }
+            self._cached_products = []
             self._latest_export_rows: list[dict[str, str]] = []
             self._summary_warehouse_written = False
             self.frame = SimpleNamespace(
@@ -276,6 +339,17 @@ def test_session_summary_send_button_handles_errors(tmp_path, monkeypatch):
         def close_session_summary(self):
             self.closed = True
 
+        def _cache_store_product(self, code, row, persist=False):
+            snapshot = dict(row) if isinstance(row, Mapping) else {}
+            self.store_data[code] = snapshot
+            self._cached_products.append((code, snapshot))
+            if persist:
+                self._persist_store_cache()
+            return snapshot
+
+        def _persist_store_cache(self):
+            ui.csv_utils.save_store_cache(self.store_data.values())
+
         def _send_card_to_shoper(self, card):
             self.sent_rows.append(dict(card))
             response = self.shoper_client.add_product(card)
@@ -295,12 +369,15 @@ def test_session_summary_send_button_handles_errors(tmp_path, monkeypatch):
     data_labels = [lbl for lbl in created_labels if lbl.font == ("Segoe UI", 16)]
     assert len(data_labels) == len(app.session_entries) * 4
     assert {"Pikachu", "Eevee"}.issubset({lbl.text for lbl in data_labels})
+    assert data_labels[2].text == "10"
 
     send_cmd = app.buttons["Wyślij przez API"]
     send_cmd()
 
     assert len(app.sent_rows) == 2
     assert len(app.shoper_client.calls) == 2
+    pikachu_payload = next(row for row in app.sent_rows if row["product_code"] == "PC1")
+    assert pikachu_payload["price"] == "10"
 
     warning_messages = [text for kind, text in messages if kind == "warning"]
     assert warning_messages
