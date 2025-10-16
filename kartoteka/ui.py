@@ -247,6 +247,30 @@ def _looks_like_available_label(value: Any) -> bool:
     return None
 
 
+def _score_availability_label(value: Any) -> float:
+    """Return a priority score for Shoper availability labels."""
+
+    normalized = _normalize_availability_text(value)
+    if not normalized:
+        return float("-inf")
+
+    if not _looks_like_available_label(value):
+        return float("-inf")
+
+    score = 1.0
+    compact = normalized.replace(" ", "")
+    lowered_original = str(value).strip().lower() if value is not None else ""
+
+    if "ilosc" in normalized or "ilosc" in compact or "ilość" in lowered_original:
+        score += 1.0
+    if "sredn" in normalized or "sredn" in compact or "średn" in lowered_original:
+        score += 2.0
+    if normalized == "srednia ilosc" or lowered_original == "średnia ilość":
+        score += 3.0
+
+    return score
+
+
 def _iter_attribute_value_candidates(value: Any) -> Iterable[Any]:
     if isinstance(value, Mapping):
         for item in value.values():
@@ -5373,10 +5397,6 @@ class CardEditorApp:
         if not isinstance(mapping, Mapping):
             return None
 
-        label = mapping.get("available_label")
-        if isinstance(label, str) and label.strip():
-            return label.strip()
-
         def _coerce_int_value(raw: Any) -> Optional[int]:
             if raw in (None, ""):
                 return None
@@ -5402,54 +5422,88 @@ class CardEditorApp:
                     return None
             return None
 
+        def _coerce_priority(raw: Any) -> float:
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                return float(raw)
+            if isinstance(raw, str):
+                stripped = raw.strip()
+                if not stripped:
+                    return float("-inf")
+                try:
+                    return float(stripped)
+                except ValueError:
+                    return float("-inf")
+            return float("-inf")
+
         available_id = _coerce_int_value(mapping.get("available_id"))
-        if available_id is not None:
-            by_id = mapping.get("by_id") if isinstance(mapping.get("by_id"), Mapping) else None
-            if isinstance(by_id, Mapping):
-                entry = by_id.get(available_id)
-                if isinstance(entry, Mapping):
-                    for key in ("label", "name", "title", "value", "text", "code"):
-                        candidate = entry.get(key)
-                        if isinstance(candidate, str) and candidate.strip():
-                            mapping.setdefault("available_label", candidate.strip())
-                            mapping.setdefault("available_id", available_id)
-                            return candidate.strip()
-            mapping.setdefault("available_id", available_id)
-            return str(available_id)
+        best_id = available_id
+        best_label: Optional[str] = None
+        best_score = float("-inf")
+
+        def _register_candidate(
+            label_candidate: Any,
+            candidate_id: Optional[int],
+            *,
+            explicit_score: Optional[float] = None,
+        ) -> None:
+            nonlocal best_label, best_id, best_score
+            if not isinstance(label_candidate, str):
+                return
+            candidate_label = label_candidate.strip()
+            if not candidate_label:
+                return
+            score = explicit_score if explicit_score is not None else _score_availability_label(candidate_label)
+            if score == float("-inf"):
+                return
+            if score > best_score:
+                best_score = score
+                best_label = candidate_label
+                if candidate_id is not None:
+                    best_id = candidate_id
+            elif score == best_score:
+                if best_label is None:
+                    best_label = candidate_label
+                if best_id is None and candidate_id is not None:
+                    best_id = candidate_id
+
+        stored_label = mapping.get("available_label")
+        stored_priority = _coerce_priority(mapping.get("available_priority"))
+        if isinstance(stored_label, str) and stored_label.strip():
+            explicit = stored_priority if stored_priority > float("-inf") else 0.0
+            _register_candidate(stored_label, available_id, explicit_score=explicit)
+
+        by_id = mapping.get("by_id") if isinstance(mapping.get("by_id"), Mapping) else None
+        if available_id is not None and isinstance(by_id, Mapping):
+            entry = by_id.get(available_id)
+            if isinstance(entry, Mapping):
+                for key in ("label", "name", "title", "value", "text", "code"):
+                    _register_candidate(entry.get(key), available_id)
 
         by_name = mapping.get("by_name") if isinstance(mapping.get("by_name"), Mapping) else None
         if isinstance(by_name, Mapping):
             for name, value in by_name.items():
-                if not isinstance(name, str):
-                    continue
-                if not _looks_like_available_label(name):
-                    continue
-                candidate_name = name.strip()
-                if not candidate_name:
-                    continue
                 coerced_id = _coerce_int_value(value)
-                if coerced_id is not None:
-                    mapping.setdefault("available_id", coerced_id)
-                mapping.setdefault("available_label", candidate_name)
-                return candidate_name
+                _register_candidate(name, coerced_id)
 
-        by_id_mapping = mapping.get("by_id") if isinstance(mapping.get("by_id"), Mapping) else None
-        if isinstance(by_id_mapping, Mapping):
-            for key, entry in by_id_mapping.items():
+        if isinstance(by_id, Mapping):
+            for key, entry in by_id.items():
                 if not isinstance(entry, Mapping):
                     continue
+                coerced_id = _coerce_int_value(key)
                 for field in ("label", "name", "title", "value", "text", "code"):
-                    candidate = entry.get(field)
-                    if not isinstance(candidate, str) or not candidate.strip():
-                        continue
-                    if not _looks_like_available_label(candidate):
-                        continue
-                    candidate_name = candidate.strip()
-                    mapping.setdefault("available_label", candidate_name)
-                    coerced_id = _coerce_int_value(key)
-                    if coerced_id is not None:
-                        mapping.setdefault("available_id", coerced_id)
-                    return candidate_name
+                    _register_candidate(entry.get(field), coerced_id)
+
+        if best_label is not None:
+            mapping["available_label"] = best_label
+            if best_id is not None:
+                mapping["available_id"] = best_id
+            if best_score > float("-inf"):
+                mapping["available_priority"] = best_score
+            return best_label
+
+        if best_id is not None:
+            mapping["available_id"] = best_id
+            return str(best_id)
 
         default_candidate = mapping.get("default")
         if isinstance(default_candidate, str):
@@ -5774,6 +5828,7 @@ class CardEditorApp:
             default_id: Optional[int] = None
             available_id: Optional[int] = None
             available_label: Optional[str] = None
+            available_score: float = float("-inf")
 
             for entry in _iter_items(items):
                 raw_id = (
@@ -5797,17 +5852,22 @@ class CardEditorApp:
                     names.update(_collect_strings(entry.get("translation")))
 
                 if kind == "availability" and names:
-                    has_available = any(_looks_like_available_label(name) for name in names)
-                    if has_available:
-                        if available_id is None:
-                            available_id = coerced_id
-                        if available_label is None:
-                            for candidate_name in names:
-                                if _looks_like_available_label(candidate_name):
-                                    stripped_candidate = str(candidate_name).strip()
-                                    if stripped_candidate:
-                                        available_label = stripped_candidate
-                                        break
+                    entry_best_score = float("-inf")
+                    entry_best_label: Optional[str] = None
+                    for candidate_name in names:
+                        score = _score_availability_label(candidate_name)
+                        if score == float("-inf"):
+                            continue
+                        stripped_candidate = str(candidate_name).strip()
+                        if not stripped_candidate:
+                            continue
+                        if score > entry_best_score:
+                            entry_best_score = score
+                            entry_best_label = stripped_candidate
+                    if entry_best_label is not None and entry_best_score > available_score:
+                        available_id = coerced_id
+                        available_label = entry_best_label
+                        available_score = entry_best_score
 
                 for name in names:
                     normalized = _normalize_taxonomy_key(name)
@@ -5827,6 +5887,8 @@ class CardEditorApp:
                     mapping["available_id"] = available_id
                 if available_label:
                     mapping["available_label"] = available_label
+                if available_score > float("-inf"):
+                    mapping["available_priority"] = available_score
             updated_cache[kind] = mapping
 
         self._shoper_taxonomy_cache = updated_cache
