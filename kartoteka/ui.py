@@ -5384,6 +5384,7 @@ class CardEditorApp:
             csv_utils.set_default_availability(payload)
         except Exception:
             pass
+        self._update_availability_choices()
 
     def _determine_default_availability_from_cache(
         self, cache: Mapping[str, Any] | None = None
@@ -5519,6 +5520,7 @@ class CardEditorApp:
         value = self._determine_default_availability_from_cache()
         if value:
             self._update_default_availability_value(value)
+        self._update_availability_choices()
 
     def _get_default_availability_value(self) -> str:
         current = getattr(self, "_default_availability_value", None)
@@ -5626,6 +5628,95 @@ class CardEditorApp:
         fallback = "1"
         self._update_default_availability_value(fallback)
         return fallback
+
+    def _current_availability_default(self) -> Optional[str]:
+        value = getattr(self, "_default_availability_value", None)
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                return cleaned
+        try:
+            csv_default = csv_utils.get_default_availability()
+        except Exception:
+            csv_default = None
+        if isinstance(csv_default, str):
+            cleaned_csv = csv_default.strip()
+            if cleaned_csv:
+                return cleaned_csv
+        return None
+
+    def _get_known_availability_labels(self) -> list[str]:
+        labels: list[str] = []
+        seen: set[str] = set()
+
+        def _register(value: Any) -> None:
+            if isinstance(value, str):
+                cleaned = value.strip()
+                if cleaned and cleaned not in seen:
+                    labels.append(cleaned)
+                    seen.add(cleaned)
+
+        cache = getattr(self, "_shoper_taxonomy_cache", None)
+        mapping = cache.get("availability") if isinstance(cache, Mapping) else None
+        if isinstance(mapping, Mapping):
+            by_name = mapping.get("by_name")
+            if isinstance(by_name, Mapping):
+                for label in by_name.keys():
+                    if label is None:
+                        continue
+                    _register(str(label))
+
+            by_id = mapping.get("by_id")
+            if isinstance(by_id, Mapping):
+                for entry in by_id.values():
+                    if isinstance(entry, Mapping):
+                        for field in ("label", "name", "title", "text", "value", "code"):
+                            if field in entry:
+                                _register(entry[field])
+                    else:
+                        _register(entry)
+
+            _register(mapping.get("available_label"))
+
+        default_value = self._current_availability_default()
+        if default_value:
+            if default_value in labels:
+                labels = [label for label in labels if label != default_value]
+            labels.insert(0, default_value)
+
+        return labels
+
+    def _update_availability_choices(self) -> None:
+        widget = getattr(self, "_availability_widget", None)
+        if widget is None:
+            return
+
+        options = self._get_known_availability_labels()
+        if not options:
+            default_value = self._current_availability_default()
+            if default_value:
+                options = [default_value]
+
+        combo_cls = getattr(ctk, "CTkComboBox", None)
+        if options and combo_cls is not None and isinstance(widget, combo_cls):
+            try:
+                widget.configure(values=options)
+            except Exception:
+                pass
+
+        var = self.entries.get("availability")
+        if hasattr(var, "get") and hasattr(var, "set"):
+            try:
+                current_value = var.get()
+            except Exception:
+                current_value = ""
+            if not str(current_value or "").strip():
+                default_value = self._current_availability_default()
+                if default_value:
+                    try:
+                        var.set(default_value)
+                    except Exception:
+                        pass
 
     def _ensure_shoper_taxonomy_cache(self) -> Mapping[str, Any]:
         """Ensure taxonomy cache contains data required to build payloads."""
@@ -9484,6 +9575,7 @@ class CardEditorApp:
         self.attribute_status_label.grid(row=0, column=0, sticky="nw", padx=10, pady=10)
 
         self.entries = {}
+        self._availability_widget = None
 
         grid_opts = {"padx": 5, "pady": 2}
 
@@ -9496,6 +9588,16 @@ class CardEditorApp:
             self.info_frame, width=200, placeholder_text="Nazwa"
         )
         self.entries["nazwa"].grid(row=start_row, column=1, sticky="ew", **grid_opts)
+
+        tk.Label(
+            self.info_frame, text="Kod produktu", bg=FIELD_BG_COLOR, fg=TEXT_COLOR
+        ).grid(row=start_row, column=2, sticky="w", **grid_opts)
+        self.entries["product_code"] = ctk.CTkEntry(
+            self.info_frame, width=200, placeholder_text="Kod produktu"
+        )
+        self.entries["product_code"].grid(
+            row=start_row, column=3, sticky="ew", **grid_opts
+        )
 
         tk.Label(
             self.info_frame, text="Numer", bg=FIELD_BG_COLOR, fg=TEXT_COLOR
@@ -9694,34 +9796,42 @@ class CardEditorApp:
                 padx=5,
                 pady=2,
             )
+            if key == "availability":
+                self._availability_widget = widget
             self.entries[key] = var
             return var
 
-        add_field(0, 0, "Kod produktu", "product_code")
-        add_field(0, 1, "Nazwa (Shoper)", "name")
+        add_field(0, 0, "Kod producenta", "producer_code")
+        add_field(0, 1, "Producent", "producer", default="Pokémon")
 
-        add_field(1, 0, "Kod producenta", "producer_code")
-        add_field(1, 1, "Producent", "producer", default="Pokémon")
+        add_field(1, 0, "Kategoria", "category", width=260, columnspan=3)
 
-        add_field(2, 0, "Kategoria", "category", width=260, columnspan=3)
+        add_field(2, 0, "Krótki opis", "short_description", width=260, columnspan=3)
+        add_field(3, 0, "Opis", "description", width=260, columnspan=3)
 
-        add_field(3, 0, "Krótki opis", "short_description", width=260, columnspan=3)
-        add_field(4, 0, "Opis", "description", width=260, columnspan=3)
-
-        add_field(5, 0, "Waluta", "currency", default="PLN")
+        add_field(4, 0, "Waluta", "currency", default="PLN")
         availability_default = self._get_default_availability_value()
-        add_field(5, 1, "Dostępność", "availability", default=availability_default)
+        availability_values = self._get_known_availability_labels()
+        add_field(
+            4,
+            1,
+            "Dostępność",
+            "availability",
+            default=availability_default,
+            values=availability_values if availability_values else None,
+        )
+        self._update_availability_choices()
 
-        add_field(6, 0, "Jednostka", "unit", default="szt.")
-        add_field(6, 1, "Dostawa", "delivery", default="3 dni")
+        add_field(5, 0, "Jednostka", "unit", default="szt.")
+        add_field(5, 1, "Dostawa", "delivery", default="3 dni")
 
-        add_field(7, 0, "Stan magazynowy", "stock")
-        add_field(7, 1, "Aktywny", "active", values=["0", "1"], default="1")
+        add_field(6, 0, "Stan magazynowy", "stock")
+        add_field(6, 1, "Aktywny", "active", values=["0", "1"], default="1")
 
-        add_field(8, 0, "SEO tytuł", "seo_title", width=260, columnspan=3)
+        add_field(7, 0, "SEO tytuł", "seo_title", width=260, columnspan=3)
 
-        add_field(9, 0, "VAT", "vat", default="23%")
-        add_field(9, 1, "Obraz 1", "image1", width=220)
+        add_field(8, 0, "VAT", "vat", default="23%")
+        add_field(8, 1, "Obraz 1", "image1", width=220)
 
         # Alias commonly used fields to Shoper counterparts
         cena_entry = self.entries.get("cena")
