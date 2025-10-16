@@ -40,6 +40,17 @@ class ShoperClient:
                 "Authorization": f"Bearer {self.token}",
             })
 
+    SENSITIVE_LOG_KEYS = {
+        "password",
+        "token",
+        "authorization",
+        "api_key",
+        "client_secret",
+        "secret",
+        "access_token",
+        "refresh_token",
+    }
+
     def _request(self, method, endpoint, **kwargs):
         """Send a request to the Shoper API.
 
@@ -52,6 +63,22 @@ class ShoperClient:
         """
 
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        method_upper = method.upper()
+        if method_upper in {"POST", "PUT", "PATCH"} and logger.isEnabledFor(
+            logging.DEBUG
+        ):
+            body = kwargs.get("json")
+            if body is not None:
+                sanitized_body = self._redact_sensitive_for_logging(body)
+                try:
+                    body_dump = json.dumps(
+                        sanitized_body, ensure_ascii=False, default=str
+                    )
+                except TypeError:
+                    body_dump = str(sanitized_body)
+                logger.debug(
+                    "Shoper API %s request payload: %s", method_upper, body_dump
+                )
         self._ensure_token()
         attempt = 0
         while True:
@@ -163,6 +190,21 @@ class ShoperClient:
             if resp.text:
                 return resp.json()
             return {}
+
+    @classmethod
+    def _redact_sensitive_for_logging(cls, payload):
+        if isinstance(payload, dict):
+            redacted: dict = {}
+            for key, value in payload.items():
+                key_text = str(key).lower()
+                if key_text in cls.SENSITIVE_LOG_KEYS:
+                    redacted[key] = "***REDACTED***"
+                else:
+                    redacted[key] = cls._redact_sensitive_for_logging(value)
+            return redacted
+        if isinstance(payload, list):
+            return [cls._redact_sensitive_for_logging(item) for item in payload]
+        return payload
 
     def get(self, endpoint, **kwargs):
         return self._request("GET", endpoint, **kwargs)

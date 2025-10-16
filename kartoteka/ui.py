@@ -3253,6 +3253,16 @@ class CardEditorApp:
                     break
 
         if existing_product_id:
+            if logger.isEnabledFor(logging.DEBUG):
+                try:
+                    payload_dump = json.dumps(payload, ensure_ascii=False, default=str)
+                except TypeError:
+                    payload_dump = str(payload)
+                logger.debug(
+                    "Updating Shoper product %s with payload: %s",
+                    existing_product_id,
+                    payload_dump,
+                )
             response = self.shoper_client.update_product(existing_product_id, payload)
             if isinstance(response, Mapping):
                 data = dict(response)
@@ -3261,6 +3271,15 @@ class CardEditorApp:
             data.setdefault("product_id", existing_product_id)
             data.setdefault("id", existing_product_id)
         else:
+            if logger.isEnabledFor(logging.DEBUG):
+                try:
+                    payload_dump = json.dumps(payload, ensure_ascii=False, default=str)
+                except TypeError:
+                    payload_dump = str(payload)
+                logger.debug(
+                    "Creating Shoper product with payload: %s",
+                    payload_dump,
+                )
             data = self.shoper_client.add_product(payload)
 
         product_id = data.get("product_id") or data.get("id")
