@@ -122,7 +122,7 @@ def test_build_shoper_payload_forwards_optional_fields():
     assert pl_translation["seo_description"] == "SEO Desc"
     assert pl_translation["seo_keywords"] == "key1, key2"
     assert pl_translation["permalink"] == "sample-product"
-    assert payload["stock"] == {"stock": 2, "warn_level": 1}
+    assert payload["stock"] == {"stock": 2, "warn_level": 1, "price": pytest.approx(12.5)}
     assert "ean" not in payload
     assert "type" not in payload
     assert payload["producer_id"] == 11
@@ -144,7 +144,7 @@ def test_build_shoper_payload_forwards_optional_fields():
 
     minimal = {"nazwa": "Sample", "product_code": "PKM-EMPTY"}
     minimal_payload = app._build_shoper_payload(minimal)
-    assert minimal_payload["stock"] == {"stock": 1}
+    assert minimal_payload["stock"] == {"stock": 1, "price": pytest.approx(0.0)}
     assert "ean" not in minimal_payload
     assert "dimensions" not in minimal_payload
     minimal_translations = _translation_dict(minimal_payload["translations"])
