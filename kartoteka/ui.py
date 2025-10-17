@@ -13208,7 +13208,10 @@ class CardEditorApp:
                 else:
                     data["cena"] = ""
 
-        data.setdefault("price", data.get("cena", ""))
+        cena_value = data.get("cena", "")
+        if cena_value is None:
+            cena_value = ""
+        data["price"] = cena_value
 
         self.output_data[self.index] = data
         if isinstance(getattr(self, "session_entries", None), list):
