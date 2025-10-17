@@ -122,7 +122,11 @@ def test_build_shoper_payload_forwards_optional_fields():
     assert pl_translation["seo_description"] == "SEO Desc"
     assert pl_translation["seo_keywords"] == "key1, key2"
     assert pl_translation["permalink"] == "sample-product"
-    assert payload["stock"] == {"stock": 2, "warn_level": 1, "price": pytest.approx(12.5)}
+    stock_payload = payload["stock"]
+    assert stock_payload["stock"] == 2
+    assert stock_payload["warn_level"] == 1
+    assert stock_payload["price"] == pytest.approx(12.5)
+    assert stock_payload["availability_id"] == 3
     assert "ean" not in payload
     assert "type" not in payload
     assert payload["producer_id"] == 11
@@ -144,7 +148,12 @@ def test_build_shoper_payload_forwards_optional_fields():
 
     minimal = {"nazwa": "Sample", "product_code": "PKM-EMPTY"}
     minimal_payload = app._build_shoper_payload(minimal)
-    assert minimal_payload["stock"] == {"stock": 1, "price": pytest.approx(0.0)}
+    minimal_stock = minimal_payload["stock"]
+    assert minimal_stock["stock"] == 1
+    assert minimal_stock["price"] == pytest.approx(0.0)
+    minimal_availability = minimal_stock.get("availability_id")
+    if minimal_availability is not None:
+        assert minimal_availability == minimal_payload.get("availability_id")
     assert "ean" not in minimal_payload
     assert "dimensions" not in minimal_payload
     minimal_translations = _translation_dict(minimal_payload["translations"])

@@ -6564,6 +6564,10 @@ class CardEditorApp:
 
             if resolved_value is not None:
                 payload[target_field] = resolved_value
+                if target_field == "availability_id":
+                    stock_entry = payload.get("stock")
+                    if isinstance(stock_entry, dict):
+                        stock_entry["availability_id"] = resolved_value
                 continue
 
             if candidates:
