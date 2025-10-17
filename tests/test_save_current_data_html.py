@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 import datetime
 
+import pytest
+
 sys.modules.setdefault("customtkinter", MagicMock())
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 import kartoteka.ui as ui
@@ -21,7 +23,7 @@ class DummyVar:
 PSA10_PRICE = "123"
 
 
-def make_dummy():
+def make_dummy(*, db_price=None, fetched_price=None):
     return SimpleNamespace(
         entries={
             "nazwa": DummyVar("Charizard"),
@@ -31,6 +33,7 @@ def make_dummy():
             "język": DummyVar("ENG"),
             "stan": DummyVar("NM"),
             "cena": DummyVar(""),
+            "price": DummyVar(""),
             "card_type": DummyVar("C"),
         },
         psa10_price_var=DummyVar(""),
@@ -44,9 +47,11 @@ def make_dummy():
         next_free_location=lambda: "K1R1P1",
         generate_location=lambda idx: "K1R1P1",
         output_data=[None],
-        get_price_from_db=lambda *a: None,
-        fetch_card_price=lambda *a: None,
+        get_price_from_db=lambda *a: db_price,
+        fetch_card_price=lambda *a: fetched_price,
         fetch_psa10_price=MagicMock(return_value=PSA10_PRICE),
+        apply_variant_multiplier=lambda value, **_: value,
+        _get_default_availability_value=lambda: "Dostępny",
     )
 
 
@@ -57,7 +62,7 @@ def test_html_generated():
     data = dummy.output_data[0]
     dummy.fetch_psa10_price.assert_called_once_with("Charizard", "4", "Base Set")
     assert data["psa10_price"] == PSA10_PRICE
-    assert data["active"] == 1
+    assert data["active"] == "1"
     assert data["vat"] == "23%"
     assert data["seo_title"] == "Charizard 4 Base Set"
     assert data["short_description"].startswith("<ul")
@@ -83,3 +88,28 @@ def test_html_generated():
     assert dummy.product_code_map == {}
     assert data["product_code"] == "PKM-BAS-4C"
     assert data["warehouse_code"] == "K1R1P1"
+
+
+def test_programmatically_populated_price_synced_to_shoper_payload():
+    importlib.reload(ui)
+    dummy = make_dummy(db_price=19.99)
+
+    ui.CardEditorApp.save_current_data(dummy)
+    data = dummy.output_data[0]
+
+    assert data["cena"] == "19.99"
+    assert data["price"] == "19.99"
+
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app.shoper_client = MagicMock()
+    app._shoper_taxonomy_cache = {
+        "category": {"by_name": {"Karty Pokémon >  > Base Set": 44}},
+        "producer": {"by_name": {"Pokémon": 11, "Pokemon": 11}},
+        "tax": {"by_name": {"23%": 33}},
+        "unit": {"by_name": {"szt.": 55}},
+        "availability": {"by_name": {"Dostępny": 3}},
+    }
+
+    payload = ui.CardEditorApp._build_shoper_payload(app, data)
+
+    assert payload["price"] == pytest.approx(19.99)
