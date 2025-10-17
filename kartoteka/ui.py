@@ -6410,10 +6410,12 @@ class CardEditorApp:
                 "SHOPER_LANGUAGE_CODE/SHOPER_LANGUAGE_ID."
             )
 
+        price_value = _coerce_float(card.get("price", card.get("cena")), default=0.0)
+
         payload = {
             "product_code": product_code,
             "active": _coerce_int(card.get("active", 1), default=1),
-            "price": _coerce_float(card.get("price", card.get("cena")), default=0.0),
+            "price": price_value,
             "translations": translations_payload,
         }
 
@@ -6450,7 +6452,10 @@ class CardEditorApp:
             stock_value = card.get("stock")
         if stock_value in (None, ""):
             stock_value = 1
-        stock_block: dict[str, Any] = {"stock": _coerce_int(stock_value, default=1)}
+        stock_block: dict[str, Any] = {
+            "stock": _coerce_int(stock_value, default=1),
+            "price": price_value,
+        }
         warnlevel = card.get("stock_warnlevel")
         if _has_value(warnlevel):
             coerced_warn = _coerce_int(warnlevel)
