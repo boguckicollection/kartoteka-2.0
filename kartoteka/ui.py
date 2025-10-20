@@ -5980,6 +5980,29 @@ class CardEditorApp:
                     mapping["available_label"] = available_label
                 if available_score > float("-inf"):
                     mapping["available_priority"] = available_score
+            if "default" not in mapping and by_id:
+                try:
+                    mapping["default"] = next(iter(sorted(by_id)))
+                except TypeError:
+                    mapping["default"] = next(iter(by_id))
+            if (
+                kind == "availability"
+                and mapping.get("available_id") in (None, "")
+                and by_id
+            ):
+                try:
+                    fallback_available = next(iter(sorted(by_id)))
+                except TypeError:
+                    fallback_available = next(iter(by_id))
+                mapping["available_id"] = fallback_available
+                if not mapping.get("available_label"):
+                    candidate_entry = by_id.get(fallback_available)
+                    if isinstance(candidate_entry, Mapping):
+                        labels = list(_collect_strings(candidate_entry.get("name")))
+                        if not labels:
+                            labels = list(_collect_strings(candidate_entry))
+                        if labels:
+                            mapping["available_label"] = labels[0]
             updated_cache[kind] = mapping
 
         self._shoper_taxonomy_cache = updated_cache
@@ -6192,8 +6215,16 @@ class CardEditorApp:
                 csv_default = csv_utils.get_default_availability_id()
                 if csv_default is not None:
                     fallback_candidates.append(csv_default)
-            if isinstance(mapping, Mapping):
+            if not has_explicit_value and isinstance(mapping, Mapping):
                 fallback_candidates.append(mapping.get("default"))
+                by_id_map = mapping.get("by_id")
+                if isinstance(by_id_map, Mapping) and by_id_map:
+                    try:
+                        first_candidate = next(iter(sorted(by_id_map)))
+                    except TypeError:
+                        first_candidate = next(iter(by_id_map))
+                    if first_candidate not in fallback_candidates:
+                        fallback_candidates.append(first_candidate)
             for candidate in fallback_candidates:
                 resolved = _coerce_optional_int(candidate)
                 if resolved is not None:
