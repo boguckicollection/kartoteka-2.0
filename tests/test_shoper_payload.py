@@ -205,6 +205,31 @@ def test_build_shoper_payload_prefers_price_field():
     assert payload["price"] == pytest.approx(10.0)
 
 
+def test_build_shoper_payload_uses_fallback_availability_when_missing_defaults():
+    app = ui.CardEditorApp.__new__(ui.CardEditorApp)
+    app.shoper_client = MagicMock()
+    app._shoper_taxonomy_cache = {
+        "producer": {"by_name": {}},
+        "tax": {"by_name": {}},
+        "unit": {"by_name": {}},
+        "availability": {
+            "by_id": {
+                7: {"availability_id": 7, "name": "Dostępny"},
+                9: {"availability_id": 9, "name": "Brak"},
+            },
+            "by_name": {},
+        },
+    }
+
+    payload = app._build_shoper_payload({
+        "nazwa": "Sample",
+        "product_code": "PKM-FALLBACK",
+    })
+
+    assert payload["availability_id"] == 7
+    assert payload["stock"]["availability_id"] == 7
+
+
 def test_build_shoper_payload_rejects_unknown_availability_id():
     app = ui.CardEditorApp.__new__(ui.CardEditorApp)
     app.shoper_client = MagicMock()
