@@ -91,6 +91,46 @@ W projekcie `kartoteka-2.0` komponenty frontendowe, takie jak `ScanView`, są cz
 - `GET /shoper/attributes`, `GET /shoper/categories` — taksonomia Shoper
 - `POST /sessions/start`, `GET /sessions/{id}/summary`, `POST /sessions/{id}/publish` — sesje i publikacja
 
+## Kontrola Wersji & Integracja GitHub (2025-11-14)
+
+**Projekt jest teraz na GitHub!** Repozytorium zostało skonfigurowane z kontrolą wersji Git i połączone z GitHub dla zdalnej kopii zapasowej i współpracy.
+
+**GitHub Repository:**
+- URL: https://github.com/boguckicollection/kartoteka-2.0
+- Pierwszy commit zawiera kompletny kod Kartoteka 2.0 ze wszystkimi plikami backendu i frontendu
+
+**Przepływ Git:**
+- Wszystkie zmiany są teraz śledzone lokalnie za pomocą `git commit`
+- Zmiany można wysyłać na GitHub za pomocą `git push`
+- Pełna historia i możliwość powrotu do poprzednich wersji przy użyciu `git revert` lub `git reset`
+- Używaj formatu Conventional Commits: `feat(scope): description`, `fix(scope): description` itd.
+
+**Podstawowe Polecenia Git:**
+```bash
+# Wyświetl ostatnie commity
+git log --oneline
+
+# Scenuj i commituj zmiany
+git add .
+git commit -m "feat(api): dodanie nowej funkcji"
+
+# Wyślij na GitHub
+git push
+
+# Powróć do poprzedniej wersji (bezpieczne - tworzy nowy commit)
+git revert <commit-id>
+
+# Sprawdź status
+git status
+```
+
+**Ważne Uwagi:**
+- Token jest bezpiecznie przechowywany w konfiguracji git (nie jest commitowany)
+- Wszystkie commity są widoczne w repozytorium GitHub
+- Umożliwia to właściwą kontrolę wersji, śledzenie zmian i współpracę
+
+---
+
 ## Historia zmian
 
 ### Moduł Wyceny (Pricing)

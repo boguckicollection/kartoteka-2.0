@@ -2,6 +2,46 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Version Control & GitHub Integration (2025-11-14)
+
+**Project is now on GitHub!** The repository has been set up with Git version control and connected to GitHub for remote backup and collaboration.
+
+**GitHub Repository:**
+- URL: https://github.com/boguckicollection/kartoteka-2.0
+- Initial commit contains complete Kartoteka 2.0 codebase with all backend and frontend files
+
+**Git Workflow:**
+- All changes are now tracked locally with `git commit`
+- Changes can be pushed to GitHub with `git push`
+- Full history and ability to revert to previous versions using `git revert` or `git reset`
+- Use Conventional Commits format: `feat(scope): description`, `fix(scope): description`, etc.
+
+**Common Git Commands:**
+```bash
+# View recent commits
+git log --oneline
+
+# Stage and commit changes
+git add .
+git commit -m "feat(api): add new feature"
+
+# Push to GitHub
+git push
+
+# Revert to previous version (safe - creates new commit)
+git revert <commit-id>
+
+# Check status
+git status
+```
+
+**Important Notes:**
+- Token is securely stored in git config (not committed)
+- All commits are visible in GitHub repository
+- This enables proper version control, change tracking, and collaboration
+
+---
+
 ## Recent Changes (2025-11-13)
 
 **CRITICAL FIX: Attributes now correctly added during product creation (POST), not after (PUT)**
