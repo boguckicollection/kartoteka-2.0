@@ -1,0 +1,2985 @@
+from fastapi import FastAPI, UploadFile, File, Query, Body, Form, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+import shutil
+import time
+from datetime import datetime, timedelta
+import httpx
+import json
+import os
+
+
+from .settings import settings
+from .schemas import ScanResponse, DetectedData, Candidate, ConfirmRequest, ConfirmResponse, ScanHistoryItem, ScanDetailResponse, CreateProductRequest, ProbeResponse, ProductUpdateRequest
+from pydantic import BaseModel
+
+from .vision import extract_fields_with_openai
+from .analysis.pipeline import analyze_card, detect_card_roi, detect_card_roi_bytes, extract_name_number_from_bytes, warp_card_from_bytes, assess_quality
+from .analysis.fingerprint import compute_fingerprint, pack_ndarray, unpack_ndarray, hamming_distance
+from .providers import get_provider, PokemonTCGProvider
+import httpx
+from .pricing import extract_prices_from_payload, compute_price_pln, list_variant_prices
+from .db import init_db, SessionLocal, Scan, ScanCandidate, Product, Fingerprint
+from sqlalchemy import func
+from .db import Session as ScanSession
+from .shoper import ShoperClient, upsert_products, publish_scan_to_shoper, build_shoper_payload, _category_name_from_id, get_shoper_categories
+from rapidfuzz import fuzz
+from .attributes import map_detected_to_shoper_attributes, simplify_attributes, simplify_categories
+from .db import PushSubscription
+from pywebpush import webpush, WebPushException
+import asyncio
+import re
+
+
+# ===== Warehouse Code Management =====
+
+def parse_warehouse_code(code: str) -> dict | None:
+    """Parse warehouse code like K1K1P001 into components.
+
+    Returns dict with keys: karton (int), kolumna (int), pozycja (int)
+    or None if invalid format.
+    """
+    if not code:
+        return None
+    # Match pattern: K{karton}K{kolumna}P{pozycja}
+    # Example: K1K1P001, K9K4P999
+    match = re.match(r'^K(\d+)K(\d+)P(\d+)$', code.upper())
+    if not match:
+        return None
+
+    karton = int(match.group(1))
+    kolumna = int(match.group(2))
+    pozycja = int(match.group(3))
+
+    # Validate ranges
+    if not (1 <= karton <= 9):
+        return None
+    if not (1 <= kolumna <= 4):
+        return None
+    if not (1 <= pozycja <= 1000):
+        return None
+
+    return {"karton": karton, "kolumna": kolumna, "pozycja": pozycja}
+
+
+def format_warehouse_code(karton: int, kolumna: int, pozycja: int) -> str:
+    """Format warehouse code from components.
+
+    Returns code like K1K1P001.
+    """
+    return f"K{karton}K{kolumna}P{pozycja:03d}"
+
+
+def increment_warehouse_code(code: str) -> str | None:
+    """Increment warehouse code to next position.
+
+    Examples:
+        K1K1P001 -> K1K1P002
+        K1K1P100 -> K1K1P101
+        K1K1P999 -> K1K2P001  (next column)
+        K1K4P999 -> K2K1P001  (next carton)
+        K9K4P999 -> None      (end of warehouse)
+    """
+    parsed = parse_warehouse_code(code)
+    if not parsed:
+        return None
+
+    karton = parsed["karton"]
+    kolumna = parsed["kolumna"]
+    pozycja = parsed["pozycja"]
+
+    # Increment position
+    pozycja += 1
+
+    # If position exceeds 1000, move to next column
+    if pozycja > 1000:
+        pozycja = 1
+        kolumna += 1
+
+    # If column exceeds 4, move to next carton
+    if kolumna > 4:
+        kolumna = 1
+        karton += 1
+
+    # If carton exceeds 9, we're out of warehouse space
+    if karton > 9:
+        return None
+
+    return format_warehouse_code(karton, kolumna, pozycja)
+
+
+def _product_image_url(row: Product) -> str | None:
+    try:
+        if getattr(row, "image", None):
+            return row.image
+        base = getattr(settings, "shoper_image_base", None)
+        if base:
+            uni = getattr(row, "main_image_unic_name", None)
+            ext = getattr(row, "main_image_extension", None)
+            if uni and ext:
+                return f"{base.rstrip('/')}/{uni}.{ext}"
+            gfx = getattr(row, "main_image_gfx_id", None)
+            if gfx and ext:
+                return f"{base.rstrip('/')}/{gfx}.{ext}"
+    except Exception:
+        pass
+    return None
+
+
+app = FastAPI(title=settings.app_name)
+
+origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins if origins else ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Serve uploaded files (for detail view)
+try:
+    app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
+except Exception:
+    pass
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "ts": int(time.time())}
+
+
+
+@app.get("/config")
+def config():
+    """Return runtime configuration relevant for frontend hints.
+    Values are read from settings/env so the UI can match backend gates.
+    """
+    return {
+        "min_quality_probe_warn": float(getattr(settings, "min_quality_probe_warn", 0.45)),
+        "min_quality_commit": float(getattr(settings, "min_quality_commit", 0.55)),
+    }
+
+
+@app.get("/ids_dump")
+def get_ids_dump():
+    # Best-effort: try to read ids_dump.json from several locations; if missing, synthesize from Shoper API
+    candidates = [
+        Path(__file__).parent.parent.parent / "ids_dump.json",  # project root if mounted
+        Path(__file__).parent.parent / "ids_dump.json",         # backend folder
+        Path.cwd() / "ids_dump.json",
+    ]
+    for p in candidates:
+        try:
+            if p.exists():
+                with p.open("r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            continue
+    # Also allow loading from env: IDS_DUMP_PATH or IDS_DUMP_JSON
+    try:
+        import os
+        p_env = os.getenv("IDS_DUMP_PATH")
+        if p_env:
+            pf = Path(p_env)
+            if pf.exists():
+                with pf.open("r", encoding="utf-8") as f:
+                    return json.load(f)
+        j_env = os.getenv("IDS_DUMP_JSON")
+        if j_env:
+            return json.loads(j_env)
+    except Exception:
+        pass
+    # Final fallback: empty structure to avoid 500
+    return {"attributes": [], "categories": []}
+
+class FrameScanRequest(BaseModel):
+    image: str
+    session_id: int | None = None
+
+
+@app.post("/scan/probe", response_model=ProbeResponse)
+async def scan_probe(payload: FrameScanRequest):
+    import base64, re
+    data = payload.image or ""
+    m = re.match(r"^data:image/[^;]+;base64,(.*)$", data)
+    b64 = m.group(1) if m else data
+    try:
+        raw = base64.b64decode(b64)
+    except Exception:
+        return JSONResponse({"error": "invalid image payload"}, status_code=400)
+    warped = warp_card_from_bytes(raw)
+    if warped is None:
+        return ProbeResponse(status="no_card", overlay=None, quality=None)
+    card_img, roi = warped
+    q = assess_quality(card_img)
+    qual = float(q.get("quality_score") or 0.0)
+    # Keep status 'card' for compatibility; front uses quality for guidance
+    return ProbeResponse(status="card", overlay={"x": float(roi[0]), "y": float(roi[1]), "w": float(roi[2]), "h": float(roi[3])}, quality=qual)
+
+
+@app.post("/scan/commit", response_model=ScanResponse)
+async def scan_commit(payload: FrameScanRequest):
+    import base64, re
+    data = payload.image or ""
+    m = re.match(r"^data:image/[^;]+;base64,(.*)$", data)
+    b64 = m.group(1) if m else data
+    try:
+        raw = base64.b64decode(b64)
+    except Exception:
+        return JSONResponse({"error": "invalid image payload"}, status_code=400)
+
+    warped = warp_card_from_bytes(raw)
+    if warped is None:
+        return JSONResponse({"error": "no_card"}, status_code=400)
+    card_img, roi = warped
+    q = assess_quality(card_img)
+    quality = float(q.get("quality_score") or 0.0)
+    if quality < float(settings.min_quality_commit):
+        return JSONResponse({"error": "low_quality", "quality": quality, "min_quality": float(settings.min_quality_commit)}, status_code=422)
+    quick, _ = extract_name_number_from_bytes(raw)
+
+    upload_dir = Path(settings.upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    target = upload_dir / f"frame_{int(time.time()*1000)}.jpg"
+    try:
+        target.write_bytes(raw)
+    except Exception:
+        return JSONResponse({"error": "failed to write frame"}, status_code=500)
+
+    db = SessionLocal()
+    try:
+        fused: dict[str, Any] = {}
+        for k in ("name","number","total"):
+            v = quick.get(k)
+            if v:
+                fused[k] = v
+        detected = DetectedData(**fused)
+
+        # Search provider
+        provider = get_provider()
+        try:
+            candidates = await provider.search(detected)
+        except httpx.HTTPStatusError:
+            try:
+                fb = PokemonTCGProvider()
+                candidates = await fb.search(detected)
+            except Exception:
+                candidates = []
+        except httpx.RequestError:
+            try:
+                fb = PokemonTCGProvider()
+                candidates = await fb.search(detected)
+            except Exception:
+                candidates = []
+
+        scan = Scan(
+            filename=target.name,
+            stored_path=str(target),
+            stored_path_back=None,
+            message="roi+ocr + provider",
+            session_id=payload.session_id,
+        )
+        db.add(scan)
+        db.flush()
+        scan.detected_name = detected.name
+        scan.detected_set = detected.set
+        scan.detected_set_code = detected.set_code
+        scan.detected_number = detected.number
+        scan.detected_language = detected.language
+        scan.detected_variant = detected.variant
+        scan.detected_condition = detected.condition
+        scan.detected_rarity = detected.rarity
+        scan.detected_energy = detected.energy
+        db.add(scan)
+        db.flush()
+        for c in candidates:
+            db.add(ScanCandidate(
+                scan_id=scan.id,
+                provider_id=c.id,
+                name=c.name,
+                set=c.set,
+                set_code=c.set_code,
+                number=c.number,
+                rarity=c.rarity,
+                image=c.image,
+                score=c.score,
+            ))
+        db.commit()
+        image_url = f"/uploads/{target.name}"
+        # Final confidence: blend quality and best candidate score
+        best_score = 0.0
+        try:
+            if candidates:
+                best_score = float(max((c.score for c in candidates), default=0.0))
+        except Exception:
+            best_score = 0.0
+        quality = quality
+        confidence = max(0.0, min(1.0, 0.5*quality + 0.5*best_score))
+        label = "GOOD" if confidence >= 0.8 else ("FAIR" if confidence >= 0.6 else "POOR")
+        return ScanResponse(
+            scan_id=scan.id,
+            detected=detected,
+            candidates=candidates,
+            message=scan.message,
+            stored_path=scan.stored_path,
+            image_url=image_url,
+            duplicate_of=None,
+            duplicate_distance=None,
+            overlay={"x": float(roi[0]), "y": float(roi[1]), "w": float(roi[2]), "h": float(roi[3])},
+            quality=quality,
+            confidence=confidence,
+            confidence_label=label,
+        )
+    finally:
+        db.close()
+
+@app.post("/scan/frame", response_model=ScanResponse)
+async def scan_frame(payload: FrameScanRequest):
+    import base64, re
+    # Decode data URL or raw base64
+    data = payload.image or ""
+    m = re.match(r"^data:image/[^;]+;base64,(.*)$", data)
+    b64 = m.group(1) if m else data
+    try:
+        raw = base64.b64decode(b64)
+    except Exception:
+        return JSONResponse({"error": "invalid image payload"}, status_code=400)
+
+    # Phase 1: fast ROI + region OCR (no disk, no providers)
+    quick, roi = extract_name_number_from_bytes(raw)
+    if roi is None:
+        return ScanResponse(
+            scan_id=None,
+            detected=DetectedData(),
+            candidates=[],
+            message="no_card",
+            stored_path=None,
+            image_url=None,
+            duplicate_of=None,
+            duplicate_distance=None,
+            overlay=None,
+        )
+
+    upload_dir = Path(settings.upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    target = upload_dir / f"frame_{int(time.time()*1000)}.jpg"
+    try:
+        target.write_bytes(raw)
+    except Exception:
+        return JSONResponse({"error": "failed to write frame"}, status_code=500)
+
+    db = SessionLocal()
+    try:
+        scan = Scan(
+            filename=target.name,
+            stored_path=str(target),
+            stored_path_back=None,
+            message="frame",
+            session_id=payload.session_id,
+        )
+        db.add(scan)
+        db.flush()
+
+        # Build detected from quick OCR first (skip heavy Vision here)
+        fused: dict[str, Any] = {}
+        for k in ("name","number","total"):
+            v = quick.get(k)
+            if v:
+                fused[k] = v
+        detected = DetectedData(**fused)
+
+        # Short-circuit: if we have neither name nor number, return lightweight result (no DB commit)
+        if not (detected.name or detected.number):
+            return ScanResponse(
+                scan_id=None,
+                detected=DetectedData(),
+                candidates=[],
+                message="no_text",
+                stored_path=str(target),
+                image_url=f"/uploads/{target.name}",
+                duplicate_of=None,
+                duplicate_distance=None,
+                overlay={"x": float(roi[0]), "y": float(roi[1]), "w": float(roi[2]), "h": float(roi[3])},
+            )
+
+        provider = get_provider()
+        try:
+            candidates = await provider.search(detected)
+        except httpx.HTTPStatusError:
+            try:
+                fb = PokemonTCGProvider()
+                candidates = await fb.search(detected)
+            except Exception:
+                candidates = []
+        except httpx.RequestError:
+            try:
+                fb = PokemonTCGProvider()
+                candidates = await fb.search(detected)
+            except Exception:
+                candidates = []
+        scan.message = "roi+ocr + provider"
+        scan.detected_name = detected.name
+        scan.detected_set = detected.set
+        scan.detected_set_code = detected.set_code
+        scan.detected_number = detected.number
+        scan.detected_language = detected.language
+        scan.detected_variant = detected.variant
+        scan.detected_condition = detected.condition
+        scan.detected_rarity = detected.rarity
+        scan.detected_energy = detected.energy
+        db.add(scan)
+        db.flush()
+        for c in candidates:
+            cm = ScanCandidate(
+                scan_id=scan.id,
+                provider_id=c.id,
+                name=c.name,
+                set=c.set,
+                set_code=c.set_code,
+                number=c.number,
+                rarity=c.rarity,
+                image=c.image,
+                score=c.score,
+            )
+            db.add(cm)
+        db.commit()
+
+        image_url = f"/uploads/{target.name}"
+        return ScanResponse(
+            scan_id=scan.id,
+            detected=detected,
+            candidates=candidates,
+            message=scan.message,
+            stored_path=scan.stored_path,
+            image_url=image_url,
+            duplicate_of=None,
+            duplicate_distance=None,
+            overlay={"x": float(roi[0]), "y": float(roi[1]), "w": float(roi[2]), "h": float(roi[3])},
+        )
+    finally:
+        db.close()
+
+
+@app.get("/sessions/recent")
+def recent_sessions(limit: int = 10):
+    """Return recent scan sessions with counts and last activity."""
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Scan.session_id, func.count(Scan.id).label("count"), func.max(Scan.created_at).label("last_at"))
+            .filter(Scan.session_id.isnot(None))
+            .group_by(Scan.session_id)
+            .order_by(func.max(Scan.created_at).desc())
+            .limit(max(1, min(limit, 50)))
+            .all()
+        )
+        out = []
+        for sid, cnt, last_at in rows:
+            try:
+                out.append({"session_id": int(sid), "count": int(cnt), "last_at": last_at.isoformat()})
+            except Exception:
+                continue
+        return out
+    finally:
+        db.close()
+
+
+# Ensure DB tables exist at startup and optionally sync products
+try:
+    init_db()
+except Exception:
+    pass
+
+@app.on_event("startup")
+async def _on_startup():
+    if settings.shoper_auto_sync_on_startup:
+        await _sync_products_if_needed(force=True)
+    asyncio.create_task(check_for_new_orders())
+
+
+@app.post("/notifications/subscribe")
+async def subscribe(subscription: dict):
+    db = SessionLocal()
+    try:
+        sub_json = json.dumps(subscription)
+        existing = db.query(PushSubscription).filter(PushSubscription.subscription_json == sub_json).first()
+        if not existing:
+            db_sub = PushSubscription(subscription_json=sub_json)
+            db.add(db_sub)
+            db.commit()
+        return {"status": "ok"}
+    finally:
+        db.close()
+
+
+async def send_web_push(subscription_info: dict, payload: dict):
+    try:
+        webpush(
+            subscription_info=subscription_info,
+            data=json.dumps(payload),
+            vapid_private_key=settings.vapid_private_key,
+            vapid_claims={"sub": "mailto:admin@example.com"} # Replace with your email
+        )
+    except WebPushException as ex:
+        print(f"Web push failed: {ex}")
+
+
+async def _match_shoper_category(set_to_match: str) -> dict | None:
+    """
+    Finds the best Shoper category for a given set name using fuzzy matching.
+    Uses the local ids_dump.json as the source of truth for categories.
+    """
+    if not set_to_match:
+        return None
+
+    try:
+        # Path relative from main.py to the /app dir where ids_dump.json is located
+        dump_path = Path(__file__).parent.parent / "ids_dump.json"
+        if not dump_path.exists():
+            return None
+
+        with open(dump_path, "r", encoding="utf-8") as f:
+            all_categories_data = json.load(f)
+        
+        all_categories = all_categories_data.get('categories', [])
+
+        if not all_categories:
+            return None
+
+        best_match = None
+        highest_score = 0
+        MATCH_THRESHOLD = 85
+
+        normalized_set_to_match = set_to_match.lower()
+
+        for cat_data in all_categories:
+            try:
+                cat_name = cat_data['translations']['pl_PL']['name']
+                cat_id = cat_data['category_id']
+                is_root = cat_data.get('root') == '1'
+            except KeyError:
+                continue
+
+            if not cat_name or is_root:
+                continue
+
+            normalized_cat_name = cat_name.lower()
+            score = 0
+            if normalized_set_to_match in normalized_cat_name:
+                score = 100 + fuzz.token_set_ratio(set_to_match, cat_name)
+            else:
+                score = fuzz.token_set_ratio(set_to_match, cat_name)
+
+            if score > highest_score:
+                highest_score = score
+                best_match = {'id': cat_id, 'name': cat_name}
+
+        if best_match and highest_score >= MATCH_THRESHOLD:
+            category_id = best_match.get('id')
+            if category_id is not None:
+                return {
+                    'set_id': str(category_id),
+                    'set': best_match.get('name')
+                }
+
+        return None
+    except Exception as e:
+        return None
+
+
+async def check_for_new_orders():
+    last_order_id = 0
+    # You might want to persist last_order_id in a file or db
+    # For simplicity, we start from 0 on each startup
+
+    while True:
+        await asyncio.sleep(60) # Check every 60 seconds
+        try:
+            if not settings.shoper_base_url or not settings.shoper_access_token:
+                continue
+
+            client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+            orders = await client.fetch_all_orders(limit=1) # Fetch only the latest order
+
+            if orders:
+                latest_order = orders[0]
+                latest_order_id = latest_order.get("order_id") or latest_order.get("id")
+
+                # Convert to int for comparison, handling potential errors
+                latest_order_id_int = 0
+                if latest_order_id:
+                    try:
+                        latest_order_id_int = int(latest_order_id)
+                    except (ValueError, TypeError):
+                        # If conversion fails, keep as 0 to avoid comparison issues
+                        pass
+
+                if latest_order_id_int > last_order_id:
+                    print(f"New order detected: {latest_order_id_int}")
+                    last_order_id = latest_order_id_int
+
+                    db = SessionLocal()
+                    try:
+                        subscriptions = db.query(PushSubscription).all()
+                        payload = {
+                            "title": "Nowe zamówienie!",
+                            "body": f"Otrzymano nowe zamówienie nr {latest_order_id}"
+                        }
+                        for sub in subscriptions:
+                            await send_web_push(json.loads(sub.subscription_json), payload)
+                    finally:
+                        db.close()
+        except Exception as e:
+            print(f"Error checking for new orders: {e}")
+
+
+# In-memory timestamp of last product sync
+_last_products_sync_ts: float | None = None
+_products_sync_in_progress: bool = False
+_sales_cache: dict | None = None
+_taxonomy_cache: dict[str, dict] = {}
+
+async def _get_sales_metrics():
+    global _sales_cache
+    now = time.time()
+    ttl = max(1, int(getattr(settings, 'sales_metrics_ttl_minutes', 5))) * 60
+    if _sales_cache and (now - _sales_cache.get('ts', 0) < ttl):
+        return _sales_cache.get('data')
+    sold_count = 0
+    sold_value_pln = 0.0
+    users_count = None
+    try:
+        if settings.shoper_base_url and settings.shoper_access_token:
+            client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+            orders = await client.fetch_all_orders(limit=200)
+            for o in orders:
+                c = o.get("total_products")
+                if c is None:
+                    products = (
+                        o.get("products")
+                        or o.get("items")
+                        or o.get("orders_products")
+                        or o.get("order_products")
+                        or []
+                    )
+                    if isinstance(products, dict):
+                        products = products.get("items") or products.get("list") or []
+                    # Avoid fetching per-order products here for speed
+                    try:
+                        c = sum(int(p.get("quantity") or p.get("qty") or p.get("count") or 0) for p in (products or []) if isinstance(p, dict))
+                    except Exception:
+                        c = 0
+                try:
+                    sold_count += int(c or 0)
+                except Exception:
+                    pass
+                try:
+                    val = o.get("sum") or o.get("total_gross") or o.get("total") or o.get("amount")
+                    if val is not None:
+                        sold_value_pln += float(str(val).replace(",", "."))
+                except Exception:
+                    pass
+            users = await client.fetch_all_users(limit=200)
+            users_count = len(users)
+    except Exception:
+        pass
+    data = {"sold_count": sold_count, "sold_value_pln": sold_value_pln, "users_count": users_count}
+    _sales_cache = {"ts": now, "data": data}
+    return data
+
+def _tax_cache_get(key: str):
+    now = time.time()
+    entry = _taxonomy_cache.get(key)
+    if not entry:
+        return None
+    ttl = max(1, int(getattr(settings, 'shoper_taxonomy_ttl_minutes', 60))) * 60
+    if now - entry.get('ts', 0) > ttl:
+        return None
+    return entry.get('data')
+
+def _tax_cache_set(key: str, data):
+    _taxonomy_cache[key] = { 'ts': time.time(), 'data': data }
+
+async def _sync_products_if_needed(force: bool = False):
+    global _last_products_sync_ts, _products_sync_in_progress
+    if _products_sync_in_progress:
+        return
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return
+    import time as _t
+    now = _t.time()
+    if not force and _last_products_sync_ts is not None:
+        ttl = max(1, int(settings.shoper_sync_ttl_minutes)) * 60
+        if now - _last_products_sync_ts < ttl:
+            return
+    _products_sync_in_progress = True
+    try:
+        client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+        # Spróbuj pobrać więcej na stronę, aby szybciej zapełnić magazyn
+        items = await client.fetch_all_products(limit=250)
+        upsert_products(items)
+        _last_products_sync_ts = now
+    except Exception:
+        pass
+    finally:
+        _products_sync_in_progress = False
+
+
+@app.post("/pricing/estimate")
+async def pricing_estimate(body: dict = Body(default={})):
+    name = (body or {}).get('name')
+    number = (body or {}).get('number')
+    set_name = (body or {}).get('set')
+    set_code = (body or {}).get('set_code')
+    if not name and not number:
+        return JSONResponse({"error": "name or number required"}, status_code=400)
+    provider = get_provider()
+    det = DetectedData(name=name, number=str(number) if number is not None else None, set=set_name, set_code=set_code)
+    try:
+        cands = await provider.search(det)
+    except Exception as e:
+        return JSONResponse({"error": f"search failed: {e}"}, status_code=500)
+    if not cands:
+        return {"pricing": None, "note": "no candidates"}
+    # Prefer exact number match if provided
+    num_text = str(number or "").strip()
+    if num_text:
+        cands.sort(key=lambda c: (1 if (c.number and str(c.number)==num_text) else 0, c.score), reverse=True)
+    # Allow explicit candidate selection
+    cand_id = body.get('candidate_id') or (cands[0].id if cands else None)
+    cid = cand_id
+    try:
+        details = await provider.details(cid)
+        preferred_variant = body.get('variant') or body.get('finish')
+        extracted = extract_prices_from_payload(details, preferred_variant=preferred_variant)
+        cm_avg = extracted.get("cardmarket_7d_average")
+        computed = compute_price_pln(cm_avg)
+        pricing_payload = {
+            "cardmarket_currency": extracted.get("cardmarket_currency"),
+            "cardmarket_7d_average": cm_avg,
+            "eur_pln_rate": float(settings.eur_pln_rate),
+            "multiplier": float(settings.price_multiplier),
+            "price_pln": computed.get("price_pln"),
+            "price_pln_final": computed.get("price_pln_final"),
+            "source_key": extracted.get("source_key"),
+        }
+        return {"pricing": pricing_payload, "provider_id": cid}
+    except Exception as e:
+        return JSONResponse({"error": f"details failed: {e}"}, status_code=500)
+
+
+@app.post("/pricing/convert")
+async def pricing_convert(body: dict = Body(default={})):  # { eur: number }
+    try:
+        eur = float((body or {}).get('eur'))
+    except Exception:
+        return JSONResponse({"error": "eur required"}, status_code=400)
+    base = eur * float(settings.eur_pln_rate)
+    final = base * float(settings.price_multiplier)
+    return { "price_pln": round(base,2), "price_pln_final": round(final,2), "eur_pln_rate": float(settings.eur_pln_rate), "multiplier": float(settings.price_multiplier) }
+
+
+@app.post("/pricing/variants")
+async def pricing_variants(body: dict = Body(default={})):  # Return possible variant prices for best match
+    from .pricing import list_variant_prices
+    name = (body or {}).get('name')
+    number = (body or {}).get('number')
+    set_name = (body or {}).get('set')
+    set_code = (body or {}).get('set_code')
+    if not name and not number:
+        return JSONResponse({"error": "name or number required"}, status_code=400)
+    provider = get_provider()
+    det = DetectedData(name=name, number=str(number) if number is not None else None, set=set_name, set_code=set_code)
+    try:
+        cands = await provider.search(det)
+    except Exception as e:
+        return JSONResponse({"error": f"search failed: {e}"}, status_code=500)
+    if not cands:
+        return {"candidates": [], "variants": []}
+    # Allow explicit candidate selection
+    cand_id = body.get('candidate_id') or (cands[0].id if cands else None)
+    cid = cand_id
+    try:
+        details = await provider.details(cid)
+        variants = list_variant_prices(details)
+        # Emit normalized candidate list
+        out_cands = [
+            {"id": c.id, "name": c.name, "set": c.set, "number": c.number, "image": c.image, "score": c.score}
+            for c in cands
+        ]
+        return {"provider_id": cid, "candidates": out_cands, "variants": variants}
+    except Exception as e:
+        return JSONResponse({"error": f"details failed: {e}"}, status_code=500)
+
+@app.post("/pricing/manual_search")
+async def manual_search(body: dict = Body(default={})):
+    name = (body or {}).get('name')
+    number = (body or {}).get('number')
+    if not name and not number:
+        return JSONResponse({"error": "name or number required"}, status_code=400)
+
+    provider = get_provider()
+    det = DetectedData(name=name, number=str(number) if number is not None else None)
+    try:
+        cands = await provider.search(det)
+    except Exception as e:
+        return JSONResponse({"error": f"search failed: {e}"}, status_code=500)
+
+    if not cands:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+
+    best_cand = cands[0]
+
+    try:
+        details = await provider.details(best_cand.id)
+        extracted = extract_prices_from_payload(details, preferred_variant=None)
+        cm_avg = extracted.get("cardmarket_7d_average")
+        computed = compute_price_pln(cm_avg)
+
+        # Calculate purchase price (80% of cardmarket price)
+        purchase_price_pln = None
+        if computed.get("price_pln"):
+            purchase_price_pln = round(computed["price_pln"] * 0.8, 2)
+
+        variants = list_variant_prices(details)
+
+        # Construct a clean pricing object with all conversions
+        final_pricing = {
+            "price_pln_final": computed.get("price_pln_final"),
+            "purchase_price_pln": purchase_price_pln,
+            "source": extracted.get("source_key"),
+            "variants": variants,
+            "cardmarket": {},
+            "graded": {},
+        }
+
+        cm_prices = extracted.get("cardmarket_prices", {})
+        if cm_prices:
+            for key in ['avg1', 'avg7', 'avg30', '7d_average', '30d_average']:
+                if cm_prices.get(key):
+                    computed_avg = compute_price_pln(cm_prices.get(key))
+                    final_pricing["cardmarket"][key] = {
+                        "eur": cm_prices.get(key),
+                        "pln_final": computed_avg.get("price_pln_final")
+                    }
+
+        graded_prices = cm_prices.get("graded", {})
+        if graded_prices:
+            for service, grades in graded_prices.items():
+                if not isinstance(grades, dict): continue
+                final_pricing["graded"][service] = {}
+                for grade, price in grades.items():
+                    if isinstance(price, (int, float)):
+                        computed_graded = compute_price_pln(price)
+                        final_pricing["graded"][service][grade] = {
+                            "eur": price,
+                            "pln_final": computed_graded.get("price_pln_final")
+                        }
+
+        return {
+            "card": {
+                "name": best_cand.name,
+                "number": best_cand.number,
+                "set": best_cand.set,
+                "image": details.get("image"),
+                "rarity": details.get("rarity"),
+            },
+            "pricing": final_pricing,
+            "raw_details": details,  # Include raw details for reference
+        }
+    except Exception as e:
+        return JSONResponse({"error": f"details failed: {e}"}, status_code=500)
+
+@app.get("/shoper/attributes")
+async def shoper_attributes():
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return JSONResponse({"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"}, status_code=400)
+    cached = _tax_cache_get('attributes')
+    if cached is not None:
+        return cached
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    data = await client.fetch_attributes()
+    items = data.get('items') if isinstance(data, dict) else []
+    simple = simplify_attributes(items if isinstance(items, list) else [])
+    out = { 'items': simple }
+    _tax_cache_set('attributes', out)
+    return out
+
+
+@app.get("/shoper/categories")
+async def shoper_categories():
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return JSONResponse({"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"}, status_code=400)
+    cached = _tax_cache_get('categories')
+    if cached is not None:
+        return cached
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    data = await client.fetch_categories()
+    items = data.get('items') if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    simple = simplify_categories(items if isinstance(items, list) else [])
+    # Fallback to ids_dump.json if API returns nothing
+    if not simple:
+        try:
+            dump_path = Path(__file__).parent.parent / "ids_dump.json"
+            if dump_path.exists():
+                import json as _json
+                raw = _json.loads(dump_path.read_text(encoding='utf-8'))
+                cats = raw.get('categories') if isinstance(raw, dict) else []
+                if isinstance(cats, list):
+                    simple = simplify_categories(cats)
+        except Exception:
+            pass
+    # Final hardcoded fallback
+    if not simple:
+        simple = _CATEGORIES_FALLBACK
+    # Extend with sets from tcg_sets.json that are not on the store yet
+    try:
+        p = Path(__file__).parent.parent.parent / "storage" / "legacy" / "tcg_sets.json"
+        if p.exists():
+            import json as _json
+            sets_data = _json.loads(p.read_text(encoding='utf-8'))
+            existing = { (c.get('name') or '').lower() for c in simple }
+            
+            items_iter = []
+            if isinstance(sets_data, dict):
+                for era, sets in sets_data.items():
+                    if isinstance(sets, list):
+                        items_iter.extend(sets)
+            
+            for it in items_iter:
+                nm = (it.get('name') or it.get('set') or '').strip()
+                if not nm or nm.lower() in existing:
+                    continue
+                simple.append({"category_id": None, "name": nm, "code": it.get('code'), "virtual": True})
+    except Exception as e:
+        print(f"Error extending categories with tcg_sets.json: {e}")
+    out = { 'items': simple }
+    _tax_cache_set('categories', out)
+    return out
+
+
+@app.get("/shoper/languages")
+async def shoper_languages():
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return JSONResponse({"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"}, status_code=400)
+    cached = _tax_cache_get('languages')
+    if cached is not None:
+        return cached
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    data = await client.fetch_languages()
+    _tax_cache_set('languages', data)
+    return data
+
+
+@app.get("/shoper/product/{product_id}")
+async def get_shoper_product(product_id: int):
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return JSONResponse({"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"}, status_code=400)
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    product = await client.get_product(product_id)
+    if not product:
+        return JSONResponse({"error": "Product not found"}, status_code=404)
+    return product
+
+
+async def _find_best_category_match_internal(name: str, threshold: int = 85) -> dict | None:
+    """
+    Internal helper to find the best Shoper category for a given set name.
+    """
+    if not name:
+        return None
+
+    # This function uses the existing taxonomy cache, so it's efficient.
+    categories_response = await shoper_categories()
+    
+    all_categories = []
+    # The response can be a dict with 'items' or a direct list from fallback
+    if isinstance(categories_response, dict) and "items" in categories_response:
+        all_categories = categories_response["items"]
+    elif isinstance(categories_response, list):
+        all_categories = categories_response
+    
+    if not all_categories:
+        return None
+
+    from rapidfuzz import process, fuzz
+
+    # Create a dictionary mapping name to the full category object
+    choices = {cat["name"]: cat for cat in all_categories if cat.get("name")}
+    
+    # Find the best match
+    result = process.extractOne(name, choices.keys(), scorer=fuzz.token_set_ratio)
+    
+    if result:
+        best_match_name, score, _ = result
+        if score >= threshold:
+            return choices[best_match_name]
+
+    return None
+
+
+@app.post("/pricing/estimate")
+async def pricing_estimate(body: dict = Body(default={})):  # name, number, set or set_code optional
+    name = (body or {}).get('name')
+    number = (body or {}).get('number')
+    set_name = (body or {}).get('set')
+    set_code = (body or {}).get('set_code')
+    if not name and not number:
+        return JSONResponse({"error": "name or number required"}, status_code=400)
+    provider = get_provider()
+    # Build minimal detected object
+    det = DetectedData(name=name, number=str(number) if number is not None else None, set=set_name, set_code=set_code)
+    # Search and take best candidate
+    try:
+        cands = await provider.search(det)
+    except Exception as e:
+        return JSONResponse({"error": f"search failed: {e}"}, status_code=500)
+    if not cands:
+        return {"pricing": None, "note": "no candidates"}
+    cid = cands[0].id
+    try:
+        details = await provider.details(cid)
+        extracted = extract_prices_from_payload(details)
+        cm_avg = extracted.get("cardmarket_7d_average")
+        computed = compute_price_pln(cm_avg)
+        pricing_payload = {
+            "cardmarket_currency": extracted.get("cardmarket_currency"),
+            "cardmarket_7d_average": cm_avg,
+            "eur_pln_rate": float(settings.eur_pln_rate),
+            "multiplier": float(settings.price_multiplier),
+            "price_pln": computed.get("price_pln"),
+            "price_pln_final": computed.get("price_pln_final"),
+        }
+        return {"pricing": pricing_payload, "provider_id": cid}
+    except Exception as e:
+        return JSONResponse({"error": f"details failed: {e}"}, status_code=500)
+
+
+@app.get("/shoper/availability")
+async def shoper_availability():
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return JSONResponse({"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"}, status_code=400)
+    cached = _tax_cache_get('availability')
+    if cached is not None:
+        return cached
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    data = await client.fetch_availability()
+    _tax_cache_set('availability', data)
+    return data
+
+
+@app.post("/scan", response_model=ScanResponse)
+async def scan_image(file: UploadFile = File(...), session_id: int | None = None, file_back: UploadFile | None = File(default=None)):
+    # Ensure upload dir exists
+    upload_dir = Path(settings.upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    # Persist the uploaded file(s) (for audit/retry); in future add TTL/cleanup
+    sanitized_filename = os.path.basename(file.filename)
+    target = upload_dir / f"{int(time.time()*1000)}_{sanitized_filename}"
+    with target.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+    target_back = None
+    if file_back is not None:
+        target_back = upload_dir / f"{int(time.time()*1000)}_back_{file_back.filename}"
+        with target_back.open("wb") as out2:
+            shutil.copyfileobj(file_back.file, out2)
+
+    # Persist scan early (basic data)
+    db = SessionLocal()
+    try:
+        scan = Scan(
+            filename=file.filename,
+            stored_path=str(target),
+            stored_path_back=(str(target_back) if target_back is not None else None),
+            message="pending",
+            session_id=session_id,
+        )
+        db.add(scan)
+        db.flush()
+
+        # Compute fingerprint first and detect duplicates
+        duplicate_hit_id: int | None = None
+        duplicate_distance: int | None = None
+        try:
+            from PIL import Image as _PILImage
+            with _PILImage.open(target) as _im:
+                fp = compute_fingerprint(_im, use_orb=True)
+            fprow = Fingerprint(
+                scan_id=scan.id,
+                phash=pack_ndarray(fp["phash"]),
+                dhash=pack_ndarray(fp["dhash"]),
+                tile_phash=pack_ndarray(fp["tile_phash"]),
+                orb=pack_ndarray(fp.get("orb")),
+                meta=None,
+            )
+            db.add(fprow)
+            db.commit()
+
+            # Optional: compute fingerprint for back image as well and store as an extra row
+            if target_back is not None:
+                try:
+                    with _PILImage.open(target_back) as _im2:
+                        fp2 = compute_fingerprint(_im2, use_orb=True)
+                    fprow2 = Fingerprint(
+                        scan_id=scan.id,
+                        phash=pack_ndarray(fp2["phash"]),
+                        dhash=pack_ndarray(fp2["dhash"]),
+                        tile_phash=pack_ndarray(fp2["tile_phash"]),
+                        orb=pack_ndarray(fp2.get("orb")),
+                        meta=None,
+                    )
+                    db.add(fprow2)
+                    db.commit()
+                except Exception:
+                    pass
+
+            # Duplicate search (only if enabled)
+            if settings.duplicate_check_enabled:
+                src_phash = fp["phash"]
+                src_dhash = fp["dhash"]
+                src_tile = fp["tile_phash"]
+                rows = db.query(Fingerprint).filter(Fingerprint.scan_id != scan.id).all()
+                best_dist = None
+                best_id = None
+                for r in rows:
+                    try:
+                        ph = unpack_ndarray(r.phash)
+                        dh = unpack_ndarray(r.dhash)
+                        tl = unpack_ndarray(r.tile_phash)
+                    except Exception:
+                        continue
+                    score = 0
+                    score += hamming_distance(src_phash, ph)
+                    score += hamming_distance(src_dhash, dh)
+                    if getattr(settings, 'duplicate_use_tiles', True):
+                        try:
+                            for a, b in zip(src_tile, tl):
+                                score += hamming_distance(a, b)
+                        except Exception:
+                            score += 999
+                    if best_dist is None or score < best_dist:
+                        best_dist = score
+                        best_id = r.scan_id
+                thr = max(1, int(getattr(settings, 'duplicate_distance_threshold', 80)))
+                if best_dist is not None and best_dist <= thr and best_id is not None:
+                    duplicate_hit_id = int(best_id)
+                    duplicate_distance = int(best_dist)
+        except Exception:
+            pass
+
+        # Public URL for image (served under /uploads)
+        try:
+            image_url = f"/uploads/{target.name}"
+        except Exception:
+            image_url = None
+
+        # Early exit on duplicate to avoid Vision/provider
+        if duplicate_hit_id is not None:
+            # Attempt to copy detected fields from original scan (best effort)
+            try:
+                orig = db.get(Scan, duplicate_hit_id)
+            except Exception:
+                orig = None
+            if orig:
+                detected = DetectedData(
+                    name=orig.detected_name,
+                    set=orig.detected_set,
+                    set_code=orig.detected_set_code,
+                    number=orig.detected_number,
+                    language=orig.detected_language,
+                    variant=orig.detected_variant,
+                    condition=orig.detected_condition,
+                    rarity=orig.detected_rarity,
+                    energy=orig.detected_energy,
+                )
+                scan.message = f"duplicate_of:{duplicate_hit_id} distance:{duplicate_distance}"
+                db.commit()
+                return ScanResponse(
+                    scan_id=scan.id,
+                    detected=detected,
+                    candidates=[],
+                    message=scan.message,
+                    stored_path=scan.stored_path,
+                    image_url=image_url,
+                    duplicate_of=duplicate_hit_id,
+                    duplicate_distance=duplicate_distance,
+                )
+            else:
+                scan.message = f"duplicate_detected distance:{duplicate_distance}"
+                db.commit()
+                return ScanResponse(
+                    scan_id=scan.id,
+                    detected=DetectedData(),
+                    candidates=[],
+                    message=scan.message,
+                    stored_path=scan.stored_path,
+                    image_url=image_url,
+                    duplicate_of=None,
+                    duplicate_distance=duplicate_distance,
+                )
+
+        # No duplicate: proceed with Vision + provider
+        # Analyze front and optionally back; fuse with preference to front
+        detected_front = analyze_card(str(target))
+        roi = detect_card_roi(str(target))
+        detected_back = None
+        if target_back is not None:
+            try:
+                detected_back = analyze_card(str(target_back))
+            except Exception:
+                detected_back = None
+        fused: dict = dict(detected_front or {})
+        def _fill(key: str):
+            if not fused.get(key) and isinstance(detected_back, dict):
+                val = detected_back.get(key)
+                if val:
+                    fused[key] = val
+        for k in ("name","set","set_code","number","language","variant","condition","rarity","energy","total"):
+            _fill(k)
+        # Ensure scalar string types for pydantic (sometimes model returns lists)
+        def _scalarize(v):
+            if v is None:
+                return None
+            if isinstance(v, (list, tuple)):
+                for item in v:
+                    if item is None:
+                        continue
+                    s = str(item).strip()
+                    if s:
+                        return s
+                return None
+            return str(v).strip() or None
+        for key in ["name","set","set_code","number","language","variant","condition","rarity","energy","total"]:
+            if key in fused:
+                fused[key] = _scalarize(fused.get(key))
+        detected = DetectedData(**fused)
+
+        provider = get_provider()
+        candidates = await provider.search(detected)
+
+        # If we have candidates, get full details for the best ones to enrich the response
+        if candidates:
+            try:
+                # Enrich top N candidates with better images and details
+                for i, cand in enumerate(candidates[:5]): # Limit to top 5 to avoid too many API calls
+                    details = await provider.details(cand.id)
+                    if i == 0: # For the best candidate, also enrich the main 'fused' object
+                        price_variants = list_variant_prices(details)
+                        primary_price_pln_final = None
+                        for label_priority in ['Normal', 'Holo', 'Reverse Holo']:
+                            variant_info = next((p for p in price_variants if p.get('label') == label_priority), None)
+                            if variant_info and variant_info.get('price_pln_final') is not None:
+                                primary_price_pln_final = variant_info.get('price_pln_final')
+                                break
+                        fused['price_pln_final'] = primary_price_pln_final
+                        fused['variants'] = price_variants
+
+                        detailed_set_name = details.get("episode", {}).get("name")
+                        detailed_set_code = details.get("episode", {}).get("code")
+
+                        fused['set'] = detailed_set_name or fused.get('set') or cand.set
+                        fused['set_code'] = detailed_set_code or fused.get('set_code') or cand.set_code
+                        fused['rarity'] = details.get("rarity") or fused.get('rarity')
+
+                    # Update candidate's image from details
+                    detailed_image = details.get("image")
+                    if not detailed_image and isinstance(details.get("images"), dict):
+                        detailed_image = details["images"].get("large") or details["images"].get("small")
+                    if detailed_image:
+                        cand.image = detailed_image
+
+                # Match Set to Shoper Category ID
+                matched_category = await _match_shoper_category(fused.get('set'))
+                if matched_category:
+                    fused.update(matched_category)
+
+                print("FUSED:", fused)
+
+                # Try to map attributes, but don't fail the request if this part fails
+                try:
+                    detected_attrs = {
+                        "rarity": details.get("rarity"),
+                        "variant": detected.variant,
+                        "condition": detected.condition,
+                        "energy": details.get("energy"),
+                        "type": details.get("supertype"),
+                    }
+                    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+                    tax = await client.fetch_attributes()
+                    items = tax.get("items") if isinstance(tax, dict) else []
+                    if items:
+                        mapped_attributes = map_detected_to_shoper_attributes(detected_attrs, items)
+                        fused.update(mapped_attributes)
+                except Exception:
+                    pass # Log this failure in a real app
+
+            except Exception as e:
+                scan.message = f"OpenAI Vision + provider search (details/pricing failed: {e})"
+        else:
+            scan.message = "OpenAI Vision (no provider candidates)"
+
+        # Re-create DetectedData with the fused data
+        detected = DetectedData(**fused)
+
+        # Update scan with detected and store candidates
+        scan.message = scan.message or "OpenAI Vision + provider search"
+        scan.detected_name = detected.name
+        scan.detected_set = detected.set
+        scan.detected_set_code = detected.set_code
+        scan.detected_number = detected.number
+
+        for c in candidates:
+            cm = ScanCandidate(
+                scan_id=scan.id,
+                provider_id=c.id,
+                name=c.name,
+                set=c.set,
+                set_code=c.set_code,
+                number=c.number,
+                rarity=c.rarity,
+                image=c.image,
+                score=c.score,
+            )
+            db.add(cm)
+        db.commit()
+
+        return ScanResponse(
+            scan_id=scan.id,
+            detected=detected,
+            candidates=candidates,
+            message=scan.message,
+            stored_path=scan.stored_path,
+            image_url=image_url,
+            duplicate_of=None,
+            duplicate_distance=None,
+            overlay=(
+                None if roi is None else {
+                    "x": float(roi[0]),
+                    "y": float(roi[1]),
+                    "w": float(roi[2]),
+                    "h": float(roi[3]),
+                }
+            ),
+        )
+    finally:
+        db.close()
+
+
+@app.post("/scan/candidate_details")
+async def get_candidate_details(body: dict = Body(default={})):
+    candidate_id = body.get('candidate_id')
+    if not candidate_id:
+        return JSONResponse({"error": "candidate_id is required"}, status_code=400)
+
+    provider = get_provider()
+    fused = {}
+
+    try:
+        details = await provider.details(candidate_id)
+        
+        # Basic info from details
+        fused['name'] = details.get('name')
+        fused['number'] = details.get('number')
+        fused['rarity'] = details.get('rarity')
+        fused['set'] = details.get("episode", {}).get("name")
+        fused['set_code'] = details.get("episode", {}).get("code")
+        fused['language'] = details.get('language')
+        fused['variant'] = details.get('variant')
+        fused['condition'] = details.get('condition')
+        fused['energy'] = details.get('energy')
+
+        # Pricing
+        price_variants = list_variant_prices(details)
+        primary_price_pln_final = None
+        for label_priority in ['Normal', 'Holo', 'Reverse Holo']:
+            variant_info = next((p for p in price_variants if p.get('label') == label_priority), None)
+            if variant_info and variant_info.get('price_pln_final') is not None:
+                primary_price_pln_final = variant_info.get('price_pln_final')
+                break
+        fused['price_pln_final'] = primary_price_pln_final
+        fused['variants'] = price_variants
+
+        # Set Matching
+        matched_category = await _match_shoper_category(fused.get('set'))
+        if matched_category:
+            fused.update(matched_category)
+
+        # Attribute Mapping
+        try:
+            detected_attrs = {
+                "rarity": details.get("rarity"),
+                "energy": details.get("energy"),
+                "type": details.get("supertype"),
+            }
+            client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+            tax = await client.fetch_attributes()
+            items = tax.get("items") if isinstance(tax, dict) else []
+            if items:
+                mapped_attributes = map_detected_to_shoper_attributes(detected_attrs, items)
+                fused.update(mapped_attributes)
+        except Exception as e:
+            print(f"ERROR during attribute mapping in candidate_details: {e}")
+
+        return fused
+
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to get candidate details: {e}"}, status_code=500)
+
+
+@app.post("/confirm", response_model=ConfirmResponse)
+async def confirm_candidate(payload: ConfirmRequest):
+    db = SessionLocal()
+    try:
+        scan = db.get(Scan, payload.scan_id)
+        if not scan:
+            return JSONResponse({"error": "scan not found"}, status_code=404)
+        # find candidate for this scan
+        cand = db.query(ScanCandidate).filter(ScanCandidate.scan_id == scan.id, ScanCandidate.provider_id == payload.candidate_id).first()
+        if not cand:
+            return JSONResponse({"error": "candidate not found for this scan"}, status_code=404)
+
+        # unchoose all, choose this
+        db.query(ScanCandidate).filter(ScanCandidate.scan_id == scan.id).update({ScanCandidate.chosen: False})
+        cand.chosen = True
+        scan.selected_candidate_id = cand.id
+
+        # Update scan with form data if provided
+        if payload.detected:
+            scan.detected_name = payload.detected.get('name')
+            scan.detected_number = payload.detected.get('number')
+            scan.detected_set = payload.detected.get('set')
+
+            # Resolve variant ID to name
+            variant_id = payload.detected.get('65') # 65 is the attribute ID for 'Finish'
+            if variant_id:
+                try:
+                    attrs_response = await shoper_attributes()
+                    attrs = attrs_response.get('items', [])
+                    finish_attr = next((attr for attr in attrs if attr['attribute_id'] == '65'), None)
+                    if finish_attr:
+                        option = next((opt for opt in finish_attr['options'] if opt['option_id'] == variant_id), None)
+                        if option:
+                            scan.detected_variant = option['value']
+                except Exception as e:
+                    print(f"Error resolving variant: {e}") # Or log it properly
+
+        # Update warehouse code if provided
+        if payload.warehouse_code:
+            parsed = parse_warehouse_code(payload.warehouse_code)
+            if parsed:
+                scan.warehouse_code = payload.warehouse_code.upper()
+                print(f"INFO: Set warehouse_code={scan.warehouse_code} for scan {scan.id}")
+            else:
+                print(f"WARNING: Invalid warehouse_code format: {payload.warehouse_code}")
+
+        # Fetch details/prices and compute PLN
+        provider = get_provider()
+        details = await provider.details(cand.provider_id)
+        preferred_variant = payload.detected.get('variant') if payload.detected else (scan.detected_variant or None)
+        extracted = extract_prices_from_payload(details, preferred_variant=preferred_variant)
+        cm_avg = extracted.get("cardmarket_7d_average")
+        computed = compute_price_pln(cm_avg)
+
+        # Persist pricing
+        scan.cardmarket_currency = extracted.get("cardmarket_currency")
+        scan.cardmarket_7d_average = cm_avg
+        scan.price_pln = computed.get("price_pln")
+        scan.price_pln_final = computed.get("price_pln_final")
+        scan.graded_psa10 = extracted.get("graded_psa10")
+        scan.graded_currency = extracted.get("graded_currency")
+        db.commit()
+
+        pricing_payload = {
+            "cardmarket_currency": scan.cardmarket_currency,
+            "cardmarket_7d_average": scan.cardmarket_7d_average,
+            "eur_pln_rate": float(settings.eur_pln_rate),
+            "multiplier": float(settings.price_multiplier),
+            "price_pln": scan.price_pln,
+            "price_pln_final": scan.price_pln_final,
+            "graded_psa10": scan.graded_psa10,
+            "graded_currency": scan.graded_currency,
+        }
+
+        return ConfirmResponse(status="ok", scan_id=scan.id, candidate_id=payload.candidate_id, note="Selection stored", pricing=pricing_payload)
+    finally:
+        db.close()
+
+
+@app.get("/scans", response_model=list[ScanHistoryItem])
+def list_scans(limit: int = 20, session_id: int | None = None):
+    db = SessionLocal()
+    try:
+        q = db.query(Scan)
+        if session_id is not None:
+            try:
+                q = q.filter(Scan.session_id == int(session_id))
+            except Exception:
+                pass
+        rows = q.order_by(Scan.id.desc()).limit(max(1, min(limit, 200))).all()
+        items: list[ScanHistoryItem] = []
+        for s in rows:
+            selected = None
+            if s.selected_candidate_id:
+                c = db.get(ScanCandidate, s.selected_candidate_id)
+                if c:
+                    selected = Candidate(
+                        id=c.provider_id,
+                        name=c.name,
+                        set=c.set,
+                        set_code=c.set_code,
+                        number=c.number,
+                        image=c.image,
+                        score=c.score,
+                    )
+            items.append(
+                ScanHistoryItem(
+                    id=s.id,
+                    created_at=s.created_at.isoformat(),
+                    detected_name=s.detected_name,
+                    detected_set=s.detected_set,
+                    detected_number=s.detected_number,
+                    selected=selected,
+                )
+            )
+        return items
+    finally:
+        db.close()
+
+
+
+
+
+@app.get("/products")
+async def list_products(limit: int = 50, page: int = 1, category_id: int | None = None, q: str | None = None, sort: str | None = None, order: str = "asc"):
+    db = SessionLocal()
+    try:
+        # Auto-sync on first load or after TTL expiry
+        await _sync_products_if_needed(force=False)
+
+        # Fetch categories for name mapping
+        cat_map = {}
+        if settings.shoper_base_url and settings.shoper_access_token:
+            client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+            all_categories = await get_shoper_categories(client)
+            cat_map = {
+                int(c.get("category_id") or c.get("id")):
+                (c.get("translations", {}).get("pl_PL", {}).get("name") or c.get("name"))
+                for c in all_categories
+                if (c.get("category_id") or c.get("id"))
+            }
+
+        query = db.query(Product)
+        if category_id is not None:
+            query = query.filter(Product.category_id == category_id)
+        if q:
+            like = f"%{q}%"
+            query = query.filter(Product.name.ilike(like))
+
+        # Get total count after filters
+        total_count = query.count()
+
+        sort_map = {
+            "name": Product.name,
+            "price": Product.price,
+            "stock": Product.stock,
+            "updated_at": Product.updated_at,
+        }
+        col = sort_map.get((sort or "").lower(), Product.updated_at)
+        if (order or "").lower() == "desc":
+            query = query.order_by(col.desc().nullslast())
+        else:
+            query = query.order_by(col.asc().nullslast())
+        
+        safe_limit = max(1, min(limit, 500))
+        safe_page = max(1, page)
+        
+        rows = query.offset((safe_page - 1) * safe_limit).limit(safe_limit).all()
+        items = [
+            {
+                "id": r.id,
+                "shoper_id": r.shoper_id,
+                "code": r.code,
+                "name": r.name,
+                "price": r.price,
+                "stock": r.stock,
+                "image": _product_image_url(r),
+                "category_id": r.category_id,
+                "category_name": cat_map.get(r.category_id),
+                "permalink": r.permalink,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ]
+        return {"items": items, "total_count": total_count, "page": safe_page, "limit": safe_limit}
+    finally:
+        db.close()
+        
+        
+@app.put("/products/{shoper_id}")
+async def update_product_in_shoper(shoper_id: int, product_update: ProductUpdateRequest):
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return JSONResponse(
+            {"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"},
+            status_code=400,
+        )
+    
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    
+    # Convert Pydantic model to a dictionary, excluding unset values
+    updates = product_update.dict(exclude_unset=True)
+
+    result = await client.update_product(shoper_id, updates)
+
+    if result.get("ok"):
+        # Optionally, update the local database if needed
+        db = SessionLocal()
+        try:
+            product_in_db = db.query(Product).filter(Product.shoper_id == shoper_id).first()
+            if product_in_db:
+                for field, value in updates.items():
+                    # Map schema fields to DB model fields if necessary
+                    if field == "name":
+                        product_in_db.name = value
+                    elif field == "code":
+                        product_in_db.code = value
+                    elif field == "price":
+                        product_in_db.price = value
+                    elif field == "stock":
+                        product_in_db.stock = value
+                    elif field == "category_id":
+                        product_in_db.category_id = value
+                product_in_db.updated_at = datetime.utcnow()
+                db.commit()
+        finally:
+            db.close()
+        
+        return {"status": "ok", "shoper_id": shoper_id, "updated_fields": updates}
+    else:
+        return JSONResponse(
+            {"error": "Failed to update product in Shoper", "details": result},
+            status_code=result.get("status_code", 500),
+        )
+        
+        
+        @app.post("/scans/{scan_id}/create_product")
+        async def create_product_in_shoper(scan_id: int, request: CreateProductRequest):
+            if not settings.shoper_base_url or not settings.shoper_access_token:
+                return JSONResponse(
+                    {"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"},
+                    status_code=400,
+                )
+
+    db = SessionLocal()
+    try:
+        scan = db.get(Scan, scan_id)
+        if not scan:
+            return JSONResponse({"error": "Scan not found"}, status_code=404)
+
+        candidate = None
+        # If candidate not selected yet, try request.candidate_id or best-scored
+        if not scan.selected_candidate_id:
+            if request.candidate_id:
+                candidate = (
+                    db.query(ScanCandidate)
+                    .filter(ScanCandidate.scan_id == scan.id, ScanCandidate.provider_id == request.candidate_id)
+                    .first()
+                )
+                if candidate:
+                    db.query(ScanCandidate).filter(ScanCandidate.scan_id == scan.id).update({ScanCandidate.chosen: False})
+                    candidate.chosen = True
+                    scan.selected_candidate_id = candidate.id
+                    db.commit()
+            if not candidate:
+                # pick best score
+                best = (
+                    db.query(ScanCandidate)
+                    .filter(ScanCandidate.scan_id == scan.id)
+                    .order_by(ScanCandidate.score.desc())
+                    .first()
+                )
+                if best:
+                    db.query(ScanCandidate).filter(ScanCandidate.scan_id == scan.id).update({ScanCandidate.chosen: False})
+                    best.chosen = True
+                    scan.selected_candidate_id = best.id
+                    db.commit()
+                    candidate = best
+        else:
+            candidate = db.get(ScanCandidate, scan.selected_candidate_id)
+
+        # Candidate may be None — we can still create a generic product from detected fields
+
+        # Build attributes: use provided, otherwise try to auto-map from detected using Shopera taxonomy
+        attributes_payload = request.attributes or {}
+        if not attributes_payload:
+            try:
+                client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+                tax = await client.fetch_attributes()
+                items = tax.get("items") if isinstance(tax, dict) else []
+                # Fallback to ids_dump.json when API yields nothing
+                if not items:
+                    try:
+                        import json
+                        from pathlib import Path
+                        for p in [
+                            Path(__file__).parent.parent.parent / "ids_dump.json",
+                            Path(__file__).parent.parent / "ids_dump.json",
+                            Path.cwd() / "ids_dump.json",
+                        ]:
+                            if p.exists():
+                                data = json.loads(p.read_text(encoding="utf-8"))
+                                items = data.get("attributes") or []
+                                if items:
+                                    break
+                    except Exception:
+                        items = []
+                detected = {
+                    "language": scan.detected_language,
+                    "variant": scan.detected_variant,
+                    "condition": scan.detected_condition,
+                    "rarity": scan.detected_rarity,
+                    "energy": scan.detected_energy,
+                }
+                attributes_payload = map_detected_to_shoper_attributes(detected, items)
+            except Exception:
+                attributes_payload = {}
+
+        # Build product payload WITH attributes for atomic creation
+        client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+        # NEW FLOW: Upload image first to get gfx_id, then create product.
+        gfx_id = None
+        if scan.stored_path:
+            try:
+                gfx_id = await client.upload_gfx(scan.stored_path)
+            except Exception:
+                gfx_id = None # Proceed without image if upload fails
+
+        payload = await build_shoper_payload(client, scan, candidate, gfx_id=gfx_id)
+        # Apply overrides: category and price
+        if request.category_id is not None:
+            try:
+                payload["category_id"] = int(request.category_id)
+                payload["categories"] = [int(request.category_id)]
+            except Exception:
+                pass
+        elif request.category_name:
+            # Try find or create category by name
+            try:
+                client_lookup = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+                cats = await client_lookup.fetch_categories()
+                items = cats.get('items') if isinstance(cats, dict) else (cats if isinstance(cats, list) else [])
+                found_id = None
+                for it in items or []:
+                    try:
+                        nm = (it.get('name') or it.get('category') or '').strip().lower()
+                        cid = it.get('category_id') or it.get('id')
+                        if nm and nm == str(request.category_name).strip().lower() and cid is not None:
+                            found_id = int(cid)
+                            break
+                    except Exception:
+                        continue
+                if not found_id and request.create_category_if_missing:
+                    found_id = await client_lookup.create_category(str(request.category_name).strip())
+                if found_id:
+                    payload['category_id'] = int(found_id)
+                    payload['categories'] = [int(found_id)]
+            except Exception:
+                pass
+        if request.price_pln_final is not None:
+            try:
+                price_text = f"{float(request.price_pln_final):.2f}"
+                if isinstance(payload.get("stock"), dict):
+                    payload["stock"]["price"] = price_text
+                else:
+                    payload.setdefault("stock", {})
+                    payload["stock"]["price"] = price_text
+            except Exception:
+                pass
+        if request.name_override:
+            try:
+                lang = settings.default_language_code
+                if isinstance(payload.get("translations"), dict) and lang in payload["translations"]:
+                    payload["translations"][lang]["name"] = request.name_override.strip()
+            except Exception:
+                pass
+        if request.number_override:
+            try:
+                number_txt = str(request.number_override).strip()
+                # Update code and stock.code by replacing trailing segment
+                code_old = payload.get("code") or ""
+                import re
+                if code_old:
+                    m = re.match(r"^(.*-)([^-]*)$", code_old)
+                    if m:
+                        code_new = f"{m.group(1)}{number_txt}"
+                    else:
+                        code_new = f"{code_old}-{number_txt}"
+                    payload["code"] = code_new
+                    if isinstance(payload.get("stock"), dict):
+                        payload["stock"]["code"] = code_new
+                # Also update display name to reflect new number
+                lang = settings.default_language_code
+                if isinstance(payload.get("translations"), dict) and lang in payload["translations"]:
+                    base_name = (payload["translations"][lang].get("name") or "").strip()
+                    # Rebuild name from scan/candidate sources for correctness
+                    nm = candidate.name or scan.detected_name or "Karta"
+                    st = candidate.set or scan.detected_set or ""
+                    payload["translations"][lang]["name"] = f"{nm} {number_txt} {st}".strip()
+            except Exception:
+                pass
+
+        # Recompute set code in product code, preferring the actual set over era/category
+        try:
+            from .shoper import _category_name_from_id, _set_code_from_name as _setcode
+            preferred_set_name = (scan.detected_set or (candidate.set if candidate else None))
+            set_code = _setcode(preferred_set_name) if preferred_set_name else None
+            if not set_code:
+                cat_id = payload.get("category_id")
+                if cat_id:
+                    client_for_cat = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+                    cat_name = await _category_name_from_id(client_for_cat, int(cat_id))
+                    if cat_name:
+                        set_code = _setcode(cat_name)
+            if set_code:
+                # Update PKM-SETCODE-NUMBER if set_code resolvable
+                num_part = None
+                try:
+                    cur = payload.get("code") or ""
+                    import re
+                    m = re.match(r"^([A-Z]+)-([A-Z0-9]+)-(.+)$", cur)
+                    if m:
+                        num_part = m.group(3)
+                except Exception:
+                    num_part = None
+                new_code = f"{settings.code_prefix}-{set_code}-{num_part or (scan.detected_number or (candidate.number if candidate else ''))}".strip("-")
+                payload["code"] = new_code
+                if isinstance(payload.get("stock"), dict):
+                    payload["stock"]["code"] = new_code
+        except Exception:
+            pass
+
+        # Create product in Shoper
+        headers = {
+            "Authorization": f"Bearer {client.token}",
+            "Accept": "application/json",
+        }
+        url = f"{client.base_url}{settings.shoper_products_path}"
+        async with httpx.AsyncClient(timeout=30) as http:
+            r = await http.post(url, json=payload, headers=headers)
+            try:
+                r.raise_for_status()
+                # Mark scan as published
+                scan.publish_status = "published"
+                uploads = []
+                attr_results = []
+                try:
+                    resp_json = r.json()
+                    sid = int(resp_json.get("product_id") or resp_json.get("id") or 0)
+                    scan.published_shoper_id = sid or None
+
+                    # STEP 2: If product was created and there are attributes, add them via PUT
+                    if sid and attributes_payload:
+                        print(f"INFO: Adding attributes to product {sid} via PUT request")
+                        update_result = await client.update_product(sid, {"attributes": attributes_payload})
+                        if update_result.get("ok"):
+                            print(f"SUCCESS: Attributes successfully added to product {sid}")
+                            attr_results.append(update_result)
+                        else:
+                            print(f"WARNING: Failed to add attributes to product {sid}: {update_result.get('text', 'Unknown error')}")
+
+                except Exception as e:
+                    print(f"ERROR processing product creation response or updating attributes: {e}")
+                    pass
+                db.commit()
+                # Images are handled by a separate endpoint after this.
+                return {"ok": True, "json": r.json(), "payload": payload, "uploads": uploads, "attributes_applied": attr_results}
+            except Exception:
+                return {
+                    "error": True,
+                    "status_code": r.status_code,
+                    "text": r.text,
+                    "payload": payload,
+                }
+    finally:
+        db.close()
+
+
+@app.post("/shoper/map_attributes")
+async def map_attributes_endpoint(scan_id: int | None = None, detected: dict | None = Body(default=None)):
+    """Return suggested { attribute_id: option_id } based on detected data and Shoper taxonomy.
+
+    Accepts either a scan_id (loads detected_* from DB) or a 'detected' dict body
+    with keys like language, variant/finish, condition, rarity, energy.
+    """
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return JSONResponse({"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"}, status_code=400)
+    src = detected or {}
+    if scan_id is not None and not detected:
+        db = SessionLocal()
+        try:
+            s = db.get(Scan, int(scan_id))
+            if not s:
+                return JSONResponse({"error": "scan not found"}, status_code=404)
+            src = {
+                "language": s.detected_language,
+                "variant": s.detected_variant,
+                "condition": s.detected_condition,
+                "rarity": s.detected_rarity,
+                "energy": s.detected_energy,
+            }
+        finally:
+            db.close()
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    tax = await client.fetch_attributes()
+    items = tax.get("items") if isinstance(tax, dict) else []
+    out = map_detected_to_shoper_attributes(src or {}, items)
+    return {"attributes": out}
+
+
+@app.get("/scans/{scan_id}", response_model=ScanDetailResponse)
+def scan_detail(scan_id: int):
+    db = SessionLocal()
+    try:
+        s = db.get(Scan, scan_id)
+        if not s:
+            return JSONResponse({"error": "scan not found"}, status_code=404)
+        # Fetch all candidates
+        cands = db.query(ScanCandidate).filter(ScanCandidate.scan_id == s.id).order_by(ScanCandidate.score.desc()).all()
+        candidates: list[Candidate] = []
+        selected_provider_id: str | None = None
+        for c in cands:
+            candidates.append(
+                Candidate(
+                    id=c.provider_id,
+                    name=c.name,
+                    set=c.set,
+                    set_code=c.set_code,
+                    number=c.number,
+                    image=c.image,
+                    score=c.score,
+                    chosen=bool(c.chosen),
+                )
+            )
+            if c.chosen:
+                selected_provider_id = c.provider_id
+
+        # Build pricing dict
+        pricing_payload = None
+        if s.cardmarket_7d_average is not None or s.price_pln_final is not None:
+            pricing_payload = {
+                "cardmarket_currency": s.cardmarket_currency,
+                "cardmarket_7d_average": s.cardmarket_7d_average,
+                "eur_pln_rate": float(settings.eur_pln_rate),
+                "multiplier": float(settings.price_multiplier),
+                "price_pln": s.price_pln,
+                "price_pln_final": s.price_pln_final,
+                "graded_psa10": s.graded_psa10,
+                "graded_currency": s.graded_currency,
+            }
+
+        # Image URL
+        image_url = None
+        back_image_url = None
+        try:
+            if s.stored_path:
+                image_url = f"/uploads/{Path(s.stored_path).name}"
+            if getattr(s, 'stored_path_back', None):
+                back_image_url = f"/uploads/{Path(s.stored_path_back).name}"
+        except Exception:
+            pass
+
+        detected = DetectedData(
+            name=s.detected_name,
+            set=s.detected_set,
+            set_code=s.detected_set_code,
+            number=s.detected_number,
+            language=s.detected_language,
+            variant=s.detected_variant,
+            condition=s.detected_condition,
+            rarity=s.detected_rarity,
+            energy=s.detected_energy,
+        )
+
+        return ScanDetailResponse(
+            id=s.id,
+            created_at=s.created_at.isoformat(),
+            message=s.message,
+            detected=detected,
+            candidates=candidates,
+            selected_candidate_id=selected_provider_id,
+            pricing=pricing_payload,
+            image_url=image_url,
+            back_image_url=back_image_url,
+        )
+    finally:
+        db.close()
+
+
+@app.post("/sync/shoper")
+async def sync_shoper(limit: int = 100):
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return JSONResponse({"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"}, status_code=400)
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    items = await client.fetch_all_products(limit=limit)
+    res = upsert_products(items)
+    # Update last sync marker
+    import time as _t
+    global _last_products_sync_ts
+    _last_products_sync_ts = _t.time()
+    return {"status": "ok", "fetched": len(items), **res}
+
+
+@app.get("/scans/{scan_id}/duplicates")
+def find_duplicates(scan_id: int, limit: int = 5):
+    db = SessionLocal()
+    try:
+        src = db.query(Fingerprint).filter(Fingerprint.scan_id == scan_id).first()
+        if not src:
+            return []
+        src_phash = unpack_ndarray(src.phash)
+        src_dhash = unpack_ndarray(src.dhash)
+        src_tile = unpack_ndarray(src.tile_phash)
+        rows = db.query(Fingerprint).filter(Fingerprint.scan_id != scan_id).all()
+        scored = []
+        for r in rows:
+            try:
+                ph = unpack_ndarray(r.phash)
+                dh = unpack_ndarray(r.dhash)
+                tl = unpack_ndarray(r.tile_phash)
+            except Exception:
+                continue
+            score = 0
+            score += hamming_distance(src_phash, ph)
+            score += hamming_distance(src_dhash, dh)
+            # sum tile distances (zip shape)
+            try:
+                for a, b in zip(src_tile, tl):
+                    score += hamming_distance(a, b)
+            except Exception:
+                score += 999
+            scored.append({"scan_id": r.scan_id, "distance": score})
+        scored.sort(key=lambda x: x["distance"])
+        return scored[: max(1, min(limit, 20))]
+    finally:
+        db.close()
+
+
+@app.post("/sessions/start")
+def start_session():
+    db = SessionLocal()
+    try:
+        s = ScanSession(status="open")
+        db.add(s)
+        db.flush()
+        db.commit()
+        return {"session_id": s.id}
+    finally:
+        db.close()
+
+
+@app.get("/sessions/{session_id}/summary")
+def session_summary(session_id: int):
+    db = SessionLocal()
+    try:
+        scans = db.query(Scan).filter(Scan.session_id == session_id).all()
+        total = len(scans)
+        ready = sum(1 for s in scans if s.selected_candidate_id)
+        sum_price = sum((s.price_pln_final or 0.0) for s in scans if s.selected_candidate_id)
+        return {"session_id": session_id, "total_scans": total, "ready_to_publish": ready, "sum_price_pln_final": round(sum_price, 2)}
+    finally:
+        db.close()
+
+
+from fastapi import Form, Request
+
+# ... (other imports)
+
+@app.post("/scans/{scan_id}/publish")
+async def publish_single_scan(
+    request: Request,
+    scan_id: int,
+    data: str = Form(...),
+):
+    print(f"DEBUG: publish_single_scan called with scan_id={scan_id}")
+    print(f"DEBUG: data parameter received: {data[:100] if data else 'NONE'}")
+    
+    db = SessionLocal()
+    temp_dir = None
+    try:
+        # 1. Parse form data and confirm candidate
+        form_data = json.loads(data)
+        payload = ConfirmRequest(**form_data)
+        print(f"DEBUG: Parsed form_data: {form_data}")
+        
+        confirm_response = await confirm_candidate(payload)
+        if isinstance(confirm_response, JSONResponse):
+            return confirm_response
+
+        # 2. Get scan and candidate from DB
+        scan = db.get(Scan, scan_id)
+        if not scan or not scan.selected_candidate_id:
+            return JSONResponse({"error": "Scan not confirmed or candidate not selected"}, status_code=400)
+        cand = db.get(ScanCandidate, scan.selected_candidate_id)
+        if not cand:
+            return JSONResponse({"error": "Candidate not found"}, status_code=404)
+
+        # 3. Handle image uploads
+        form = await request.form()
+        primary_image_source = form.get("primary_image_source")
+        
+        primary_image_path_or_url = None
+        additional_image_paths = []
+        
+        upload_dir = Path(settings.upload_dir)
+        temp_dir = upload_dir / f"temp_{scan_id}_{int(time.time())}"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        if primary_image_source == 'upload':
+            primary_image_file = form.get("primary_image")
+            if isinstance(primary_image_file, UploadFile):
+                path = temp_dir / primary_image_file.filename
+                with open(path, "wb") as buffer:
+                    shutil.copyfileobj(primary_image_file.file, buffer)
+                primary_image_path_or_url = path
+        elif primary_image_source in ['tcggo', 'scan']:
+            primary_image_path_or_url = form.get("primary_image_url")
+
+        # Process additional images
+        for key in form.keys():
+            if key.startswith("additional_image_"):
+                img_file = form.get(key)
+                if isinstance(img_file, UploadFile):
+                    path = temp_dir / img_file.filename
+                    with open(path, "wb") as buffer:
+                        shutil.copyfileobj(img_file.file, buffer)
+                    additional_image_paths.append(path)
+
+        # 4. Fuzzy match set name for category
+        set_id = payload.detected.get('set_id') if payload.detected else None
+        if not set_id:
+            set_name = payload.detected.get('set') if payload.detected else None
+            if set_name:
+                match = await _find_best_category_match_internal(set_name)
+                if match and match.get('id'):
+                    set_id = match.get('id')
+
+        # 5. Publish to Shoper with images
+        client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+        print(f"INFO: Publishing scan {scan_id} to Shoper...")
+        result = await publish_scan_to_shoper(
+            client,
+            scan,
+            cand,
+            set_id=set_id,
+            primary_image=primary_image_path_or_url,
+            additional_images=additional_image_paths
+        )
+
+        print(f"INFO: Shoper publish result: {json.dumps(result, indent=2, default=str)}")
+
+        # 6. Update scan status in DB
+        if result.get("ok") or result.get("dry_run"):
+            scan.publish_status = "published" if not settings.publish_dry_run else "dry_run"
+            shoper_id = None
+            try:
+                resp = result.get("json") or {}
+                shoper_id = int(resp.get("product_id") or resp.get("id") or 0)
+                if shoper_id:
+                    scan.published_shoper_id = shoper_id
+                    print(f"SUCCESS: Product published to Shoper with ID: {shoper_id}")
+            except Exception as e:
+                print(f"WARNING: Could not extract product ID from response: {e}")
+            # Attribute mapping logic can remain here or be moved if needed
+        else:
+            # Extract error details for better error message
+            error_msg = "Publication failed"
+            if result.get("error"):
+                status_code = result.get("status_code", "unknown")
+                error_text = result.get("text", "No error details")
+                try:
+                    # Try to parse error_text as JSON for cleaner display
+                    error_json = json.loads(error_text)
+                    error_desc = error_json.get("error_description", error_text)
+                except:
+                    error_desc = error_text
+                error_msg = f"Publication failed (HTTP {status_code}): {error_desc}"
+            print(f"ERROR: {error_msg}")
+            scan.publish_status = "failed"
+        db.commit()
+        return result
+
+    finally:
+        if temp_dir and temp_dir.exists():
+            shutil.rmtree(temp_dir)
+        db.close()
+
+
+@app.post("/sessions/{session_id}/publish")
+async def publish_session(session_id: int):
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return JSONResponse({"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"}, status_code=400)
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    db = SessionLocal()
+    published = 0
+    failed = 0
+    try:
+        scans = db.query(Scan).filter(Scan.session_id == session_id, Scan.selected_candidate_id.isnot(None)).all()
+        for s in scans:
+            cand = db.get(ScanCandidate, s.selected_candidate_id)
+            if not cand:
+                continue
+
+            # Determine primary image source (default to TCGGO if not set)
+            primary_image = None
+            use_tcggo = s.use_tcggo_image if s.use_tcggo_image is not None else True
+            if use_tcggo:
+                # Use TCGGO image (from candidate) - will be downloaded automatically
+                primary_image = None  # Function will use candidate.image
+            else:
+                # Use local scan image
+                if s.stored_path and Path(s.stored_path).is_file():
+                    primary_image = s.stored_path
+
+            # Parse additional images from JSON
+            additional_images = None
+            if s.additional_images:
+                try:
+                    import json
+                    additional_paths = json.loads(s.additional_images)
+                    if isinstance(additional_paths, list):
+                        # Filter to existing files
+                        additional_images = [p for p in additional_paths if Path(p).is_file()]
+                except Exception:
+                    pass
+
+            r = await publish_scan_to_shoper(client, s, cand, primary_image=primary_image, additional_images=additional_images)
+            if r.get("ok") or r.get("dry_run"):
+                s.publish_status = "published" if not settings.publish_dry_run else "dry_run"
+                # record id if possible
+                try:
+                    resp = r.get("json") or {}
+                    sid = int(resp.get("product_id") or resp.get("id") or 0)
+                    s.published_shoper_id = sid or None
+                except Exception:
+                    pass
+                published += 1
+            else:
+                s.publish_status = "failed"
+                failed += 1
+        db.commit()
+        return {"session_id": session_id, "published": published, "failed": failed, "dry_run": settings.publish_dry_run}
+    finally:
+        db.close()
+
+
+@app.get("/scans/{scan_id}/duplicates")
+def find_duplicates(scan_id: int, limit: int = 5):
+    db = SessionLocal()
+    try:
+        src = db.query(Fingerprint).filter(Fingerprint.scan_id == scan_id).first()
+        if not src:
+            return []
+        src_phash = unpack_ndarray(src.phash)
+        src_dhash = unpack_ndarray(src.dhash)
+        src_tile = unpack_ndarray(src.tile_phash)
+        rows = db.query(Fingerprint).filter(Fingerprint.scan_id != scan_id).all()
+        scored = []
+        for r in rows:
+            try:
+                ph = unpack_ndarray(r.phash)
+                dh = unpack_ndarray(r.dhash)
+                tl = unpack_ndarray(r.tile_phash)
+            except Exception:
+                continue
+            score = 0
+            score += hamming_distance(src_phash, ph)
+            score += hamming_distance(src_dhash, dh)
+            try:
+                for a, b in zip(src_tile, tl):
+                    score += hamming_distance(a, b)
+            except Exception:
+                score += 999
+            scored.append({"scan_id": r.scan_id, "distance": score})
+        scored.sort(key=lambda x: x["distance"])
+        return scored[: max(1, min(limit, 20))]
+    finally:
+        db.close()
+
+
+@app.patch("/scans/{scan_id}/image-settings")
+async def update_scan_image_settings(scan_id: int, use_tcggo_image: bool | None = None, additional_images: list[str] | None = None):
+    """Update image source preference and additional images for a scan."""
+    db = SessionLocal()
+    try:
+        scan = db.get(Scan, scan_id)
+        if not scan:
+            return JSONResponse({"error": "Scan not found"}, status_code=404)
+
+        if use_tcggo_image is not None:
+            scan.use_tcggo_image = use_tcggo_image
+
+        if additional_images is not None:
+            import json
+            # Validate paths exist
+            valid_paths = [p for p in additional_images if Path(p).is_file()]
+            scan.additional_images = json.dumps(valid_paths) if valid_paths else None
+
+        db.commit()
+        return {
+            "scan_id": scan_id,
+            "use_tcggo_image": scan.use_tcggo_image,
+            "additional_images": json.loads(scan.additional_images) if scan.additional_images else []
+        }
+    finally:
+        db.close()
+
+
+@app.post("/scans/{scan_id}/upload-additional-image")
+async def upload_additional_image(scan_id: int, file: UploadFile = File(...)):
+    """Upload an additional image for a scan (e.g., back, detail shots)."""
+    db = SessionLocal()
+    try:
+        scan = db.get(Scan, scan_id)
+        if not scan:
+            return JSONResponse({"error": "Scan not found"}, status_code=404)
+
+        # Save uploaded file
+        upload_dir = Path(settings.upload_dir)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        ext = Path(file.filename).suffix if file.filename else ".jpg"
+        filename = f"scan_{scan_id}_extra_{int(time.time()*1000)}{ext}"
+        target = upload_dir / filename
+
+        with target.open("wb") as out:
+            shutil.copyfileobj(file.file, out)
+
+        # Add to additional_images list
+        import json
+        current_images = []
+        if scan.additional_images:
+            try:
+                current_images = json.loads(scan.additional_images)
+            except Exception:
+                pass
+
+        current_images.append(str(target))
+        scan.additional_images = json.dumps(current_images)
+        db.commit()
+
+        return {
+            "scan_id": scan_id,
+            "uploaded_path": str(target),
+            "url": f"/uploads/{filename}",
+            "all_additional_images": current_images
+        }
+    finally:
+        db.close()
+
+
+@app.patch("/scans/{scan_id}/warehouse-code")
+async def update_scan_warehouse_code(scan_id: int, warehouse_code: str = Body(..., embed=True)):
+    """Set warehouse code for a scan (e.g., K1K1P001)."""
+    db = SessionLocal()
+    try:
+        scan = db.get(Scan, scan_id)
+        if not scan:
+            return JSONResponse({"error": "Scan not found"}, status_code=404)
+
+        # Validate code format
+        parsed = parse_warehouse_code(warehouse_code)
+        if not parsed:
+            return JSONResponse({
+                "error": "Invalid warehouse code format. Expected: K{1-9}K{1-4}P{001-1000}",
+                "example": "K1K1P001"
+            }, status_code=400)
+
+        scan.warehouse_code = warehouse_code.upper()
+        db.commit()
+
+        return {
+            "scan_id": scan_id,
+            "warehouse_code": scan.warehouse_code,
+            "parsed": parsed
+        }
+    finally:
+        db.close()
+
+
+@app.get("/warehouse/last-code")
+async def get_last_warehouse_code():
+    """Get the most recently used warehouse code from all scans."""
+    db = SessionLocal()
+    try:
+        # Find most recent scan with warehouse_code set
+        scan = db.query(Scan).filter(
+            Scan.warehouse_code.isnot(None),
+            Scan.warehouse_code != ""
+        ).order_by(Scan.created_at.desc()).first()
+
+        if not scan or not scan.warehouse_code:
+            return {"last_code": None, "next_code": "K1K1P001"}
+
+        next_code = increment_warehouse_code(scan.warehouse_code)
+        return {
+            "last_code": scan.warehouse_code,
+            "next_code": next_code,
+            "scan_id": scan.id,
+            "created_at": scan.created_at.isoformat() if scan.created_at else None
+        }
+    finally:
+        db.close()
+
+
+@app.post("/warehouse/increment")
+async def increment_code(current_code: str = Body(..., embed=True)):
+    """Calculate next warehouse code from current code.
+
+    Example: K1K1P001 -> K1K1P002
+    """
+    next_code = increment_warehouse_code(current_code)
+    if not next_code:
+        return JSONResponse({
+            "error": "Cannot increment code (end of warehouse or invalid format)",
+            "current_code": current_code
+        }, status_code=400)
+
+    parsed_current = parse_warehouse_code(current_code)
+    parsed_next = parse_warehouse_code(next_code)
+
+    return {
+        "current_code": current_code,
+        "next_code": next_code,
+        "current": parsed_current,
+        "next": parsed_next
+    }
+
+
+@app.get("/warehouse/validate/{code}")
+async def validate_warehouse_code(code: str):
+    """Validate warehouse code format and return parsed components."""
+    parsed = parse_warehouse_code(code)
+    if not parsed:
+        return JSONResponse({
+            "valid": False,
+            "error": "Invalid format. Expected: K{1-9}K{1-4}P{001-1000}",
+            "example": "K1K1P001"
+        }, status_code=400)
+
+    return {
+        "valid": True,
+        "code": code.upper(),
+        "karton": parsed["karton"],
+        "kolumna": parsed["kolumna"],
+        "pozycja": parsed["pozycja"],
+        "formatted": format_warehouse_code(parsed["karton"], parsed["kolumna"], parsed["pozycja"])
+    }
+
+
+@app.get("/debug/shoper-product/{product_id}")
+async def debug_get_shoper_product(product_id: int):
+    """Debug endpoint to fetch and inspect a product structure from Shoper."""
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return JSONResponse({"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"}, status_code=400)
+
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    product = await client.get_product(product_id)
+
+    if product:
+        return {"product_id": product_id, "data": product}
+    else:
+        return JSONResponse({"error": f"Product {product_id} not found"}, status_code=404)
+
+
+@app.get("/sessions/{session_id}/publish/preview")
+def publish_preview(session_id: int):
+    db = SessionLocal()
+    try:
+        scans = db.query(Scan).filter(Scan.session_id == session_id, Scan.selected_candidate_id.isnot(None)).all()
+        payloads: list[dict] = []
+        for s in scans:
+            cand = db.get(ScanCandidate, s.selected_candidate_id)
+            if not cand:
+                continue
+            payload = build_shoper_payload(s, cand)
+            payloads.append({"scan_id": s.id, "payload": payload})
+        return {"session_id": session_id, "count": len(payloads), "payloads": payloads}
+    finally:
+        db.close()
+
+
+@app.post("/import/inventory_csv")
+async def import_inventory_csv(file: UploadFile = File(...)):
+    upload_dir = Path(settings.upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    target = upload_dir / f"inventory_{int(time.time()*1000)}.csv"
+    with target.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+
+    from . import import_inventory
+    result = import_inventory.run(str(target))
+    return result
+
+ 
+
+
+@app.get("/orders")
+async def list_orders(limit: int = 100, page: int | None = None, detailed: bool = Query(default=False)):
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return []
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    if page is not None:
+        meta = await client.fetch_orders_page(page=max(1, int(page or 1)), limit=max(1, min(int(limit or 100), 250)))
+        items = meta.get("items") or []
+    else:
+        items = await client.fetch_all_orders(limit=max(1, min(int(limit or 100), 250)))
+    # Normalize a compact shape for UI
+    out = []
+    # Optional product cache and DB session for enrichment
+    prod_cache_by_code: dict[str, tuple[str|None, str|None]] = {}
+    prod_cache_by_id: dict[int, tuple[str|None, str|None]] = {}
+    db = SessionLocal() if detailed else None
+    for o in items:
+        oid = o.get("order_id") or o.get("id") or o.get("orderId")
+        ts = o.get("date") or o.get("created_at") or o.get("add_date") or o.get("createdAt")
+        total = (o.get("sum") or o.get("total_gross") or o.get("total") or o.get("amount") or 0)
+        # prefer explicit total_products field when present
+        items_count = o.get("total_products")
+        if items_count is None:
+            products = o.get("products") or o.get("items") or o.get("orders_products") or []
+            if isinstance(products, dict):
+                products = products.get("items") or products.get("list") or []
+            try:
+                items_count = sum(int(p.get("quantity") or p.get("qty") or p.get("count") or 0) for p in (products or []) if isinstance(p, dict))
+            except Exception:
+                items_count = None
+        # Status info
+        st = o.get("status") or {}
+        st_name = None
+        try:
+            tr = st.get("translations")
+            if isinstance(tr, dict):
+                # Prefer configured language code
+                lang = getattr(settings, "default_language_code", None) or "pl_PL"
+                tr_lang = tr.get(lang)
+                if isinstance(tr_lang, dict):
+                    st_name = tr_lang.get("name")
+                if not st_name:
+                    # fallback: first entry
+                    for _k, _v in tr.items():
+                        if isinstance(_v, dict) and _v.get("name"):
+                            st_name = _v.get("name")
+                            break
+        except Exception:
+            pass
+        st_type = (st.get("type") if isinstance(st, dict) else None) or o.get("status_type")
+        st_id = (st.get("status_id") if isinstance(st, dict) else None) or o.get("status_id")
+        st_color = (st.get("color") if isinstance(st, dict) else None)
+
+        row = {
+            "id": oid,
+            "date": ts,
+            "total": total,
+            "items_count": items_count,
+            "delivery_date": o.get("delivery_date"),
+            "status": {"type": st_type, "id": st_id, "color": st_color, "name": st_name},
+        }
+        if detailed:
+            # Attach simplified items if present
+            prods = (
+                o.get("products")
+                or o.get("orders_products")
+                or o.get("order_products")
+                or o.get("items")
+                or []
+            )
+            if isinstance(prods, dict):
+                prods = prods.get("items") or prods.get("list") or []
+            # Fallback: fetch per-order products if empty
+            if (not prods) and oid is not None:
+                try:
+                    prods = await client.fetch_order_products(oid)
+                except Exception:
+                    prods = []
+            simp: list[dict] = []
+            if isinstance(prods, list):
+                def _emit(pobj: dict):
+                    if not isinstance(pobj, dict):
+                        return
+                    name = pobj.get("name") or pobj.get("product_name") or pobj.get("title")
+                    code = pobj.get("code") or pobj.get("sku") or pobj.get("product_code")
+                    pid = pobj.get("product_id") or pobj.get("id")
+                    qty = pobj.get("quantity") or pobj.get("qty") or pobj.get("count") or 0
+                    price = pobj.get("price") or pobj.get("price_gross") or pobj.get("sum") or pobj.get("amount")
+                    # concatenate options to name if present
+                    try:
+                        topts = pobj.get("text_options")
+                        if isinstance(topts, list) and topts:
+                            optstr = ", ".join([str(x.get("value")) for x in topts if isinstance(x, dict) and x.get("value")])
+                            if optstr:
+                                name = f"{name} ({optstr})"
+                    except Exception:
+                        pass
+                    try:
+                        qty = int(qty)
+                    except Exception:
+                        try:
+                            qty = int(float(str(qty).replace(",", ".")))
+                        except Exception:
+                            qty = 0
+                    try:
+                        price = float(str(price).replace(",", ".")) if price is not None else None
+                    except Exception:
+                        price = None
+                    # Enrich with image/permalink via local products when possible
+                    image_url = None
+                    permalink = None
+                    try:
+                        if code and code in prod_cache_by_code:
+                            image_url, permalink = prod_cache_by_code.get(code) or (None, None)
+                        elif isinstance(pid, int) and pid in prod_cache_by_id:
+                            image_url, permalink = prod_cache_by_id.get(pid) or (None, None)
+                        elif db is not None:
+                            if code:
+                                pr = db.query(Product).filter(Product.code == code).first()
+                                if pr:
+                                    image_url = _product_image_url(pr)
+                                    permalink = pr.permalink
+                                    prod_cache_by_code[code] = (image_url, permalink)
+                            if (image_url is None) and isinstance(pid, int):
+                                pr2 = db.query(Product).filter(Product.shoper_id == pid).first()
+                                if pr2:
+                                    image_url = _product_image_url(pr2)
+                                    permalink = pr2.permalink
+                                    prod_cache_by_id[pid] = (image_url, permalink)
+                    except Exception:
+                        pass
+                    simp.append({
+                        "name": name,
+                        "code": code,
+                        "product_id": pid,
+                        "quantity": qty,
+                        "price": price,
+                        "image": image_url,
+                        "permalink": permalink,
+                    })
+
+                for p in prods:
+                    _emit(p)
+                    # flatten children if any
+                    try:
+                        ch = p.get("children")
+                        if isinstance(ch, list):
+                            for c in ch:
+                                _emit(c)
+                    except Exception:
+                        pass
+            # Buyer basic info
+            buyer = {"email": o.get("email")}
+            try:
+                b = o.get("billing_address") or {}
+                d = o.get("delivery_address") or {}
+                src = b or d or {}
+                buyer.update({
+                    "firstname": src.get("firstname"),
+                    "lastname": src.get("lastname"),
+                    "phone": src.get("phone"),
+                    "city": src.get("city"),
+                    "postcode": src.get("postcode"),
+                    "street1": src.get("street1"),
+                    "country": src.get("country") or src.get("country_code"),
+                })
+            except Exception:
+                pass
+            row["items"] = simp
+            row["buyer"] = buyer
+        out.append(row)
+    if db is not None:
+        try:
+            db.close()
+        except Exception:
+            pass
+    return out
+
+
+@app.get("/users")
+async def list_users(limit: int = 200, page: int | None = None):
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return []
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    if page is not None:
+        meta = await client.fetch_users_page(page=max(1, int(page or 1)), limit=max(1, min(int(limit or 200), 250)))
+        items = meta.get("items") or []
+    else:
+        items = await client.fetch_all_users(limit=max(1, min(int(limit or 200), 250)))
+    # Fetch orders to annotate whether user purchased anything
+    orders_user_ids = set()
+    try:
+        orders = await client.fetch_all_orders(limit=200)
+        for o in orders or []:
+            uid = o.get("user_id")
+            if uid is not None:
+                orders_user_ids.add(uid)
+    except Exception:
+        pass
+    out = []
+    for u in items:
+        out.append({
+            "user_id": u.get("user_id") or u.get("id"),
+            "login": u.get("login"),  # kept for compatibility, UI may hide it
+            "date_add": u.get("date_add") or u.get("created_at"),
+            "lastvisit": u.get("lastvisit") or u.get("last_login"),
+            "firstname": u.get("firstname"),  # kept
+            "lastname": u.get("lastname"),    # kept
+            "email": u.get("email"),
+            "active": u.get("active"),
+            "newsletter": u.get("newsletter"),
+            "has_orders": (u.get("user_id") or u.get("id")) in orders_user_ids,
+        })
+    return out
+
+
+@app.get("/stats")
+async def stats():
+    db = SessionLocal()
+    try:
+        total_scans = db.query(func.count(Scan.id)).scalar() or 0
+        scans_ready = db.query(func.count(Scan.id)).filter(Scan.selected_candidate_id.isnot(None)).scalar() or 0
+        scans_published = db.query(func.count(Scan.id)).filter(Scan.publish_status == "published").scalar() or 0
+        total_products = db.query(func.count(Product.id)).scalar() or 0
+        # last 5 scans
+        rows = db.query(Scan).order_by(Scan.id.desc()).limit(5).all()
+        recent = [
+            {
+                "id": s.id,
+                "created_at": s.created_at.isoformat(),
+                "name": s.detected_name,
+                "set": s.detected_set,
+                "number": s.detected_number,
+                "priced": bool(s.price_pln_final is not None),
+            }
+            for s in rows
+        ]
+        # Augment with external API metrics if configured
+        metrics = await _get_sales_metrics()
+        sold_value_pln = metrics.get("sold_value_pln", 0.0)
+        sold_count = metrics.get("sold_count", 0)
+        users_count = metrics.get("users_count")
+
+        return {
+            "total_scans": total_scans,
+            "scans_ready": scans_ready,
+            "scans_published": scans_published,
+            "total_products": total_products,
+            "recent_scans": recent,
+            "sold_value_pln": sold_value_pln,
+            "sold_count": sold_count,
+            "users_count": users_count,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/reports")
+async def reports(range_days: int | None = None, low_stock_threshold: int = 1, top_n: int = 10):
+    db = SessionLocal()
+    try:
+        # Metrics
+        total_products = db.query(func.count(Product.id)).scalar() or 0
+        total_scans = db.query(func.count(Scan.id)).scalar() or 0
+        scans_ready = db.query(func.count(Scan.id)).filter(Scan.selected_candidate_id.isnot(None)).scalar() or 0
+        scans_published = db.query(func.count(Scan.id)).filter(Scan.publish_status == "published").scalar() or 0
+
+        # Inventory numbers
+        rows_inv = db.query(Product.stock, Product.price).all()
+        inv_units = 0
+        inv_value = 0.0
+        for st, pr in rows_inv:
+            s = int(st or 0)
+            p = float(pr or 0.0)
+            inv_units += s
+            inv_value += s * p
+
+        # Build date keys
+        # Build daily key series (if range specified use that many days, else 30 for charts only)
+        if range_days is not None:
+            try:
+                days = max(1, min(365, int(range_days)))
+            except Exception:
+                days = 30
+        else:
+            days = 30
+        today = datetime.utcnow().date()
+        start = today - timedelta(days=days - 1)
+        keys = [(start + timedelta(days=i)).isoformat() for i in range(days)]
+
+        # Products per day (by updated_at)
+        prod_rows = db.query(Product.updated_at).filter(Product.updated_at.isnot(None)).all()
+        prod_map: dict[str, int] = {k: 0 for k in keys}
+        for (dt,) in prod_rows:
+            try:
+                d = (dt.date() if hasattr(dt, 'date') else dt).isoformat()
+                if d in prod_map:
+                    prod_map[d] += 1
+            except Exception:
+                continue
+        products_per_day = [{"date": k, "count": prod_map[k]} for k in keys]
+
+        # Scans per day (by created_at)
+        scan_rows = db.query(Scan.created_at).all()
+        scan_map: dict[str, int] = {k: 0 for k in keys}
+        for (dt,) in scan_rows:
+            try:
+                d = (dt.date() if hasattr(dt, 'date') else dt).isoformat()
+                if d in scan_map:
+                    scan_map[d] += 1
+            except Exception:
+                continue
+        scans_per_day = [{"date": k, "count": scan_map[k]} for k in keys]
+
+        # Category breakdown (top N)
+        _CATEGORY_NAMES = {}
+        if settings.shoper_base_url and settings.shoper_access_token:
+            try:
+                client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+                all_categories = await get_shoper_categories(client)
+                _CATEGORY_NAMES = {
+                    int(c.get("category_id") or c.get("id")):
+                    (c.get("translations", {}).get("pl_PL", {}).get("name") or c.get("name"))
+                    for c in all_categories
+                    if (c.get("category_id") or c.get("id"))
+                }
+            except Exception:
+                pass # Fallback to empty names
+
+        cats = (
+            db.query(Product.category_id, func.count(Product.id))
+            .group_by(Product.category_id)
+            .order_by(func.count(Product.id).desc())
+            .limit(max(1, min(50, int(top_n))))
+            .all()
+        )
+        top_categories = [
+            {"id": cid, "name": _CATEGORY_NAMES.get(cid), "count": int(c)} for cid, c in cats
+        ]
+
+        # Low stock items (<= threshold)
+        try:
+            thr = max(0, int(low_stock_threshold))
+        except Exception:
+            thr = 1
+        low_stock_rows = (
+            db.query(Product)
+            .filter(Product.stock.isnot(None))
+            .filter(Product.stock <= thr)
+            .order_by(Product.stock.asc().nullsfirst(), Product.updated_at.desc().nullslast())
+            .limit(20)
+            .all()
+        )
+        low_stock = [
+            {
+                "id": r.id,
+                "code": r.code,
+                "name": r.name,
+                "stock": r.stock,
+                "price": r.price,
+                "permalink": r.permalink,
+            }
+            for r in low_stock_rows
+        ]
+
+        # Top value products (price * stock)
+        rows_all = db.query(Product).all()
+        enriched = []
+        for r in rows_all:
+            s = int(r.stock or 0)
+            p = float(r.price or 0.0)
+            enriched.append({
+                "id": r.id,
+                "code": r.code,
+                "name": r.name,
+                "stock": s,
+                "price": p,
+                "permalink": r.permalink,
+                "value": s * p,
+            })
+        top_value = sorted(enriched, key=lambda x: x["value"], reverse=True)[: max(1, min(50, int(top_n)))]
+
+        # External API metrics — reuse cached sales/users (fast and spójne z Panelem)
+        metrics = await _get_sales_metrics()
+        sold_value_pln = metrics.get("sold_value_pln", 0.0)
+        sold_count = metrics.get("sold_count", 0)
+        users_count = metrics.get("users_count")
+
+        return {
+            "metrics": {
+                "total_products": total_products,
+                "inventory_units": inv_units,
+                "inventory_value_pln": inv_value,
+                "total_scans": total_scans,
+                "scans_ready": scans_ready,
+                "scans_published": scans_published,
+                "sold_value_pln": sold_value_pln,
+                "sold_count": sold_count,
+                "users_count": users_count,
+            },
+            "products_per_day": products_per_day,
+            "scans_per_day": scans_per_day,
+            "top_categories": top_categories,
+            "low_stock": low_stock,
+            "top_value": top_value,
+        }
+    finally:
+        db.close()
+_CATEGORIES_FALLBACK = [
+    {"category_id": 38, "name": "Karty Pokémon"},
+    {"category_id": 39, "name": "151"},
+    {"category_id": 40, "name": "Licytacja"},
+    {"category_id": 41, "name": "Zestawy"},
+    {"category_id": 42, "name": "Temporal Forces"},
+    {"category_id": 43, "name": "Obsidian Flames"},
+    {"category_id": 44, "name": "Journey Together"},
+    {"category_id": 48, "name": "Stellar Crown"},
+    {"category_id": 49, "name": "Twilight Masquerade"},
+    {"category_id": 51, "name": "Prismatic Evolutions"},
+    {"category_id": 53, "name": "Destined Rivals"},
+    {"category_id": 55, "name": "Scarlet & Violet"},
+    {"category_id": 56, "name": "Paldea Evolved"},
+    {"category_id": 57, "name": "Paradox Rift"},
+    {"category_id": 58, "name": "Surging Sparks"},
+    {"category_id": 60, "name": "Shrouded Fable"},
+    {"category_id": 65, "name": "Paldean Fates"},
+    {"category_id": 66, "name": "Evolutions"},
+    {"category_id": 70, "name": "White Flare"},
+    {"category_id": 71, "name": "Black Bolt"},
+    {"category_id": 72, "name": "Scarlet & Violet"},
+    {"category_id": 74, "name": "XY"},
+    {"category_id": 75, "name": "Sun & Moon"},
+    {"category_id": 80, "name": "SVP Black Star Promos"},
+    {"category_id": 89, "name": "BREAKpoint"},
+    {"category_id": 90, "name": "Sword & Shield"},
+    {"category_id": 91, "name": "Vivid Voltage"},
+    {"category_id": 92, "name": "Pokémon GO"},
+    {"category_id": 93, "name": "Rebel Clash"},
+    {"category_id": 94, "name": "Lost Origin"},
+    {"category_id": 95, "name": "Shining Fates"},
+    {"category_id": 96, "name": "Chilling Reign"},
+    {"category_id": 97, "name": "SWSH Black Star Promos"},
+    {"category_id": 98, "name": "BREAKthrough"},
+    {"category_id": 99, "name": "Crown Zenith"},
+    {"category_id": 100, "name": "Astral Radiance"},
+    {"category_id": 101, "name": "Roaring Skies"},
+    {"category_id": 102, "name": "Primal Clash"},
+    {"category_id": 103, "name": "Brilliant Stars"},
+    {"category_id": 104, "name": "Evolving Skies"},
+    {"category_id": 105, "name": "Fusion Strike"},
+    {"category_id": 106, "name": "Celebrations"},
+    {"category_id": 107, "name": "Silver Tempest"},
+    {"category_id": 108, "name": "Darkness Ablaze"},
+    {"category_id": 109, "name": "Generations"},
+    {"category_id": 110, "name": "Ancient Origins"},
+    {"category_id": 111, "name": "Steam Siege"},
+]

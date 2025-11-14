@@ -1,0 +1,64 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: cardscan_api
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=${APP_NAME:-Card Scanner API}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - UPLOAD_DIR=${UPLOAD_DIR:-/app/storage/uploads}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/storage/app.db}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - SHOPER_BASE_URL=${SHOPER_BASE_URL:-}
+      - SHOPER_ACCESS_TOKEN=${SHOPER_ACCESS_TOKEN:-}
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY:-}
+      - RAPIDAPI_HOST=${RAPIDAPI_HOST:-pokemon-tcg-api.p.rapidapi.com}
+      - TCGGO_BASE_URL=${TCGGO_BASE_URL:-https://pokemon-tcg-api.p.rapidapi.com}
+      - TCGGO_SEARCH_PATH=${TCGGO_SEARCH_PATH:-/cards}
+      - TCGGO_SEARCH_SEARCH_PATH=${TCGGO_SEARCH_SEARCH_PATH:-/cards/search}
+      - TCGGO_SORT=${TCGGO_SORT:-episode_newest}
+      - EUR_PLN_RATE=${EUR_PLN_RATE:-4.3}
+      - PRICE_MULTIPLIER=${PRICE_MULTIPLIER:-1.24}
+      - PUBLISH_DRY_RUN=${PUBLISH_DRY_RUN:-false}
+      - DEFAULT_TAX_ID=${DEFAULT_TAX_ID:-1}
+      - DEFAULT_PRODUCER_ID=${DEFAULT_PRODUCER_ID:-23}
+      - DEFAULT_LANG_ID=${DEFAULT_LANG_ID:-1}
+      - DEFAULT_LANGUAGE_CODE=${DEFAULT_LANGUAGE_CODE:-pl_PL}
+      - DEFAULT_AVAILABILITY_ID=${DEFAULT_AVAILABILITY_ID:-2}
+      - CODE_PREFIX=${CODE_PREFIX:-PKM}
+      - IMAGE_NAME_TEMPLATE=${IMAGE_NAME_TEMPLATE:-{name}-{number}.jpg}
+      - SET_CATEGORY_MAP=${SET_CATEGORY_MAP:-}
+    volumes:
+      - ./storage:/app/storage
+      - ./ids_dump.json:/app/ids_dump.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cardscan_frontend
+    environment:
+    - HTTPS=false
+    - SSL_CRT_FILE=/app/certs/dev.crt
+    - SSL_KEY_FILE=/app/certs/dev.key
+    - API_PROXY_TARGET=http://api:8000
+    ports:
+      - "5173:5173"
+    volumes:
+    - ./frontend/certs:/app/certs:ro  
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes: {}

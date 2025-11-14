@@ -1,0 +1,833 @@
+import React, { useEffect, useMemo, useState, useRef } from 'react'
+import Toast from '../components/Toast';
+
+type Candidate = { id: string; name: string; score: number; set?: string|null; number?: string|null; image?: string|null }
+
+type Props = {
+  session: {id: number} | null;
+  preview: string | null
+  loading: boolean
+  analyzing?: boolean
+  status?: string
+  ripple?: boolean
+  result: { detected: { name: string|null; set: string|null; number: string|null; language: string|null; variant: string|null; condition: string|null; rarity: string|null; energy: string|null; price_pln_final?: number | null; variants?: any[]; }; candidates: Candidate[]; message: string; overlay?: { x:number;y:number;w:number;h:number } | null; quality?: number|null; confidence_label?: string|null } | null
+  selected: string | null
+  onPick: (id: string)=>void
+  onFile: (e: React.ChangeEvent<HTMLInputElement>)=>void
+  onFolderChange?: (e: React.ChangeEvent<HTMLInputElement>)=>void
+  onCsvUpload?: (e: React.ChangeEvent<HTMLInputElement>)=>void
+  onStartSession?: () => void
+  onSubmit: ()=>void
+  onConfirm: (data: any, imageInfo: { primary: { source: string; url: string | null; file?: File | null; }; additional: File[]; }) => void;
+  rightExtras?: React.ReactNode
+  showFileInputs?: boolean
+  torchSupported?: boolean
+  torchOn?: boolean
+  onToggleTorch?: ()=>void
+  tapFocusSupported?: boolean
+  onTapToFocus?: (x:number, y:number)=>void
+  lowLight?: boolean
+  qualityCommitMin?: number
+  qualityLive?: number | null
+  onEndSession?: ()=>void
+  onForceCommit?: ()=>void
+  videoRef?: React.Ref<HTMLVideoElement>
+  initStatus?: string
+  zoomCaps?: {min: number, max: number, step: number} | null
+  setZoom?: (zoom: number) => void
+}
+
+export default function ScanView({ session, preview, loading, analyzing, status, ripple, result, selected, onPick, onFile, onFolderChange, onCsvUpload, onStartSession, onSubmit, onConfirm, rightExtras, showFileInputs = true, torchSupported=false, torchOn=false, onToggleTorch, tapFocusSupported=false, onTapToFocus, lowLight=false, qualityCommitMin=0.55, qualityLive=null, onEndSession, onForceCommit, videoRef, initStatus, zoomCaps, setZoom }: Props){
+  const isAndroid = useMemo(()=>/Android/i.test(navigator.userAgent||''), [])
+  const [focusPt, setFocusPt] = useState<{x:number;y:number}|null>(null)
+  const [showAll, setShowAll] = useState(false)
+  const [banner, setBanner] = useState<{ key:'lowLight'|'quality'; ts:number } | null>(null)
+  const [scanResult, setScanResult] = useState<any | null>(null);
+  const [toast, setToast] = useState<{message: string, type: string} | null>(null);
+  const [formData, setFormData] = useState<any>({});
+  const [shoperAttributes, setShoperAttributes] = useState<any[] | null>(null);
+  const [shoperCategories, setShoperCategories] = useState<any[] | null>(null);
+  const [manualPrice, setManualPrice] = useState<number | null>(null);
+  const [scanMode, setScanMode] = useState<'choice' | 'image' | 'csv'>('choice');
+  const [scanSubMode, setScanSubMode] = useState<'single' | 'folder' | null>(null);
+
+  const [showAllCandidates, setShowAllCandidates] = useState(false);
+  const [isFetchingDetails, setIsFetchingDetails] = useState(false);
+  const [selectedPrimaryImage, setSelectedPrimaryImage] = useState<{source: 'tcggo' | 'scan' | 'upload', url: string | null, file?: File | null}>({source: 'tcggo', url: null});
+  const [additionalImages, setAdditionalImages] = useState<File[]>([]);
+
+  const handleCandidateSelect = async (candidate: Candidate) => {
+    // 1. Immediately update UI for responsiveness
+    setScanResult((prev: any) => ({
+        ...prev,
+        candidates: [candidate, ...prev.candidates.filter((c: Candidate) => c.id !== candidate.id)]
+    }));
+
+    // 2. Fetch full details in the background
+    setIsFetchingDetails(true);
+    try {
+      const res = await fetch('/api/scan/candidate_details', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ candidate_id: candidate.id })
+      });
+      if (!res.ok) {
+        throw new Error('Failed to fetch candidate details');
+      }
+      const enrichedData = await res.json();
+
+      // 3. Update form data with the complete new details
+      const newFormData = { ...enrichedData };
+
+      // Re-apply defaults for language and condition if not present
+      if (!newFormData['64']) { // Język (Language)
+        newFormData['64'] = '142'; // Angielski (English)
+      }
+      if (!newFormData['66']) { // Jakość (Quality)
+        newFormData['66'] = '176'; // Near Mint
+      }
+
+      setFormData(newFormData);
+      
+      // Update the primary image to the newly selected candidate's image
+      if (enrichedData.image) {
+        setSelectedPrimaryImage({ source: 'tcggo', url: enrichedData.image });
+      }
+
+    } catch (e) {
+      console.error("Failed to fetch details for selected candidate", e);
+      setToast({ message: 'Nie udało się pobrać szczegółów karty.', type: 'error' });
+    } finally {
+      setIsFetchingDetails(false);
+    }
+  };
+
+
+  const productCode = useMemo(() => {
+    // Prioritize the set_code from the scan result itself, as it's the most accurate.
+    const setAbbr = formData.set_code || '';
+    const finishAttr = shoperAttributes?.find(a => a.attribute_id === '65');
+    const finishOption = finishAttr?.options.find(o => o.option_id === formData['65']);
+    const finishSuffix = finishOption ? `-${finishOption.value.substring(0, 1)}` : '';
+    return `POKE-${setAbbr}-${formData.number || ''}${finishSuffix}`;
+  }, [formData, shoperAttributes]);
+
+  const overlayClass = useMemo(() => {
+    const selectedFinishId = formData['65']; // The 'Finish' attribute
+    switch (String(selectedFinishId)) {
+        case '149': // Holo
+            return 'holo-overlay';
+        case '150': // Reverse Holo
+            return 'reverse-holo-overlay';
+        default:
+            return '';
+    }
+  }, [formData['65']]);
+
+
+  useEffect(() => {
+    const fetchShoperData = async () => {
+      try {
+        const [attributesRes, categoriesRes] = await Promise.all([
+          fetch('/api/shoper/attributes'),
+          fetch('/api/shoper/categories'),
+        ]);
+        const attributesData = await attributesRes.json();
+        const categoriesData = await categoriesRes.json();
+        setShoperAttributes(attributesData.items || []);
+        setShoperCategories(categoriesData.items || []);
+      } catch (e) {
+        console.error("Failed to fetch shoper data", e);
+      }
+    };
+    fetchShoperData();
+  }, []);
+
+  useEffect(() => {
+    if (!result) {
+      setScanResult(null);
+      setFormData({});
+      return;
+    }
+
+    setScanResult(result);
+
+    if (result.duplicate_of) {
+      setToast({ message: `Wykryto duplikat skanu #${result.duplicate_of}.`, type: 'success' });
+      const fetchOriginalScan = async () => {
+        try {
+          const res = await fetch(`/api/scans/${result.duplicate_of}`);
+          const originalScan = await res.json();
+          const mergedResult = { ...originalScan, duplicate_of: result.duplicate_of, duplicate_distance: result.duplicate_distance };
+          
+          if (mergedResult.detected) {
+            const newFormData: any = { ...mergedResult.detected };
+
+            // 1. Restore Price
+            if (mergedResult.pricing?.price_pln_final) {
+              newFormData.price_pln_final = mergedResult.pricing.price_pln_final;
+            }
+
+            // 2. Restore Attributes by mapping
+            try {
+              const attrRes = await fetch('/api/shoper/map_attributes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(mergedResult.detected),
+              });
+              const attrMapping = await attrRes.json();
+              if (attrMapping.attributes) {
+                Object.assign(newFormData, attrMapping.attributes);
+              }
+            } catch (e) {
+              console.error("Failed to map attributes for duplicate", e);
+            }
+            
+            // Set default values for Language and Condition if not mapped
+            if (!newFormData['64']) { // Język (Language)
+              newFormData['64'] = '142'; // Angielski (English)
+            }
+            if (!newFormData['66']) { // Jakość (Quality)
+              newFormData['66'] = '176'; // Near Mint
+            }
+
+            setFormData(newFormData);
+          }
+          setScanResult(mergedResult);
+
+        } catch (e) {
+          console.error("Failed to fetch original scan", e);
+        }
+      };
+      fetchOriginalScan();
+    } else if (result.detected) { // Handle new scans (not duplicates)
+      const newFormData: any = { ...result.detected };
+
+      // Set default values for Language and Condition if not already set
+      if (!newFormData['64']) { // 64 is Język (Language)
+        newFormData['64'] = '142'; // 142 is Angielski (English)
+      }
+      if (!newFormData['66']) { // 66 is Jakość (Quality)
+        newFormData['66'] = '176'; // 176 is Near Mint
+      }
+      
+      // Set price directly from detected data if available
+      if (result.detected.price_pln_final) {
+        newFormData.price_pln_final = result.detected.price_pln_final;
+      } else {
+        // Fallback to normal variant price if direct price is not available
+        const normalVariant = result.detected.variants?.find((v:any) => v.label === 'Normal');
+        if (normalVariant) {
+          newFormData.price_pln_final = normalVariant.price_pln_final;
+        }
+      }
+
+      // Map attributes from detected data
+      const mapAttributes = async () => {
+        try {
+          const attrRes = await fetch('/api/shoper/map_attributes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(result.detected),
+          });
+          const attrMapping = await attrRes.json();
+          if (attrMapping.attributes) {
+            Object.assign(newFormData, attrMapping.attributes);
+          }
+        } catch (e) {
+          console.error("Failed to map attributes", e);
+        }
+        setFormData(newFormData);
+      }
+
+      mapAttributes();
+    }
+  }, [result, shoperCategories]);
+
+  useEffect(() => {
+    const finishAttrId = '65';
+    const selectedFinishId = formData[finishAttrId];
+    // If there are no variants to check against, do nothing.
+    if (!scanResult?.detected?.variants || !Array.isArray(scanResult.detected.variants)) return;
+
+    const variants = scanResult.detected.variants;
+    let newPrice = null;
+
+    // Determine which variant label we are looking for based on the dropdown selection.
+    let targetVariantLabel = 'Normal'; // Default to 'Normal'
+    switch (String(selectedFinishId)) {
+      case '149': // Holo
+        targetVariantLabel = 'Holo';
+        break;
+      case '150': // Reverse Holo
+        targetVariantLabel = 'Reverse Holo';
+        break;
+    }
+
+    // Find the price for the target variant.
+    const targetVariant = variants.find(v => v.label === targetVariantLabel);
+    if (targetVariant && typeof targetVariant.price_pln_final === 'number') {
+      newPrice = targetVariant.price_pln_final;
+    } else {
+      // If the specific variant isn't found, fall back to the 'Normal' price
+      // without applying any multipliers.
+      const normalVariant = variants.find(v => v.label === 'Normal');
+      if (normalVariant && typeof normalVariant.price_pln_final === 'number') {
+        newPrice = normalVariant.price_pln_final;
+      }
+    }
+
+    // Only update state if the price has actually changed to prevent infinite loops.
+    if (newPrice !== null && newPrice !== formData.price_pln_final) {
+      setFormData(prev => ({ ...prev, price_pln_final: newPrice }));
+    }
+  }, [formData['65'], scanResult, formData.price_pln_final]);
+
+  useEffect(() => {
+    // Set the primary image, preferring TCGGO's and falling back to the user's scan
+    if (scanResult?.candidates?.[0]?.image) {
+      setSelectedPrimaryImage({ source: 'tcggo', url: scanResult.candidates[0].image });
+    } else if (preview) {
+      setSelectedPrimaryImage({ source: 'scan', url: preview });
+    }
+  }, [scanResult, preview]);
+
+
+  const lastShownRef = useRef({ lowLightAt: 0, qualityAt: 0 })
+  const timerRef = useRef({ id: 0 as number|undefined })
+
+  // Ephemeral banner logic: show for a few seconds, with cooldown to avoid flicker
+  useEffect(()=>{
+    const now = Date.now()
+    if (isAndroid && lowLight){
+      if (now - (lastShownRef.current.lowLightAt||0) > 7000){
+        setBanner({ key:'lowLight', ts: now })
+        lastShownRef.current.lowLightAt = now
+        if (timerRef.current.id) window.clearTimeout(timerRef.current.id)
+        timerRef.current.id = window.setTimeout(()=> setBanner(null), 4500)
+      }
+      return
+    }
+    const q = typeof qualityLive==='number' ? qualityLive : null
+    if (isAndroid && q!=null && q < (qualityCommitMin||0.55)){
+      if (now - (lastShownRef.current.qualityAt||0) > 6000){
+        setBanner({ key:'quality', ts: now })
+        lastShownRef.current.qualityAt = now
+        if (timerRef.current.id) window.clearTimeout(timerRef.current.id)
+        timerRef.current.id = window.setTimeout(()=> setBanner(null), 3800)
+      }
+    }
+  }, [isAndroid, lowLight, qualityLive, qualityCommitMin])
+
+  const handleFetchPrice = async () => {
+    try {
+      const res = await fetch('/api/pricing/variants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: formData.name, number: formData.number, set: formData.set })
+      });
+      const data = await res.json();
+      const normalVariant = data.variants?.find(v => v.label === 'Normal');
+      if (normalVariant) {
+        setFormData(prev => ({...prev, price_pln_final: normalVariant.price_pln_final}));
+      }
+    } catch (e) {
+      console.error("Failed to fetch price", e);
+    }
+  };
+
+  const handleCalculatePrice = async () => {
+    if (manualPrice === null) return;
+    try {
+      const res = await fetch('/api/pricing/convert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eur: manualPrice })
+      });
+      const data = await res.json();
+      setFormData(prev => ({...prev, price_pln_final: data.price_pln_final}));
+    } catch (e) {
+      console.error("Failed to calculate price", e);
+    }
+  };
+
+return (
+    <div className="font-display">
+      <header className="flex items-center justify-between whitespace-nowrap border-b border-gray-800 px-2 md:px-6 py-3">
+        <div className="flex items-center gap-3 text-white">
+          <span className="material-symbols-outlined text-primary">qr_code_scanner</span>
+          <h2 className="text-lg font-bold">Skanowanie kart</h2>
+        </div>
+        <div className="flex gap-2">
+          {isAndroid && onEndSession && (
+            <button onClick={onEndSession} className="btn text-sm">Zakończ sesję</button>
+          )}
+        </div>
+      </header>
+
+      <main className="p-4 md:p-6">
+        {toast && <Toast message={toast.message} onClose={() => setToast(null)} />}
+        {scanMode === 'choice' && (
+          <div className="flex flex-col items-center justify-center h-full text-center">
+            <h3 className="text-xl font-bold text-white mb-8">Wybierz metodę skanowania</h3>
+            <div className="flex flex-wrap justify-center gap-8">
+              <button onClick={() => setScanMode('image')} className="flex flex-col items-center justify-center w-48 h-48 p-4 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-colors duration-200">
+                <span className="material-symbols-outlined text-6xl text-primary mb-2">image_search</span>
+                <span className="text-lg font-bold text-white">Skanuj z komputera</span>
+                <span className="text-sm text-gray-400 mt-1">Prześlij pliki graficzne kart</span>
+              </button>
+              <button onClick={() => setScanMode('csv')} className="flex flex-col items-center justify-center w-48 h-48 p-4 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-colors duration-200">
+                <span className="material-symbols-outlined text-6xl text-green-600 mb-2">cloud_upload</span>
+                <span className="text-lg font-bold text-white">Importuj z CSV</span>
+                <span className="text-sm text-gray-400 mt-1">Załaduj dane kart z pliku CSV</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {scanMode === 'image' && !scanSubMode && (
+          <div className="flex flex-col items-center justify-center h-full text-center">
+            <h3 className="text-xl font-bold text-white mb-8">Wybierz tryb skanowania z komputera</h3>
+            <div className="flex flex-wrap justify-center gap-8">
+              <button onClick={() => setScanSubMode('single')} className="flex flex-col items-center justify-center w-48 h-48 p-4 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-colors duration-200">
+                <span className="material-symbols-outlined text-6xl text-primary mb-2">image</span>
+                <span className="text-lg font-bold text-white">Pojedynczy plik</span>
+                <span className="text-sm text-gray-400 mt-1">Prześlij jeden obraz karty</span>
+              </button>
+              <button onClick={() => { onStartSession?.(); setScanSubMode('folder'); }} className="flex flex-col items-center justify-center w-48 h-48 p-4 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-colors duration-200">
+                <span className="material-symbols-outlined text-6xl text-primary mb-2">folder_open</span>
+                <span className="text-lg font-bold text-white">Cały folder</span>
+                <span className="text-sm text-gray-400 mt-1">Prześlij cały folder ze skanami</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {scanMode === 'image' && scanSubMode && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="lg:col-span-1 flex flex-col items-center gap-3">
+              {isAndroid ? (
+                <div className="relative w-full aspect-[63/88] bg-gray-900 rounded-lg overflow-hidden">
+                  <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover"></video>
+                  <canvas className="absolute inset-0 w-full h-full"></canvas>
+                  {result?.overlay && (
+                    <div
+                      className="absolute border-2 border-green-500"
+                      style={{
+                        left: `${result.overlay.x * 100}%`,
+                        top: `${result.overlay.y * 100}%`,
+                        width: `${result.overlay.w * 100}%`,
+                        height: `${result.overlay.h * 100}%`,
+                      }}
+                    ></div>
+                  )}
+                  {analyzing && 
+                    <>
+                      <div className="scan-line" />
+                      <div className="scan-corners">
+                        <div className="corner tl"></div>
+                        <div className="corner tr"></div>
+                        <div className="corner bl"></div>
+                        <div className="corner br"></div>
+                      </div>
+                    </>
+                  }
+                  {status && <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white text-center p-2 text-sm">{status}</div>}
+                  {initStatus && <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-75 text-white text-lg">{initStatus}</div>}
+
+                  {zoomCaps && setZoom && (
+                    <div className="absolute top-2 left-2 right-2 flex items-center gap-2">
+                      <input
+                        type="range"
+                        min={zoomCaps.min}
+                        max={zoomCaps.max}
+                        step={zoomCaps.step}
+                        defaultValue={1}
+                        onChange={(e) => setZoom(parseFloat(e.target.value))}
+                        className="flex-grow"
+                      />
+                    </div>
+                  )}
+
+                  {torchSupported && onToggleTorch && (
+                    <button
+                      onClick={onToggleTorch}
+                      className={`absolute bottom-2 right-2 p-2 rounded-full ${torchOn ? 'bg-yellow-500' : 'bg-gray-700'} text-white`}
+                    >
+                      <span className="material-symbols-outlined">flashlight_on</span>
+                    </button>
+                  )}
+
+                  {tapFocusSupported && onTapToFocus && focusPt && (
+                    <div
+                      className="absolute border-2 border-blue-500 rounded-full animate-ping"
+                      style={{
+                        left: `${focusPt.x * 100}%`,
+                        top: `${focusPt.y * 100}%`,
+                        width: '20px',
+                        height: '20px',
+                        transform: 'translate(-50%, -50%)',
+                      }}
+                    ></div>
+                  )}
+
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-4 w-full">
+                      <div>
+                          <label className="text-xs text-gray-400 block text-center mb-1">Twój skan</label>
+                          <div 
+                              className="scan-preview-container"
+                              onMouseEnter={(e) => {
+                                  const magnifier = e.currentTarget.querySelector('.magnifier') as HTMLDivElement;
+                                  if (magnifier) magnifier.style.display = 'block';
+                              }}
+                              onMouseLeave={(e) => {
+                                  const magnifier = e.currentTarget.querySelector('.magnifier') as HTMLDivElement;
+                                  if (magnifier) magnifier.style.display = 'none';
+                              }}
+                              onMouseMove={(e) => {
+                                  const target = e.currentTarget;
+                                  const img = target.querySelector('img');
+                                  const magnifier = target.querySelector('.magnifier') as HTMLDivElement;
+                                  if (!img || !magnifier) return;
+
+                                  const rect = target.getBoundingClientRect();
+                                  const x = e.clientX - rect.left;
+                                  const y = e.clientY - rect.top;
+
+                                  const magnifierSize = 150;
+                                  const zoom = 2;
+
+                                  const bgX = -x * zoom + magnifierSize / 2;
+                                  const bgY = -y * zoom + magnifierSize / 2;
+
+                                  magnifier.style.left = `${x - magnifierSize / 2}px`;
+                                  magnifier.style.top = `${y - magnifierSize / 2}px`;
+                                  magnifier.style.backgroundImage = `url(${img.src})`;
+                                  magnifier.style.backgroundPosition = `${bgX}px ${bgY}px`;
+                                  magnifier.style.backgroundSize = `${rect.width * zoom}px ${rect.height * zoom}px`;
+                              }}
+                          >
+                              {preview ? (
+                                  <>
+                                      <img src={preview} alt="podgląd" className="scan-preview-image"/>
+                                      <div className="magnifier"></div>
+                                  </>
+                              ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-gray-500">Brak obrazu</div>
+                              )}
+                              {loading && <div className="scan-line" />}
+                          </div>
+                      </div>
+                      <div>
+                          <label className="text-xs text-gray-400 block text-center mb-1">Grafika do sklepu</label>
+                          <div className="relative w-full aspect-[63/88] bg-gray-800 rounded-lg flex items-center justify-center overflow-hidden">
+                          {selectedPrimaryImage.url ? (
+                              <>
+                                  <img src={selectedPrimaryImage.url} alt="Grafika do sklepu" className="w-full h-full object-contain"/>
+                                  <div className={`absolute inset-0 pointer-events-none ${overlayClass}`}></div>
+                              </>
+                          ) : (
+                              <span className="text-gray-500 text-sm">Wybierz lub wgraj obraz</span>
+                          )}
+                          </div>
+                      </div>
+                  </div>
+
+                  {/* --- Image Selection UI --- */}
+                  <div className="mt-4 w-full">
+                    <h3 className="text-base font-bold text-white mb-2">Wybór grafiki głównej</h3>
+                    <div className="flex justify-around items-start gap-2 p-2 bg-gray-800 rounded-lg">
+                      
+                      {/* Option 1: TCGGO Image */}
+                      {scanResult?.candidates?.[0]?.image && (
+                        <div 
+                          className={`flex flex-col items-center gap-2 cursor-pointer p-2 rounded-md ${selectedPrimaryImage.source === 'tcggo' ? 'bg-primary/30' : ''}`}
+                          onClick={() => setSelectedPrimaryImage({ source: 'tcggo', url: scanResult.candidates[0].image })}
+                        >
+                          <img src={scanResult.candidates[0].image} className="w-16 h-auto rounded" />
+                          <span className="text-xs text-white">TCGGO</span>
+                        </div>
+                      )}
+
+                      {/* Option 2: User's Scan */}
+                      {preview && (
+                        <div 
+                          className={`flex flex-col items-center gap-2 cursor-pointer p-2 rounded-md ${selectedPrimaryImage.source === 'scan' ? 'bg-primary/30' : ''}`}
+                          onClick={() => setSelectedPrimaryImage({ source: 'scan', url: preview })}
+                        >
+                          <img src={preview} className="w-16 h-auto rounded" />
+                          <span className="text-xs text-white">Twój skan</span>
+                        </div>
+                      )}
+
+                      {/* Option 3: Custom Upload */}
+                      <label className={`flex flex-col items-center gap-2 cursor-pointer p-2 rounded-md ${selectedPrimaryImage.source === 'upload' ? 'bg-primary/30' : ''}`}>
+                        <div className="w-16 h-[88px] bg-gray-700 rounded flex items-center justify-center">
+                          <span className="material-symbols-outlined text-white">add_photo_alternate</span>
+                        </div>
+                        <span className="text-xs text-white">Wgraj własne</span>
+                        <input type="file" accept="image/*" className="hidden" onChange={(e) => {
+                          if (e.target.files?.[0]) {
+                            const file = e.target.files[0];
+                            const url = URL.createObjectURL(file);
+                            setSelectedPrimaryImage({ source: 'upload', url: url, file: file });
+                          }
+                        }} />
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* --- Additional Images UI --- */}
+                  <div className="mt-4 w-full">
+                    <h3 className="text-base font-bold text-white mb-2">Dodatkowe zdjęcia (stan karty)</h3>
+                    <div className="flex flex-col gap-2 p-2 bg-gray-800 rounded-lg">
+                      <label className="cursor-pointer flex items-center justify-center p-4 border-2 border-dashed border-gray-600 rounded-lg hover:bg-gray-700">
+                        <span className="material-symbols-outlined text-primary mr-2">add_a_photo</span>
+                        <span className="text-white">Dodaj zdjęcia</span>
+                        <input type="file" accept="image/*" multiple className="hidden" onChange={(e) => {
+                          if (e.target.files) {
+                            setAdditionalImages(prev => [...prev, ...Array.from(e.target.files)]);
+                          }
+                        }} />
+                      </label>
+                      {additionalImages.length > 0 && (
+                        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2 mt-2">
+                          {additionalImages.map((file, index) => (
+                            <div key={index} className="relative">
+                              <img src={URL.createObjectURL(file)} alt={`Dodatkowe zdj. ${index + 1}`} className="w-full h-auto rounded" />
+                              <button 
+                                className="absolute top-0 right-0 bg-red-600 text-white rounded-full p-0.5 w-5 h-5 flex items-center justify-center text-xs"
+                                onClick={() => setAdditionalImages(prev => prev.filter((_, i) => i !== index))}
+                              >
+                                &times;
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {scanResult?.candidates && scanResult.candidates.length > 1 && (
+                    <div className="mt-4 w-full">
+                      <h3 className="text-lg font-bold text-white mb-2">Wybierz właściwą kartę:</h3>
+                      <div className="flex flex-col gap-2"> 
+                        {(showAllCandidates ? scanResult.candidates : scanResult.candidates.slice(0, 10)).map((candidate: Candidate) => (
+                          <div
+                            key={candidate.id}
+                            className="bg-gray-800 p-2 rounded-lg flex items-center gap-3 cursor-pointer hover:bg-gray-700 transition-colors"
+                            onClick={() => handleCandidateSelect(candidate)}
+                          >
+                            <img src={candidate.image || ''} alt={candidate.name} className="w-12 h-auto rounded-md" />
+                            <div className="text-sm flex-grow">
+                              <p className="font-bold text-white">
+                                {candidate.name}
+                              </p>
+                              <p className="text-gray-300 font-semibold">
+                                {candidate.set} {candidate.number ? `(#${candidate.number})` : ''}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                        {scanResult.candidates.length > 10 && !showAllCandidates && (
+                          <button onClick={() => setShowAllCandidates(true)} className="text-primary text-sm mt-2">Pokaż więcej...</button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {showFileInputs && scanSubMode === 'single' && (
+                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
+                        <label htmlFor="file-upload" className="cursor-pointer flex flex-col items-center justify-center p-6 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-colors duration-200 text-center">
+                            <span className="material-symbols-outlined text-4xl text-primary mb-2">image</span>
+                            <span className="text-md font-bold text-white">Wgraj plik</span>
+                            <span className="text-xs text-gray-400 mt-1">Pojedynczy obraz karty</span>
+                            <input id="file-upload" type="file" accept="image/*" capture="environment" onChange={onFile} className="hidden" />
+                        </label>
+                    </div>
+                  )}
+                  {showFileInputs && scanSubMode === 'folder' && (
+                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
+                        <label htmlFor="folder-upload" className="cursor-pointer flex flex-col items-center justify-center p-6 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-colors duration-200 text-center">
+                            <span className="material-symbols-outlined text-4xl text-primary mb-2">folder_open</span>
+                            <span className="text-md font-bold text-white">Wgraj folder</span>
+                            <span className="text-xs text-gray-400 mt-1">Cały folder ze skanami</span>
+                            <input id="folder-upload" type="file" webkitdirectory="" mozdirectory="" directory="" onChange={onFolderChange} className="hidden" />
+                        </label>
+                    </div>
+                  )}
+                  {showFileInputs && (
+                  <div className="mt-3">
+                    <button onClick={onSubmit} disabled={loading} className="rounded-lg h-10 px-4 bg-primary text-white text-sm font-bold disabled:opacity-60">{loading && <span className="spinner" />} {loading ? 'Skanuję…' : 'Wyślij do analizy'}</button>
+                  </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="lg:col-span-1">
+              {scanResult && !isAndroid && (
+                <div className="flex flex-col gap-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="col-span-2 flex items-end gap-2">
+                      <div className="flex-grow">
+                        <label className="text-xs text-gray-400">Nazwa</label>
+                        <input type="text" value={formData.name || ''} onChange={(e) => setFormData({...formData, name: e.target.value})} className="w-full p-2 rounded bg-gray-700 text-white" />
+                      </div>
+                      <button 
+                        onClick={() => {
+                          const cardNumber = formData.number ? formData.number.split('/')[0] : '';
+                          const searchString = `${formData.name || ''} ${cardNumber}`.trim();
+                          if (searchString) {
+                            window.open(`https://www.cardmarket.com/en/Pokemon/Products/Search?category=-1&searchString=${encodeURIComponent(searchString)}&searchMode=v1`, '_blank');
+                          }
+                        }}
+                        className="h-10 w-10 flex items-center justify-center rounded-lg bg-blue-600 text-white text-sm font-bold relative group"
+                        disabled={!formData.name && !formData.number}
+                      >
+                        <span className="material-symbols-outlined">storefront</span>
+                        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden w-auto p-2 text-xs text-white whitespace-nowrap bg-gray-800 rounded-md group-hover:block">Szukaj na Cardmarket</span>
+                      </button>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400">Numer</label>
+                      <input type="text" value={formData.number || ''} onChange={(e) => setFormData({...formData, number: e.target.value})} className="w-full p-2 rounded bg-gray-700 text-white" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400">Zestaw</label>
+                      <input
+                        type="text"
+                        className="w-full p-2 rounded bg-gray-700 text-white"
+                        value={formData.set || ''}
+                        onChange={(e) => setFormData({...formData, set: e.target.value, set_id: undefined })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 items-end">
+                    <div>
+                      <label className="text-xs text-gray-400">Cena (PLN)</label>
+                      <input type="number" step="0.01" value={formData.price_pln_final || ''} onChange={(e) => setFormData({...formData, price_pln_final: parseFloat(e.target.value)})} className="w-full p-2 rounded bg-gray-700 text-white" />
+                    </div>
+                    <button onClick={handleFetchPrice} className="w-full h-10 rounded-lg bg-primary text-white text-sm font-bold">Pobierz z CM</button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 items-end">
+                    <div>
+                      <label className="text-xs text-gray-400">Cena manualna (EUR)</label>
+                      <input type="number" step="0.01" onChange={(e) => setManualPrice(parseFloat(e.target.value))} className="w-full p-2 rounded bg-gray-700 text-white" />
+                    </div>
+                    <button onClick={handleCalculatePrice} className="w-full h-10 rounded-lg bg-primary text-white text-sm font-bold">Przelicz</button>
+                  </div>
+
+                                    <div className="flex flex-col gap-4 mt-4">
+                                      <h3 className="text-lg font-bold text-white col-span-2">Atrybuty Shoper</h3>
+                                      <div className="grid grid-cols-2 gap-4">
+                                        {shoperAttributes && shoperAttributes.map((attr: any) => (
+                                          <div key={attr.attribute_id}>
+                                            <label className="text-xs text-gray-400">{attr.name}</label>
+                                            <select 
+                                              className="w-full p-2 rounded bg-gray-700 text-white"
+                                              value={formData[attr.attribute_id] || ''}
+                                              onChange={(e) => setFormData({...formData, [attr.attribute_id]: e.target.value})}
+                                            >
+                                              <option value="">-</option>
+                                              {attr.options.map((opt: any) => (
+                                                <option key={opt.option_id} value={opt.option_id}>{opt.value}</option>
+                                              ))}
+                                            </select>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                  <div className="mt-4">
+                    <label className="text-xs text-gray-400">Kod produktu</label>
+                    <input type="text" value={productCode} readOnly className="w-full p-2 rounded bg-gray-800 text-gray-400" />
+                  </div>
+
+                  <div className="mt-4 flex justify-end gap-2">
+                    {scanSubMode === 'single' && (
+                        <button onClick={async () => {
+                            if (!scanResult?.scan_id) return;
+                            try {
+                                const data = new FormData();
+
+                                // 1. Append main form data as a JSON string
+                                data.append('data', JSON.stringify({
+                                    scan_id: scanResult.scan_id,
+                                    candidate_id: scanResult.candidates[0].id,
+                                    detected: formData
+                                }));
+
+                                // 2. Append primary image
+                                data.append('primary_image_source', selectedPrimaryImage.source);
+                                if (selectedPrimaryImage.source === 'upload' && selectedPrimaryImage.file) {
+                                    data.append('primary_image', selectedPrimaryImage.file);
+                                } else if (selectedPrimaryImage.url) {
+                                    // For 'tcggo' or 'scan', send the URL/data URL
+                                    data.append('primary_image_url', selectedPrimaryImage.url);
+                                }
+
+                                // 3. Append additional images
+                                additionalImages.forEach((file, index) => {
+                                    data.append(`additional_image_${index}`, file);
+                                });
+
+                                const res = await fetch(`/api/scans/${scanResult.scan_id}/publish`, { 
+                                    method: 'POST',
+                                    body: data // FormData object
+                                });
+                                const responseData = await res.json();
+                                if (res.ok) {
+                                    setToast({ message: `Opublikowano: ${responseData.shoper_id}`, type: 'success' });
+                                    setScanResult(null);
+                                    setAdditionalImages([]);
+                                } else {
+                                    const errorText = responseData.details?.text || responseData.error || 'Błąd podczas publikowania';
+                                    setToast({ message: errorText, type: 'error' });
+                                }
+                            } catch (e) {
+                                console.error("Failed to publish scan", e);
+                                setToast({ message: 'Błąd podczas publikowania', type: 'error' });
+                            }
+                        }} disabled={!formData.name || !formData.number || !formData.set} className="rounded-lg h-10 px-4 bg-primary text-white text-sm font-bold disabled:opacity-60">Publikuj</button>
+                    )}
+                    {scanSubMode === 'folder' && (
+                        <>
+                            <button onClick={() => onConfirm(formData, { primary: selectedPrimaryImage, additional: additionalImages })} disabled={!formData.name || !formData.number || !formData.set} className="rounded-lg h-10 px-4 bg-primary text-white text-sm font-bold disabled:opacity-60">Zapisz i dalej</button>
+                            <button onClick={async () => {
+                              if (!session) return;
+                              try {
+                                const res = await fetch(`/api/sessions/${session.id}/publish`, { method: 'POST' });
+                                const data = await res.json();
+                                setToast({ message: `Opublikowano: ${data.published}`, type: 'success' });
+                              } catch (e) {
+                                console.error("Failed to publish session", e);
+                                setToast({ message: 'Błąd podczas publikowania sesji', type: 'error' });
+                              }
+                            }} className="rounded-lg h-10 px-4 bg-green-600 text-white text-sm font-bold">Zakończ i zapisz</button>
+                        </>
+                    )}
+                  </div>
+
+
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        {scanMode === 'csv' && (
+          <div className="text-center">
+            <h3 className="text-xl font-bold text-white mb-4">Importuj z pliku CSV</h3>
+            <div className="flex justify-center">
+              <input type="file" accept=".csv" onChange={onCsvUpload} className="block w-full max-w-md text-sm text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-primary file:text-white hover:file:bg-primary/90" />
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
