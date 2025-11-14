@@ -91,6 +91,29 @@ W projekcie `kartoteka-2.0` komponenty frontendowe, takie jak `ScanView`, są cz
 - `GET /shoper/attributes`, `GET /shoper/categories` — taksonomia Shoper
 - `POST /sessions/start`, `GET /sessions/{id}/summary`, `POST /sessions/{id}/publish` — sesje i publikacja
 
+## Ostatnie Zmiany (2025-11-14)
+
+**NAPRAWA ATRYBUTÓW: Endpoint do dodawania atrybutów produktów działa prawidłowo**
+
+1. ✅ **Payload atrybutów naprawiony** (`shoper.py:383-405`):
+   - **Problem**: Shoper API zwracał błąd `400: "Wartość pola 'name' jest niepoprawna: Pole wymagane"` przy próbie dodania atrybutów
+   - **Przyczyna**: Payload wysyłany do endpointu atrybutów nie zawierał pola `name` w obiekcie `translations`
+   - **Rozwiązanie**: Dodane pole `"name": "Product"` jako placeholder do `translations` w metodzie `set_product_attributes()`
+   - **Format**: `{ "translations": { "pl_PL": { "name": "Product", "active": true } }, "category_id": ..., "stock": ..., "11": { "66": "Near Mint" } }`
+   - **Wynik**: Atrybuty są teraz pomyślnie dodawane do produktów via PUT/POST po ich utworzeniu
+
+2. ✅ **Optymalizacja kolejności pól w payload'u** (`shoper.py:383-405`):
+   - Pole `translations` jest teraz dodawane PIERWSZE (niektóre API wymagają określonej kolejności)
+   - Następnie `category_id`, `stock`, a potem grupy atrybutów
+   - Ta kolejność zapewnia akceptację żądania przez Shoper API
+
+3. ⚠️ **Przepływ pracy przypisywania atrybutów** (Obecna Implementacja):
+   - Atrybuty są nadal dodawane PO utworzeniu produktu przez osobne żądanie PUT/POST
+   - Jest to mniej efektywne niż zawieranie ich w POST, ale działa niezawodnie z Shoper API
+   - Przyszła poprawa: Rozważ dodawanie atrybutów bezpośrednio w payload POST przy tworzeniu produktu, gdy Shoper API to obsługuje
+
+---
+
 ## Kontrola Wersji & Integracja GitHub (2025-11-14)
 
 **Projekt jest teraz na GitHub!** Repozytorium zostało skonfigurowane z kontrolą wersji Git i połączone z GitHub dla zdalnej kopii zapasowej i współpracy.

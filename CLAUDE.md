@@ -42,9 +42,32 @@ git status
 
 ---
 
+## Recent Changes (2025-11-14)
+
+**ATTRIBUTE FIX: Attributes POST/PUT endpoint now works correctly**
+
+1. ✅ **Attribute payload fixed** (`shoper.py:383-405`):
+   - **Problem**: Shoper API was returning `400: "Wartość pola 'name' jest niepoprawna: Pole wymagane"` when trying to add attributes
+   - **Root Cause**: Payload sent to attribute endpoints was missing `name` field in `translations` object
+   - **Solution**: Added `"name": "Product"` placeholder to `translations` in `set_product_attributes()` method
+   - **Format now**: `{ "translations": { "pl_PL": { "name": "Product", "active": true } }, "category_id": ..., "stock": ..., "11": { "66": "Near Mint" } }`
+   - **Result**: Attributes now successfully added to products via PUT/POST after creation
+
+2. ✅ **Payload field ordering optimized** (`shoper.py:383-405`):
+   - `translations` field now added FIRST (some APIs require specific order)
+   - Followed by `category_id`, `stock`, and then attribute groups
+   - This ordering ensures Shoper API accepts the request
+
+3. ⚠️ **Attribute assignment workflow** (Current Implementation):
+   - Attributes are still added AFTER product creation via separate PUT/POST request
+   - This is less efficient than including them in POST but works reliably with Shoper API
+   - Future improvement: Consider adding attributes directly in product creation POST payload once Shoper API supports it
+
+---
+
 ## Recent Changes (2025-11-13)
 
-**CRITICAL FIX: Attributes now correctly added during product creation (POST), not after (PUT)**
+**CRITICAL FIX: Attributes endpoint payload structure**
 
 1. ✅ **Attributes included in POST request** (`shoper.py:1080-1086, 1176`):
    - **FIXED**: Attributes are now correctly added directly in POST `/products` during product creation
