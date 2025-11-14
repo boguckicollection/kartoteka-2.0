@@ -379,28 +379,29 @@ class ShoperClient:
         """
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
         
-        # Build payload with attributes and category_id if provided
+        # Build payload - MINIMAL format for attribute update
+        # Shoper API for attributes is stricter than product creation
         payload: Dict[str, Any] = {}
         
-        # Add category_id first if provided (required by some Shoper installations)
-        if category_id is not None:
-            payload["category_id"] = int(category_id)
-        
-        # Add stock if provided (required by some Shoper installations)
-        if stock is not None:
-            payload["stock"] = stock
-        
-        # Add attributes (group_id -> {attribute_id: value})
-        for group_id, group_attrs in attributes.items():
-            payload[str(group_id)] = {str(attr_id): str(value) for attr_id, value in group_attrs.items()}
-        
-        # Add minimal translations (required by Shoper API for attribute updates)
-        # This is just a placeholder to satisfy API requirements
+        # Add translations first (REQUIRED by Shoper API for attribute endpoints)
         payload["translations"] = {
             settings.default_language_code: {
                 "active": True
             }
         }
+        
+        # Add category_id if provided (may be required by some endpoints)
+        if category_id is not None:
+            payload["category_id"] = int(category_id)
+        
+        # Add stock if provided (may be required by some endpoints)
+        if stock is not None:
+            payload["stock"] = stock
+        
+        # Add attributes (group_id -> {attribute_id: value})
+        # Format: { "11": { "66": "Near Mint", "38": "Rare" } }
+        for group_id, group_attrs in attributes.items():
+            payload[str(group_id)] = {str(attr_id): str(value) for attr_id, value in group_attrs.items()}
         
         # Possible endpoints to try
         endpoints = [
