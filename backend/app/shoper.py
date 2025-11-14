@@ -375,7 +375,7 @@ class ShoperClient:
         2. PUT /webapi/rest/products/{id}/attributes
         3. POST /products/{id}/attributes
         
-        Note: Some Shoper versions require category_id and stock in the payload
+        Note: Shoper API requires translations in the payload for attribute updates
         """
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
         
@@ -393,6 +393,14 @@ class ShoperClient:
         # Add attributes (group_id -> {attribute_id: value})
         for group_id, group_attrs in attributes.items():
             payload[str(group_id)] = {str(attr_id): str(value) for attr_id, value in group_attrs.items()}
+        
+        # Add minimal translations (required by Shoper API for attribute updates)
+        # This is just a placeholder to satisfy API requirements
+        payload["translations"] = {
+            settings.default_language_code: {
+                "active": True
+            }
+        }
         
         # Possible endpoints to try
         endpoints = [
