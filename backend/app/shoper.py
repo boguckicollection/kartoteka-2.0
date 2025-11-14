@@ -384,8 +384,10 @@ class ShoperClient:
         payload: Dict[str, Any] = {}
         
         # Add translations first (REQUIRED by Shoper API for attribute endpoints)
+        # Must include 'name' field even though we're not changing it
         payload["translations"] = {
             settings.default_language_code: {
+                "name": "Product",  # Placeholder - Shoper requires this field
                 "active": True
             }
         }
