@@ -365,81 +365,51 @@ class ShoperClient:
         except Exception as e:
             return {"error": True, "message": str(e), "payload": payload}
 
-    async def set_product_attributes(self, product_id: int, attributes: Dict[str, Dict[str, str]], category_id: int | None = None, stock: Dict[str, Any] | None = None) -> Dict[str, Any]:
-        """Set product attributes via dedicated endpoint.
+    async def set_product_attributes(self, product_id: int, attributes: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
+        """Set product attributes by updating the product via PUT /products/{id}.
         
-        Attributes format: { "group_id": { "attribute_id": "value_text" } }
-        
-        Tries multiple endpoint variants:
-        1. PUT /webapi2/products/{id}/attributes
-        2. PUT /webapi/rest/products/{id}/attributes
-        3. POST /products/{id}/attributes
-        
-        Note: Shoper API requires translations in the payload for attribute updates
+        This implementation now FLATTENS the attribute structure, as the API seems to
+        expect a flat { "attribute_id": "value" } dictionary, despite documentation
+        suggesting a nested structure. This is to fix the "Attribute X does not exist" error.
         """
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
         
-        # Build payload - MINIMAL format for attribute update
-        # Shoper API for attributes is stricter than product creation
-        payload: Dict[str, Any] = {}
-        
-        # Add translations first (REQUIRED by Shoper API for attribute endpoints)
-        # Must include 'name' field even though we're not changing it
-        payload["translations"] = {
-            settings.default_language_code: {
-                "name": "Product",  # Placeholder - Shoper requires this field
-                "active": True
-            }
+        # Flatten the nested attributes dictionary into a single-level dict.
+        # from: {"group_id": {"attribute_id": "value"}}
+        # to:   {"attribute_id": "value", ...}
+        flat_attributes = {}
+        for group_id, group_attrs in attributes.items():
+            for attr_id, value in group_attrs.items():
+                flat_attributes[str(attr_id)] = str(value)
+
+        # Build the final payload with the flattened attributes object.
+        payload: Dict[str, Any] = {
+            "attributes": flat_attributes
         }
         
-        # Add category_id if provided (may be required by some endpoints)
-        if category_id is not None:
-            payload["category_id"] = int(category_id)
+        # Use standard product update endpoint
+        url = f"{self.base_url}{settings.shoper_products_path}/{product_id}"
         
-        # Add stock if provided (may be required by some endpoints)
-        if stock is not None:
-            payload["stock"] = stock
+        print(f"DEBUG: set_product_attributes called with FLATTENED payload: {payload}")
+        print(f"DEBUG: Updating product via PUT {url}")
         
-        # Add attributes (group_id -> {attribute_id: value})
-        # Format: { "11": { "66": "Near Mint", "38": "Rare" } }
-        for group_id, group_attrs in attributes.items():
-            payload[str(group_id)] = {str(attr_id): str(value) for attr_id, value in group_attrs.items()}
-        
-        # Possible endpoints to try
-        endpoints = [
-            (f"{self.base_url.rstrip('/')}/webapi2/products/{product_id}/attributes", "PUT"),
-            (f"{self.base_url}{settings.shoper_products_path}/{product_id}/attributes", "PUT"),
-            (f"{self.base_url}{settings.shoper_products_path}/{product_id}/attributes", "POST"),
-        ]
-        
-        print(f"DEBUG: set_product_attributes called with payload: {payload}")
-        
-        last_error = None
-        for url, method in endpoints:
-            try:
-                print(f"DEBUG: Trying {method} {url}")
-                async with httpx.AsyncClient(timeout=30) as client:
-                    if method == "PUT":
-                        r = await client.put(url, json=payload, headers=headers)
-                    else:
-                        r = await client.post(url, json=payload, headers=headers)
-                    
-                    if r.status_code in (200, 201, 204):
-                        print(f"SUCCESS: Attributes set via {method} {url}")
-                        try:
-                            return {"ok": True, "json": r.json() if r.status_code != 204 else {}}
-                        except:
-                            return {"ok": True, "json": {}}
-                    else:
-                        error_body = r.text
-                        print(f"DEBUG: {method} {url} failed with {r.status_code}: {error_body}")
-                        last_error = f"{r.status_code}: {error_body}"
-            except Exception as e:
-                print(f"DEBUG: {method} {url} failed with exception: {e}")
-                last_error = str(e)
-                continue
-        
-        return {"error": True, "message": f"All attribute endpoints failed. Last error: {last_error}"}
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.put(url, json=payload, headers=headers)
+                
+                if r.status_code in (200, 201, 204):
+                    print(f"SUCCESS: Attributes set via PUT {url}")
+                    try:
+                        return {"ok": True, "json": r.json() if r.status_code != 204 else {}}
+                    except:
+                        return {"ok": True, "json": {}}
+                else:
+                    error_body = r.text
+                    print(f"ERROR: PUT {url} failed with {r.status_code}: {error_body}")
+                    return {"error": True, "status_code": r.status_code, "message": error_body}
+        except Exception as e:
+            print(f"ERROR: PUT {url} failed with exception: {e}")
+            return {"error": True, "message": str(e)}
 
     async def fetch_order_detail(self, order_id: Any) -> Dict[str, Any] | None:
         """Fetch a single order; request embedded products/addresses when available.
@@ -956,11 +926,64 @@ def _set_code_from_name(name: str | None) -> str | None:
         return None
 
 
+def _get_attribute_group_from_fallback(attribute_id: str) -> str | None:
+    """Load attribute_group_id from ids_dump.json fallback file.
+    
+    Returns: attribute_group_id as string, or None if not found.
+    """
+    try:
+        import json
+        from pathlib import Path
+        dump_path = Path(__file__).parent.parent / "ids_dump.json"
+        if not dump_path.exists():
+            return None
+        with open(dump_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        attrs = data.get("attributes", [])
+        for attr in attrs:
+            attr_id = str(attr.get("attribute_id", ""))
+            if attr_id == attribute_id:
+                group_id = attr.get("attribute_group_id")
+                if group_id:
+                    return str(group_id)
+        return None
+    except Exception as e:
+        print(f"WARNING: Failed to load attribute_group_id from ids_dump.json: {e}")
+        return None
+
+
+def _get_category_attribute_groups(category_id: int) -> list[str]:
+    """Get list of attribute group IDs assigned to a category.
+    
+    Returns: List of group_id strings (e.g., ["11", "12", "13", "14"])
+    """
+    try:
+        import json
+        from pathlib import Path
+        dump_path = Path(__file__).parent.parent / "ids_dump.json"
+        if not dump_path.exists():
+            return []
+        with open(dump_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cats = data.get("categories", [])
+        for cat in cats:
+            cat_id = cat.get("category_id")
+            if str(cat_id) == str(category_id):
+                trans = cat.get("translations", {}).get("pl_PL", {})
+                groups = trans.get("attribute_groups", [])
+                return [str(g) for g in groups]
+        return []
+    except Exception as e:
+        print(f"WARNING: Failed to load category attribute groups from ids_dump.json: {e}")
+        return []
+
+
 async def build_product_attributes_payload(client: ShoperClient, scan: Scan, candidate: Optional[ScanCandidate]) -> Dict[str, Dict[str, str]]:
     """Build Shoper attributes payload as nested object grouped by attribute_group_id.
 
-    Returns: Dict like {"11": {"38": "117", "66": "176"}} with STRING values!
-    Format according to TworzenieProduktowShoperAPI.pdf page 5-6.
+    Returns: Dict like {"11": {"38": "Rare", "66": "Near Mint"}} with OPTION TEXT values!
+    Shoper API expects text values, not numeric option IDs.
+    Example from actual Shoper product: {"11": {"38": "Double Rare"}}
     """
     from .attributes import map_detected_to_shoper_attributes, simplify_attributes
 
@@ -983,8 +1006,8 @@ async def build_product_attributes_payload(client: ShoperClient, scan: Scan, can
         "finish": scan.detected_variant,
         "condition": scan.detected_condition or "NM",
         "rarity": candidate.rarity if candidate and hasattr(candidate, 'rarity') else scan.detected_rarity,
-        "energy": scan.detected_energy,
-        "type": None,
+        "energy": candidate.energy if candidate and hasattr(candidate, 'energy') else scan.detected_energy,
+        "type": candidate.card_type if candidate and hasattr(candidate, 'card_type') else None,
     }
 
     print(f"DEBUG: Detected attributes data: {detected}")
@@ -995,12 +1018,19 @@ async def build_product_attributes_payload(client: ShoperClient, scan: Scan, can
     print(f"DEBUG: Raw mapping from attributes.py: {attr_id_mapping}")
 
     # Build index of attribute_id -> attribute_group_id
+    # Fallback to ids_dump.json if API doesn't provide attribute_group_id
     attr_to_group = {}
     for attr_item in shoper_attrs_raw:
         attr_id = str(attr_item.get("attribute_id") or attr_item.get("id") or "")
-        group_id = str(attr_item.get("attribute_group_id") or attr_item.get("group_id") or "0")
+        group_id = str(attr_item.get("attribute_group_id") or attr_item.get("group_id") or "")
         if attr_id:
-            attr_to_group[attr_id] = group_id
+            # If group_id is missing or "0", try to load from ids_dump.json fallback
+            if not group_id or group_id == "0":
+                fallback_group = _get_attribute_group_from_fallback(attr_id)
+                if fallback_group:
+                    group_id = fallback_group
+                    print(f"DEBUG: Loaded group_id={group_id} for attribute_id={attr_id} from ids_dump.json fallback")
+            attr_to_group[attr_id] = group_id if group_id else "0"
 
     # Convert to nested format grouped by attribute_group_id
     # Format: { "group_id": { "attribute_id": "option_id" } }
@@ -1022,10 +1052,32 @@ async def build_product_attributes_payload(client: ShoperClient, scan: Scan, can
 async def build_shoper_payload(client: ShoperClient, scan: Scan, candidate: Optional[ScanCandidate], set_id: int | None = None, gfx_id: str | None = None) -> Dict[str, Any]:
     """Build Shoper product payload for given scan + chosen candidate.
     
-    NOTE: Attributes are NOT included in the POST payload.
-    They must be added via PUT request AFTER product creation using set_product_attributes().
-    This follows Shoper API best practices.
+    NOTE: Attributes SHOULD NOT be included in the POST payload during product creation.
+    They will be added in a separate PUT request after the product is created.
+    
+    Fetches full card details from provider to enrich descriptions with artist info and other metadata.
     """
+    # Fetch full card details from provider for enriched descriptions
+    card_details = None
+    artist_name = None
+    rarity_full = None
+    hp = None
+    supertype = None
+    
+    if candidate and candidate.provider_id:
+        try:
+            from .providers import get_provider
+            provider = get_provider()
+            card_details = await provider.details(candidate.provider_id)
+            if card_details:
+                artist_info = card_details.get("artist") or {}
+                artist_name = artist_info.get("name")
+                rarity_full = card_details.get("rarity")
+                hp = card_details.get("hp")
+                supertype = card_details.get("supertype")
+                print(f"INFO: Enriched card details - Artist: {artist_name}, Rarity: {rarity_full}, HP: {hp}")
+        except Exception as e:
+            print(f"WARNING: Could not fetch card details for descriptions: {e}")
     # Build code like PKM-SETCODE-NUMBER when possible
     # Prefer deriving SETCODE from set/category name rather than provider set_code
     set_name_for_code = (scan.detected_set or ((candidate.set) if candidate else None))
@@ -1119,23 +1171,85 @@ async def build_shoper_payload(client: ShoperClient, scan: Scan, candidate: Opti
     if variant and variant.lower() != 'normal':
         name = f"{name} ({variant})"
     cond = getattr(scan, 'detected_condition', None) or ''
-    short_desc = (
-        f"<ul style=\"margin:0 0 0.7em 1.2em; padding:0; font-size:1.14em;\">"
-        f"<li><strong>{nm}</strong></li>"
-        f"<li style=\"margin-top:0.3em;\">Zestaw: {st}</li>"
-        f"<li style=\"margin-top:0.3em;\">Numer karty: {num}</li>"
-        f"<li style=\"margin-top:0.3em;\">Stan: {cond or 'NM'}</li>"
-        f"</ul>"
-    )
-    long_desc = (
-        f"<div style=\"font-size:1.10em;line-height:1.7;\">"
-        f"<h2 style=\"margin:0 0 0.4em 0;\">{nm} – Pokémon TCG</h2>"
-        f"<p><strong>Zestaw:</strong> {st}<br><strong>Numer karty:</strong> {num}<br><strong>Stan:</strong> {cond or 'NM'}</p>"
-        f"<p>Dlaczego warto kupić w Kartoteka.shop?</p>"
-        f"<ul><li>Oryginalne karty Pokémon</li><li>Bezpieczna wysyłka i solidne opakowanie</li><li>Profesjonalna obsługa klienta</li></ul>"
-        f"</div>"
-    )
-    seo_title = f"{nm} {num} {st}".strip()
+    
+    # Map finish attribute to readable name
+    finish_names = {
+        "149": "Holo",
+        "150": "Reverse Holo",
+        "151": "Full Art",
+        "155": "PokéBall Pattern",
+        "156": "MasterBall Pattern",
+        "157": "Gold",
+        "158": "Rainbow",
+        "184": "Normal"
+    }
+    finish_id = str(getattr(scan, 'detected_variant', '') or '184')
+    finish_name = finish_names.get(finish_id, "Normal")
+    
+    # Enhanced SHORT description with SEO keywords
+    short_desc_parts = [
+        f"<ul style=\"margin:0 0 0.7em 1.2em; padding:0; font-size:1.14em;\">",
+        f"<li><strong>{nm}</strong> - oryginalna karta Pokémon TCG</li>",
+        f"<li style=\"margin-top:0.3em;\">Zestaw: <strong>{st}</strong></li>",
+        f"<li style=\"margin-top:0.3em;\">Numer karty: <strong>#{num}</strong></li>",
+    ]
+    if finish_name and finish_name != "Normal":
+        short_desc_parts.append(f"<li style=\"margin-top:0.3em;\">Wykończenie: <strong>{finish_name}</strong></li>")
+    if rarity_full:
+        short_desc_parts.append(f"<li style=\"margin-top:0.3em;\">Rzadkość: <strong>{rarity_full}</strong></li>")
+    short_desc_parts.append(f"<li style=\"margin-top:0.3em;\">Stan: <strong>{cond or 'Near Mint (NM)'}</strong></li>")
+    short_desc_parts.append("</ul>")
+    short_desc = "".join(short_desc_parts)
+    
+    # Enhanced LONG description with artist, specs, and SEO content
+    long_desc_parts = [
+        f"<div style=\"font-size:1.10em;line-height:1.7;\">",
+        f"<h2 style=\"margin:0 0 0.6em 0;font-size:1.4em;\">{nm} #{num} - {st}</h2>",
+        f"<p style=\"margin-bottom:1em;\">Oryginalna karta <strong>Pokémon Trading Card Game</strong> w doskonałym stanie. "
+        f"Idealna dla kolekcjonerów i graczy poszukujących wysokiej jakości kart do swojej kolekcji lub talii.</p>",
+        "<h3 style=\"margin:1.2em 0 0.5em 0;font-size:1.2em;\">Specyfikacja karty:</h3>",
+        "<ul style=\"margin:0 0 1em 1.5em;\">",
+        f"<li><strong>Nazwa:</strong> {nm}</li>",
+        f"<li><strong>Zestaw:</strong> {st}</li>",
+        f"<li><strong>Numer karty:</strong> #{num}</li>",
+    ]
+    if finish_name and finish_name != "Normal":
+        long_desc_parts.append(f"<li><strong>Wykończenie:</strong> {finish_name}</li>")
+    if rarity_full:
+        long_desc_parts.append(f"<li><strong>Rzadkość:</strong> {rarity_full}</li>")
+    if hp:
+        long_desc_parts.append(f"<li><strong>HP:</strong> {hp}</li>")
+    if supertype:
+        long_desc_parts.append(f"<li><strong>Typ:</strong> {supertype}</li>")
+    if artist_name:
+        long_desc_parts.append(f"<li><strong>Ilustrator:</strong> {artist_name}</li>")
+    long_desc_parts.append(f"<li><strong>Stan karty:</strong> {cond or 'Near Mint (NM)'}</li>")
+    long_desc_parts.append("</ul>")
+    
+    # Add artist appreciation paragraph if available
+    if artist_name:
+        long_desc_parts.extend([
+            f"<p style=\"margin:1em 0;\">Grafika na tej karcie została stworzona przez utalentowanego artystę <strong>{artist_name}</strong>, "
+            f"znanego z pięknych ilustracji w świecie Pokémon TCG. Każda karta to małe dzieło sztuki, które zasługuje na miejsce w Twojej kolekcji.</p>"
+        ])
+    
+    # SEO and why buy section
+    long_desc_parts.extend([
+        "<h3 style=\"margin:1.5em 0 0.5em 0;font-size:1.2em;\">Dlaczego warto kupić w Kartoteka.shop?</h3>",
+        "<ul style=\"margin:0 0 1em 1.5em;\">",
+        "<li><strong>100% oryginalne karty</strong> - gwarancja autentyczności</li>",
+        "<li><strong>Bezpieczna wysyłka</strong> - profesjonalne opakowanie chroniące kartę</li>",
+        "<li><strong>Weryfikowany stan</strong> - szczegółowe zdjęcia i opis</li>",
+        "<li><strong>Szybka realizacja</strong> - wysyłka w 24h</li>",
+        "<li><strong>Profesjonalna obsługa</strong> - pomoc w doborze kart</li>",
+        "</ul>",
+        f"<p style=\"margin:1.5em 0 0 0;\">Szukasz konkretnej karty Pokémon? Karta <strong>{nm}</strong> z zestawu <strong>{st}</strong> "
+        f"to doskonały wybór dla każdego kolekcjonera. Sprawdź naszą pełną ofertę kart Pokemon TCG!</p>",
+        "</div>"
+    ])
+    long_desc = "".join(long_desc_parts)
+    
+    seo_title = f"{nm} #{num} {st} - Karta Pokemon TCG | Kartoteka.shop".strip()
 
     # Build payload - start with minimal required fields
     payload: Dict[str, Any] = {
@@ -1147,6 +1261,9 @@ async def build_shoper_payload(client: ShoperClient, scan: Scan, candidate: Opti
                 "name": name,
                 "active": True,
                 "description": long_desc,
+                "short_description": short_desc,
+                "seo_title": seo_title,
+                "seo_description": f"{nm} #{num} z zestawu {st}. Oryginalna karta Pokemon TCG w stanie {cond or 'NM'}. Bezpieczna wysyłka, 100% autentyczność. Kup teraz!",
             }
         },
         "stock": {
@@ -1259,13 +1376,13 @@ async def publish_scan_to_shoper(
 ) -> Dict[str, Any]:
     """
     Builds payload, creates a product in Shoper, and uploads primary and additional images.
-
-    If primary_image is not provided, attempts to download candidate.image (TCGGO URL).
+    This now follows the recommended two-step process:
+    1. POST product with minimal data.
+    2. PUT attributes to the newly created product.
     """
     import tempfile
     import os
 
-    gfx_id = None
     temp_image_path = None
 
     # Determine the image source
@@ -1309,18 +1426,12 @@ async def publish_scan_to_shoper(
             print(f"ERROR: Failed to download image from {image_to_upload}: {e}")
             image_to_upload = None
 
-    # NOTE: GFX upload removed - will use product-images endpoint after product creation instead
-    # This is more reliable and follows Shoper API best practices for newer installations
-    # The image_to_upload will be stored for adding to the product after creation
-    print(f"INFO: Image will be uploaded after product creation via product-images endpoint")
-
-     # Build attributes NOW (to add later via PUT after product creation)
+    # Build attributes payload separately.
     attributes_payload = await build_product_attributes_payload(client, scan, candidate)
     if attributes_payload:
-        print(f"INFO: Attributes ready to add after product creation: {attributes_payload}")
+        print(f"INFO: Attributes payload prepared for separate PUT request: {attributes_payload}")
 
-    # Build the main product payload (attributes will be added AFTER via PUT)
-    # NOTE: gfx_id is no longer used - images are added after product creation
+    # Build the main product payload WITHOUT attributes.
     payload = await build_shoper_payload(client, scan, candidate, set_id=set_id, gfx_id=None)
 
     # Log the complete payload (truncate for readability)
@@ -1331,7 +1442,6 @@ async def publish_scan_to_shoper(
     print(f"INFO: Product creation payload:\n{payload_str}")
 
     # Send create product request
-    # NOTE: httpx with json= parameter automatically sets Content-Type: application/json
     headers = {
         "Authorization": f"Bearer {client.token}",
         "Accept": "application/json",
@@ -1346,10 +1456,7 @@ async def publish_scan_to_shoper(
         import json as json_module
         payload_json_str = json_module.dumps(payload, default=str, ensure_ascii=False)
         payload_size = len(payload_json_str)
-        print(f"DEBUG: POST {url} with {payload_size} bytes, options field present: {'options' in payload}")
-        print(f"DEBUG: Payload has {len(payload.get('options', []))} option(s)")
-        if payload.get('options'):
-            print(f"DEBUG: First option structure: {payload['options'][0]}")
+        print(f"DEBUG: POST {url} with {payload_size} bytes")
         
         # Use json= parameter which handles serialization AND sets Content-Type automatically
         r = await http.post(url, json=payload, headers=headers)
@@ -1379,10 +1486,8 @@ async def publish_scan_to_shoper(
             # Parse product_id from various response formats
             product_id = None
             if isinstance(response_json, dict):
-                # Standard response: {"product_id": 1726, ...}
                 product_id = response_json.get("product_id") or response_json.get("id")
             elif isinstance(response_json, (int, str)):
-                # Simple response: just the ID number (e.g., "1726" or 1726)
                 try:
                     product_id = int(response_json)
                 except (ValueError, TypeError):
@@ -1390,19 +1495,35 @@ async def publish_scan_to_shoper(
 
             print(f"INFO: Extracted product_id={product_id} from response type={type(response_json).__name__}")
 
-            # Add attributes via dedicated endpoint AFTER product creation
-            # This follows Shoper API best practices: POST creates base product, then add attributes separately
+            # STEP 2: Set attributes in a separate PUT request if product was created
             if product_id and attributes_payload:
-                print(f"INFO: Adding attributes to product {product_id}")
-                # Get category_id and stock from payload (required by Shoper API)
-                category_id = payload.get("category_id")
-                stock = payload.get("stock")
-                attr_result = await client.set_product_attributes(product_id, attributes_payload, category_id=category_id, stock=stock)
-                if attr_result.get("ok"):
-                    print(f"SUCCESS: Attributes successfully added to product {product_id}")
+                # Re-introduce filtering logic before setting attributes
+                category_id_for_filter = payload.get("category_id")
+                filtered_attributes = attributes_payload
+                if category_id_for_filter:
+                    allowed_groups = _get_category_attribute_groups(int(category_id_for_filter))
+                    if allowed_groups:
+                        filtered_attributes = {
+                            group_id: attrs 
+                            for group_id, attrs in attributes_payload.items() 
+                            if group_id in allowed_groups
+                        }
+                        if filtered_attributes != attributes_payload:
+                            removed_groups = set(attributes_payload.keys()) - set(filtered_attributes.keys())
+                            print(f"INFO: Filtered out attribute groups {removed_groups} (not assigned to category {category_id_for_filter})")
+                    else:
+                        print(f"WARNING: Could not determine allowed attribute groups for category {category_id_for_filter}, sending all attributes.")
+
+                if not filtered_attributes:
+                    print("INFO: No valid attributes to set for this product's category.")
                 else:
-                    error_msg = attr_result.get("message", "Unknown error")
-                    print(f"WARNING: Failed to add attributes to product {product_id}: {error_msg}")
+                    print(f"INFO: Product {product_id} created. Now setting filtered attributes...")
+                    attr_result = await client.set_product_attributes(product_id, filtered_attributes)
+                    if attr_result.get("ok"):
+                        print(f"SUCCESS: Attributes set for product {product_id}.")
+                    else:
+                        # Log the error but don't fail the whole process
+                        print(f"WARNING: Failed to set attributes for product {product_id}. Reason: {attr_result.get('message', 'Unknown error')}")
 
             # Upload main image AFTER product creation (via product-images endpoint)
             if product_id and image_to_upload:
