@@ -1408,19 +1408,23 @@ async def get_candidate_details(body: dict = Body(default={})):
         if matched_category:
             fused.update(matched_category)
 
-        # Attribute Mapping
+        # Attribute Mapping for form population (option IDs, not text)
         try:
+            from .attributes import map_detected_to_form_ids
+            
             detected_attrs = {
                 "rarity": details.get("rarity"),
                 "energy": details.get("energy"),
-                "type": details.get("supertype"),
+                "language": details.get("language"),
+                "variant": details.get("variant"),
+                "condition": details.get("condition"),
             }
             client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
             tax = await client.fetch_attributes()
             items = tax.get("items") if isinstance(tax, dict) else []
             if items:
-                mapped_attributes = map_detected_to_shoper_attributes(detected_attrs, items)
-                fused.update(mapped_attributes)
+                form_ids = map_detected_to_form_ids(detected_attrs, items)
+                fused.update(form_ids)
         except Exception as e:
             print(f"ERROR during attribute mapping in candidate_details: {e}")
 
@@ -1452,6 +1456,16 @@ async def confirm_candidate(payload: ConfirmRequest):
             scan.detected_name = payload.detected.get('name')
             scan.detected_number = payload.detected.get('number')
             scan.detected_set = payload.detected.get('set')
+            
+            # Update additional detected fields from form
+            if 'energy' in payload.detected:
+                scan.detected_energy = payload.detected.get('energy')
+            if 'rarity' in payload.detected:
+                scan.detected_rarity = payload.detected.get('rarity')
+            if 'condition' in payload.detected:
+                scan.detected_condition = payload.detected.get('condition')
+            if 'language' in payload.detected:
+                scan.detected_language = payload.detected.get('language')
 
             # Resolve variant ID to name
             variant_id = payload.detected.get('65') # 65 is the attribute ID for 'Finish'
@@ -2159,6 +2173,12 @@ async def publish_single_scan(
 
         # 4. Fuzzy match set name for category
         set_id = payload.detected.get('set_id') if payload.detected else None
+        # Convert set_id to int if it's a string
+        if set_id is not None:
+            try:
+                set_id = int(set_id)
+            except (ValueError, TypeError):
+                set_id = None
         if not set_id:
             set_name = payload.detected.get('set') if payload.detected else None
             if set_name:

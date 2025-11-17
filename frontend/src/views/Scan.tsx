@@ -838,11 +838,44 @@ return (
                             try {
                                 const data = new FormData();
 
+                                // Helper to resolve attribute option_id to text value
+                                const resolveAttribute = (attrId: string, optionId: string): string | null => {
+                                  const attr = shoperAttributes?.find(a => a.attribute_id === attrId);
+                                  if (!attr) return null;
+                                  const option = attr.options.find((o: any) => o.option_id === optionId);
+                                  return option ? option.value : null;
+                                };
+
+                                // Build detected object with BOTH plain fields AND attribute mappings
+                                const detectedPayload = {
+                                  // Plain fields for confirm_candidate
+                                  name: formData.name,
+                                  number: formData.number,
+                                  set: formData.set,
+                                  set_id: formData.set_id,
+                                  set_code: formData.set_code,
+                                  price_pln_final: formData.price_pln_final,
+                                  
+                                  // Resolve attribute values to plain text for confirm_candidate
+                                  energy: formData['63'] ? resolveAttribute('63', formData['63']) : null,
+                                  rarity: formData['38'] ? resolveAttribute('38', formData['38']) : null,
+                                  language: formData['64'] ? resolveAttribute('64', formData['64']) : null,
+                                  condition: formData['66'] ? resolveAttribute('66', formData['66']) : null,
+                                  variant: formData['65'] ? resolveAttribute('65', formData['65']) : null,
+                                  
+                                  // Keep attribute IDs for Shoper publication
+                                  '38': formData['38'], // Rarity
+                                  '63': formData['63'], // Energy
+                                  '64': formData['64'], // Language
+                                  '65': formData['65'], // Finish
+                                  '66': formData['66'], // Condition
+                                };
+
                                 // 1. Append main form data as a JSON string
                                 data.append('data', JSON.stringify({
                                     scan_id: scanResult.scan_id,
                                     candidate_id: scanResult.candidates[0].id,
-                                    detected: formData
+                                    detected: detectedPayload
                                 }));
 
                                 // 2. Append primary image

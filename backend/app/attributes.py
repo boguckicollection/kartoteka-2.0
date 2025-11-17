@@ -95,26 +95,54 @@ def simplify_categories(items: List[dict]) -> List[dict]:
 
 
 def _best_option_id(options: List[Tuple[str, str]], candidates: List[str]) -> Optional[str]:
-    """Find best option value text by matching candidates.
+    """Find best option value text by matching candidates against option names.
     
-    Returns the OPTION TEXT VALUE (e.g., "Niebieski"), not the ID.
+    Returns the OPTION TEXT (e.g., "Near Mint"), NOT the option_id!
+    This is required by Shoper API - it expects text values, not numeric IDs.
+    
     options: list of (option_id, option_value_text) tuples
     candidates: list of candidate strings to match
     """
     if not options:
         return None
-    # Normalize options once - map normalized text to original text
+    # Normalize options once - map normalized text to original text value
     opt_norm = [(_norm(val), val) for oid, val in options]
     cands = [_norm(c) for c in candidates if c]
     for c in cands:
         # exact match
         for oname, oval in opt_norm:
             if oname == c:
-                return oval  # Return option VALUE TEXT, not ID!
+                return oval  # Return option TEXT value!
         # contains match (fallback)
         for oname, oval in opt_norm:
             if c and c in oname:
-                return oval  # Return option VALUE TEXT
+                return oval  # Return option TEXT value
+    return None
+
+
+def _best_option_numeric_id(options: List[Tuple[str, str]], candidates: List[str]) -> Optional[str]:
+    """Find best option ID by matching candidates against option names.
+    
+    Returns the OPTION ID (e.g., "176" for Near Mint), NOT the text!
+    This is used for frontend form population.
+    
+    options: list of (option_id, option_value_text) tuples
+    candidates: list of candidate strings to match
+    """
+    if not options:
+        return None
+    # Normalize options once - map normalized text to (option_id, original_text)
+    opt_norm = [(_norm(val), oid, val) for oid, val in options]
+    cands = [_norm(c) for c in candidates if c]
+    for c in cands:
+        # exact match
+        for oname, oid, oval in opt_norm:
+            if oname == c:
+                return oid  # Return option ID!
+        # contains match (fallback)
+        for oname, oid, oval in opt_norm:
+            if c and c in oname:
+                return oid  # Return option ID
     return None
 
 
@@ -211,10 +239,12 @@ def map_detected_to_shoper_attributes(
     *,
     prefer_attribute_names: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
-    """Return mapping { attribute_id: option_value_text } for relevant fields.
+    """Return mapping { attribute_id: option_text } for relevant fields.
     
-    IMPORTANT: Values are OPTION TEXT (e.g., "Niebieski"), NOT option IDs!
+    IMPORTANT: Values are OPTION TEXT (e.g., "Near Mint"), NOT option IDs!
+    Shoper API expects text values, not numeric option_id values.
     Format for Shoper API: {"group_id": {"attribute_id": "option_text"}}
+    Example from actual Shoper product: {"11": {"38": "Double Rare"}}
 
     prefer_attribute_names: optional map to override which attribute name to use
     for a given logical key, e.g. { 'language': 'Język', 'finish': 'Wykończenie' }.
@@ -281,10 +311,11 @@ def map_detected_to_shoper_attributes(
         print(f"WARNING: Attribute for language not found in Shoper (tried names: {attribute_targets['language']}).")
 
     # Finish (from variant)
-    fin_val = detected.get("variant") or detected.get("finish")
     meta = _find_attr(attribute_targets["finish"])
-    if meta and fin_val:
-        oid = _best_option_id(meta["options"], _finish_candidates(fin_val))
+    if meta:
+        fin_val = detected.get("variant") or detected.get("finish")
+        candidates = _finish_candidates(fin_val) if fin_val else ["Normal"]
+        oid = _best_option_id(meta["options"], candidates)
         if oid:
             result[str(meta["id"])] = str(oid)
 
@@ -307,8 +338,11 @@ def map_detected_to_shoper_attributes(
     # Energy
     eng_val = detected.get("energy")
     meta = _find_attr(attribute_targets["energy"])
-    if meta and eng_val:
-        oid = _best_option_id(meta["options"], _energy_candidates(eng_val))
+    if meta:
+        candidates = _energy_candidates(eng_val) if eng_val else ["Nie dotyczy"]
+        print(f"DEBUG: Mapping Energy. Value: '{eng_val}'. Candidates: {candidates}")
+        oid = _best_option_id(meta["options"], candidates)
+        print(f"DEBUG: Mapping Energy. Chosen option text: '{oid}'")
         if oid:
             result[str(meta["id"])] = str(oid)
         else:
@@ -316,11 +350,111 @@ def map_detected_to_shoper_attributes(
     elif eng_val:
         print(f"WARNING: Attribute for energy not found in Shoper (tried names: {attribute_targets['energy']}).")
 
-    # Type/Rodzaj – only if supplied explicitly (no derived heuristics for now)
+    # Type/Rodzaj
     type_val = detected.get("type") or detected.get("rodzaj")
     meta = _find_attr(attribute_targets["type"])
-    if meta and type_val:
-        oid = _best_option_id(meta["options"], [_norm(type_val)])
+    if meta:
+        candidates = [_norm(type_val)] if type_val else ["Nie dotyczy"]
+        print(f"DEBUG: Mapping Type. Value: '{type_val}'. Candidates: {candidates}")
+        oid = _best_option_id(meta["options"], candidates)
+        print(f"DEBUG: Mapping Type. Chosen option text: '{oid}'")
+        if oid:
+            result[str(meta["id"])] = str(oid)
+
+    return result
+
+
+def map_detected_to_form_ids(
+    detected: dict,
+    shoper_attribute_items: List[dict],
+    *,
+    prefer_attribute_names: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Return mapping { attribute_id: option_id } for form population.
+    
+    Unlike map_detected_to_shoper_attributes which returns option TEXT,
+    this function returns option IDs for populating frontend select dropdowns.
+    Format: {"38": "115"} (attribute_id -> option_id)
+    """
+    idx = _index_attributes(shoper_attribute_items)
+    attribute_targets: Dict[str, List[str]] = {
+        "language": [
+            (prefer_attribute_names or {}).get("language", "Język"),
+            "Jezyk",
+            "Language",
+        ],
+        "finish": [
+            (prefer_attribute_names or {}).get("finish", "Wykończenie"),
+            "Wykonczenie",
+            "Finish",
+        ],
+        "condition": [
+            (prefer_attribute_names or {}).get("condition", "Jakość"),
+            "Jakosc",
+            "Condition",
+            "Stan",
+            "Quality",
+        ],
+        "rarity": [
+            (prefer_attribute_names or {}).get("rarity", "Rzadkość"),
+            "Rzadkosc",
+            "Rarity",
+        ],
+        "energy": [
+            (prefer_attribute_names or {}).get("energy", "Energia"),
+            "Energy",
+        ],
+    }
+
+    result: Dict[str, str] = {}
+
+    def _find_attr(aliases: List[str]) -> Optional[dict]:
+        for name in aliases:
+            key = _norm(name)
+            meta = idx.get(key)
+            if meta:
+                return meta
+        return None
+
+    # Language
+    lang_val = detected.get("language")
+    meta = _find_attr(attribute_targets["language"])
+    if meta and lang_val:
+        oid = _best_option_numeric_id(meta["options"], _language_candidates(lang_val))
+        if oid:
+            result[str(meta["id"])] = str(oid)
+
+    # Finish (from variant)
+    meta = _find_attr(attribute_targets["finish"])
+    if meta:
+        fin_val = detected.get("variant") or detected.get("finish")
+        candidates = _finish_candidates(fin_val) if fin_val else ["Normal"]
+        oid = _best_option_numeric_id(meta["options"], candidates)
+        if oid:
+            result[str(meta["id"])] = str(oid)
+
+    # Condition
+    cond_val = detected.get("condition")
+    meta = _find_attr(attribute_targets["condition"])
+    if meta and cond_val:
+        oid = _best_option_numeric_id(meta["options"], _condition_candidates(cond_val))
+        if oid:
+            result[str(meta["id"])] = str(oid)
+
+    # Rarity
+    rar_val = detected.get("rarity")
+    meta = _find_attr(attribute_targets["rarity"])
+    if meta and rar_val:
+        oid = _best_option_numeric_id(meta["options"], [_norm(rar_val)])
+        if oid:
+            result[str(meta["id"])] = str(oid)
+
+    # Energy
+    eng_val = detected.get("energy")
+    meta = _find_attr(attribute_targets["energy"])
+    if meta:
+        candidates = _energy_candidates(eng_val) if eng_val else ["Nie dotyczy"]
+        oid = _best_option_numeric_id(meta["options"], candidates)
         if oid:
             result[str(meta["id"])] = str(oid)
 
