@@ -8,12 +8,26 @@ type SlideOutPanelProps = {
 
 const SlideOutPanel: React.FC<SlideOutPanelProps> = ({ isOpen, onClose, children }) => {
   return (
-    <div className={`fixed top-0 right-0 h-full w-96 bg-gray-800 shadow-lg transform transition-transform duration-300 ease-in-out ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}>
-      <div className="p-4">
-        <button onClick={onClose} className="text-white font-bold mb-4">Close</button>
-        {children}
+    <>
+      {/* Backdrop */}
+      {isOpen && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 transition-opacity duration-300 z-40"
+          onClick={onClose}
+        />
+      )}
+      
+      {/* Panel */}
+      <div 
+        className={`fixed top-0 right-0 h-full w-full md:w-[600px] lg:w-[700px] bg-gray-900 shadow-2xl transform transition-transform duration-300 ease-in-out z-50 ${
+          isOpen ? 'translate-x-0' : 'translate-x-full'
+        }`}
+      >
+        <div className="p-6 h-full overflow-hidden flex flex-col">
+          {children}
+        </div>
       </div>
-    </div>
+    </>
   );
 };
 

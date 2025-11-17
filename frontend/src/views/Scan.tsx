@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState, useRef } from 'react'
 import Toast from '../components/Toast';
+import SlideOutPanel from '../components/SlideOutPanel';
 
 type Candidate = { id: string; name: string; score: number; set?: string|null; number?: string|null; image?: string|null }
 
@@ -55,6 +56,7 @@ export default function ScanView({ session, preview, loading, analyzing, status,
   const [isFetchingDetails, setIsFetchingDetails] = useState(false);
   const [selectedPrimaryImage, setSelectedPrimaryImage] = useState<{source: 'tcggo' | 'scan' | 'upload', url: string | null, file?: File | null}>({source: 'tcggo', url: null});
   const [additionalImages, setAdditionalImages] = useState<File[]>([]);
+  const [candidatesPanelOpen, setCandidatesPanelOpen] = useState(false);
 
   const handleCandidateSelect = async (candidate: Candidate) => {
     // 1. Immediately update UI for responsiveness
@@ -613,28 +615,35 @@ return (
 
                   {scanResult?.candidates && scanResult.candidates.length > 1 && (
                     <div className="mt-4 w-full">
-                      <h3 className="text-lg font-bold text-white mb-2">Wybierz właściwą kartę:</h3>
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="text-lg font-bold text-white">Wybierz właściwą kartę:</h3>
+                        <button 
+                          onClick={() => setCandidatesPanelOpen(true)}
+                          className="text-primary text-sm font-semibold hover:text-blue-400 transition-colors flex items-center gap-1"
+                        >
+                          <span className="material-symbols-outlined text-sm">open_in_new</span>
+                          Zobacz wszystkie ({scanResult.candidates.length})
+                        </button>
+                      </div>
                       <div className="flex flex-col gap-2"> 
-                        {(showAllCandidates ? scanResult.candidates : scanResult.candidates.slice(0, 10)).map((candidate: Candidate) => (
+                        {scanResult.candidates.slice(0, 3).map((candidate: Candidate) => (
                           <div
                             key={candidate.id}
-                            className="bg-gray-800 p-2 rounded-lg flex items-center gap-3 cursor-pointer hover:bg-gray-700 transition-colors"
+                            className="bg-gray-800 p-3 rounded-lg flex items-center gap-3 cursor-pointer hover:bg-gray-700 transition-colors border border-gray-700 hover:border-primary"
                             onClick={() => handleCandidateSelect(candidate)}
                           >
-                            <img src={candidate.image || ''} alt={candidate.name} className="w-12 h-auto rounded-md" />
+                            <img src={candidate.image || ''} alt={candidate.name} className="w-16 h-auto rounded-md shadow-md" />
                             <div className="text-sm flex-grow">
-                              <p className="font-bold text-white">
+                              <p className="font-bold text-white text-base mb-1">
                                 {candidate.name}
                               </p>
-                              <p className="text-gray-300 font-semibold">
-                                {candidate.set} {candidate.number ? `(#${candidate.number})` : ''}
+                              <p className="text-gray-400 text-xs">
+                                <span className="font-semibold text-gray-300">{candidate.set}</span>
+                                {candidate.number && <span className="ml-2 text-primary">#{candidate.number}</span>}
                               </p>
                             </div>
                           </div>
                         ))}
-                        {scanResult.candidates.length > 10 && !showAllCandidates && (
-                          <button onClick={() => setShowAllCandidates(true)} className="text-primary text-sm mt-2">Pokaż więcej...</button>
-                        )}
                       </div>
                     </div>
                   )}
@@ -782,7 +791,13 @@ return (
                                 });
                                 const responseData = await res.json();
                                 if (res.ok) {
-                                    setToast({ message: `Opublikowano: ${responseData.shoper_id}`, type: 'success' });
+                                    // Handle success for both new products and duplicate updates
+                                    if (responseData.message && responseData.message.includes("Updated existing product")) {
+                                        setToast({ message: responseData.message, type: 'success' });
+                                    } else {
+                                        const productId = responseData.json?.product_id || responseData.shoper_id || responseData.id;
+                                        setToast({ message: `Opublikowano produkt: ${productId}`, type: 'success' });
+                                    }
                                     setScanResult(null);
                                     setAdditionalImages([]);
                                 } else {
@@ -828,6 +843,87 @@ return (
           </div>
         )}
       </main>
+
+      {/* Slide-out panel for full candidates list */}
+      <SlideOutPanel isOpen={candidatesPanelOpen} onClose={() => setCandidatesPanelOpen(false)}>
+        <div className="flex flex-col h-full">
+          <div className="flex items-center justify-between mb-4 pb-3 border-b border-gray-700">
+            <h2 className="text-xl font-bold text-white">Wszystkie kandydaci ({scanResult?.candidates?.length || 0})</h2>
+            <button 
+              onClick={() => setCandidatesPanelOpen(false)}
+              className="text-gray-400 hover:text-white transition-colors"
+            >
+              <span className="material-symbols-outlined">close</span>
+            </button>
+          </div>
+          
+          <div className="flex-grow overflow-y-auto space-y-3">
+            {scanResult?.candidates?.map((candidate: Candidate, index: number) => (
+              <div
+                key={candidate.id}
+                className="bg-gray-900 p-3 rounded-lg cursor-pointer hover:bg-gray-800 transition-colors border border-gray-700 hover:border-primary"
+                onClick={() => {
+                  handleCandidateSelect(candidate);
+                  setCandidatesPanelOpen(false);
+                }}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="flex-shrink-0">
+                    {candidate.image ? (
+                      <img 
+                        src={candidate.image} 
+                        alt={candidate.name} 
+                        className="w-20 h-auto rounded-md shadow-lg"
+                      />
+                    ) : (
+                      <div className="w-20 h-28 bg-gray-700 rounded-md flex items-center justify-center">
+                        <span className="material-symbols-outlined text-gray-500">image_not_supported</span>
+                      </div>
+                    )}
+                  </div>
+                  
+                  <div className="flex-grow min-w-0">
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <p className="font-bold text-white text-sm leading-tight">
+                        {candidate.name}
+                      </p>
+                      <span className="text-xs text-gray-500 flex-shrink-0">#{index + 1}</span>
+                    </div>
+                    
+                    <div className="space-y-1">
+                      {candidate.set && (
+                        <p className="text-xs text-gray-400">
+                          <span className="text-gray-500">Zestaw:</span>{' '}
+                          <span className="font-semibold text-gray-300">{candidate.set}</span>
+                        </p>
+                      )}
+                      
+                      {candidate.number && (
+                        <p className="text-xs text-gray-400">
+                          <span className="text-gray-500">Numer:</span>{' '}
+                          <span className="font-semibold text-primary">{candidate.number}</span>
+                        </p>
+                      )}
+                      
+                      <div className="flex items-center gap-2 mt-2">
+                        <div className="flex-grow bg-gray-800 rounded-full h-1.5">
+                          <div 
+                            className="bg-primary h-1.5 rounded-full transition-all"
+                            style={{ width: `${(candidate.score || 0) * 100}%` }}
+                          ></div>
+                        </div>
+                        <span className="text-xs text-gray-500 flex-shrink-0">
+                          {((candidate.score || 0) * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </SlideOutPanel>
     </div>
   );
 }
