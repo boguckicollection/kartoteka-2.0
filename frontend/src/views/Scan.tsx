@@ -135,15 +135,26 @@ export default function ScanView({ session, preview, loading, analyzing, status,
     return `POKE-${setAbbr}-${formData.number || ''}${finishSuffix}`;
   }, [formData, shoperAttributes]);
 
-  const overlayClass = useMemo(() => {
+  const finishBadge = useMemo(() => {
     const selectedFinishId = formData['65']; // The 'Finish' attribute
     switch (String(selectedFinishId)) {
         case '149': // Holo
-            return 'holo-overlay';
+            return { letter: 'H', label: 'Holo', color: 'bg-purple-600' };
         case '150': // Reverse Holo
-            return 'reverse-holo-overlay';
+            return { letter: 'R', label: 'Reverse Holo', color: 'bg-blue-600' };
+        case '151': // Full Art
+            return { letter: 'F', label: 'Full Art', color: 'bg-pink-600' };
+        case '155': // PokéBall Pattern
+            return { letter: 'P', label: 'PokéBall', color: 'bg-red-600' };
+        case '156': // MasterBall Pattern
+            return { letter: 'M', label: 'MasterBall', color: 'bg-purple-800' };
+        case '157': // Gold
+            return { letter: 'G', label: 'Gold', color: 'bg-yellow-500' };
+        case '158': // Rainbow
+            return { letter: '🌈', label: 'Rainbow', color: 'bg-gradient-to-r from-red-500 via-yellow-500 to-blue-500' };
+        case '184': // Normal - no badge needed
         default:
-            return '';
+            return null;
     }
   }, [formData['65']]);
 
@@ -268,6 +279,11 @@ export default function ScanView({ session, preview, loading, analyzing, status,
       mapAttributes();
     }
   }, [result, shoperCategories]);
+
+  // Reset manual price edit flag when finish changes (user wants auto-pricing)
+  useEffect(() => {
+    setManualPriceEdit(false);
+  }, [formData['65']]);
 
   useEffect(() => {
     // Don't auto-update price if user manually edited it
@@ -567,7 +583,11 @@ return (
                           {selectedPrimaryImage.url ? (
                               <>
                                   <img src={selectedPrimaryImage.url} alt="Grafika do sklepu" className="w-full h-full object-contain"/>
-                                  <div className={`absolute inset-0 pointer-events-none ${overlayClass}`}></div>
+                                  {finishBadge && (
+                                    <div className={`absolute top-2 right-2 ${finishBadge.color} text-white font-bold rounded-full w-8 h-8 flex items-center justify-center text-sm shadow-lg border-2 border-white`}>
+                                      {finishBadge.letter}
+                                    </div>
+                                  )}
                               </>
                           ) : (
                               <span className="text-gray-500 text-sm">Wybierz lub wgraj obraz</span>
