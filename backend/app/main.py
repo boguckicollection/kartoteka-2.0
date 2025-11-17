@@ -2158,8 +2158,15 @@ async def publish_single_scan(
                 with open(path, "wb") as buffer:
                     shutil.copyfileobj(primary_image_file.file, buffer)
                 primary_image_path_or_url = path
-        elif primary_image_source in ['tcggo', 'scan']:
+        elif primary_image_source == 'tcggo':
             primary_image_path_or_url = form.get("primary_image_url")
+        elif primary_image_source == 'scan':
+            # Use the stored scan path from database instead of blob URL
+            if scan.stored_path and Path(scan.stored_path).is_file():
+                primary_image_path_or_url = scan.stored_path
+                print(f"DEBUG: Using scan.stored_path for primary image: {scan.stored_path}")
+            else:
+                print(f"WARNING: Scan stored_path not found or invalid: {scan.stored_path}")
 
         # Process additional images
         for key in form.keys():

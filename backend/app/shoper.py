@@ -1240,7 +1240,7 @@ async def build_shoper_payload(client: ShoperClient, scan: Scan, candidate: Opti
         "<li><strong>100% oryginalne karty</strong> - gwarancja autentyczności</li>",
         "<li><strong>Bezpieczna wysyłka</strong> - profesjonalne opakowanie chroniące kartę</li>",
         "<li><strong>Weryfikowany stan</strong> - szczegółowe zdjęcia i opis</li>",
-        "<li><strong>Szybka realizacja</strong> - wysyłka w 24h</li>",
+        "<li><strong>Szybka realizacja</strong> - wysyłka w ciągu 3 dni roboczych</li>",
         "<li><strong>Profesjonalna obsługa</strong> - pomoc w doborze kart</li>",
         "</ul>",
         f"<p style=\"margin:1.5em 0 0 0;\">Szukasz konkretnej karty Pokémon? Karta <strong>{nm}</strong> z zestawu <strong>{st}</strong> "
@@ -1390,6 +1390,11 @@ async def publish_scan_to_shoper(
     print(f"DEBUG: primary_image={primary_image}")
     print(f"DEBUG: candidate.image={getattr(candidate, 'image', None)}")
     print(f"DEBUG: scan.stored_path={getattr(scan, 'stored_path', None)}")
+
+    # Reject blob URLs - they're frontend-only and can't be used on backend
+    if image_to_upload and isinstance(image_to_upload, str) and image_to_upload.startswith('blob:'):
+        print(f"WARNING: Ignoring blob URL (frontend-only): {image_to_upload}")
+        image_to_upload = None
 
     # If no primary_image provided, use candidate.image (TCGGO URL)
     if not image_to_upload and candidate.image:

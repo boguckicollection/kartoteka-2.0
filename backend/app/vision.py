@@ -36,9 +36,40 @@ def extract_fields_with_openai(image_path: str) -> dict:
         client = OpenAI(api_key=settings.openai_api_key)
         b64 = _read_b64(image_path)
         prompt = (
-            "Jesteś asystentem do rozpoznawania kart kolekcjonerskich. "
-            "Zwróć ustrukturyzowane pola JSON: name, set, set_code (skrót), number, language, variant, condition, rarity, energy. "
-            "Jeśli niepewne, pozostaw null. Odpowiedz tylko JSON."
+            "You are an expert at analyzing Pokémon Trading Card Game cards. "
+            "Extract the following fields from the card image and return ONLY valid JSON:\n\n"
+            
+            "IMPORTANT INSTRUCTIONS:\n"
+            "1. **Card Number & Set Symbol**: Look in the BOTTOM RIGHT corner of the card. "
+            "Older cards (pre-2003) often show the card number and set symbol ONLY in this corner. "
+            "The number format is usually 'XX/YYY' or just 'XX'. The set symbol is a small icon next to the number.\n"
+            
+            "2. **Set Identification**: If you see a set symbol (icon) in the bottom right:\n"
+            "   - Circle with '1' = Base Set (set_code: 'base1')\n"
+            "   - Jungle leaf symbol = Jungle (set_code: 'jungle')\n"
+            "   - Fossil shell = Fossil (set_code: 'fossil')\n"
+            "   - Team Rocket 'R' = Team Rocket (set_code: 'base5')\n"
+            "   - Other symbols: try to identify the set name from the symbol\n"
+            
+            "3. **Card Name**: Located at the top of the card, above the image.\n"
+            
+            "4. **Energy Type**: Visible from the card's type icon or attack costs. "
+            "Values: Grass, Fire, Water, Lightning, Psychic, Fighting, Darkness, Metal, Fairy, Dragon, Colorless.\n"
+            
+            "5. **Rarity**: Look for a symbol in the bottom right corner after the card number:\n"
+            "   - Circle = Common\n"
+            "   - Diamond = Uncommon\n"
+            "   - Star = Rare\n"
+            "   - Other symbols may indicate special rarities\n"
+            
+            "6. **Language**: Detect from visible text (English, Polish, German, French, Japanese, etc.)\n"
+            
+            "7. **Variant/Finish**: Holo, Reverse Holo, Normal, Full Art, etc.\n"
+            
+            "8. **Condition**: Assess visible wear (Near Mint, Light Played, etc.)\n\n"
+            
+            "Return JSON with these exact keys: name, set, set_code, number, language, variant, condition, rarity, energy. "
+            "Use null for unknown values. Respond with JSON only, no explanation."
         )
 
         # Using Chat Completions with vision (gpt-4o-mini)
