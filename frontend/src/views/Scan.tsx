@@ -693,12 +693,19 @@ return (
                             <img src={candidate.image || ''} alt={candidate.name} className="w-16 h-auto rounded-md shadow-md" />
                             <div className="text-sm flex-grow">
                               <p className="font-bold text-white text-base mb-1">
-                                {candidate.name}
+                                {candidate.name || 'Brak nazwy'}
                               </p>
-                              <p className="text-gray-400 text-xs">
-                                <span className="font-semibold text-gray-300">{candidate.set}</span>
-                                {candidate.number && <span className="ml-2 text-primary">#{candidate.number}</span>}
-                              </p>
+                              <div className="flex flex-wrap gap-2 text-xs">
+                                {candidate.set && (
+                                  <span className="font-semibold text-gray-300">{candidate.set}</span>
+                                )}
+                                {candidate.number && (
+                                  <span className="text-primary font-bold">#{candidate.number}</span>
+                                )}
+                                {!candidate.set && !candidate.number && (
+                                  <span className="text-gray-500 italic">Brak dodatkowych informacji</span>
+                                )}
+                              </div>
                             </div>
                           </div>
                         ))}
