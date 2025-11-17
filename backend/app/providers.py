@@ -149,6 +149,9 @@ class RapidAPITCGGOProvider(CardProvider):
                 parts1.append(f"EPISODE:{str(detected.set).strip()}")
             search_q1 = " ".join([p for p in parts1 if p]).strip()
             
+            print(f"DEBUG: TCGGO search query (attempt 1): '{search_q1}'")
+            print(f"DEBUG: Detected data - name: '{detected.name}', number: '{detected.number}', set: '{detected.set}'")
+            
             payload = None
             if search_q1:
                 r1 = await client.get(
@@ -158,6 +161,7 @@ class RapidAPITCGGOProvider(CardProvider):
                 )
                 r1.raise_for_status()
                 payload = r1.json()
+                print(f"DEBUG: TCGGO returned {len(payload) if isinstance(payload, list) else len(payload.get('data', []))} results")
 
             # Extract cards from payload
             if isinstance(payload, list):
@@ -170,6 +174,7 @@ class RapidAPITCGGOProvider(CardProvider):
             # 2. Second attempt: If first search yielded no results, try a broader search with just the name
             if not cards and detected.name:
                 search_q2 = str(detected.name).strip()
+                print(f"DEBUG: First search returned no results, trying broader search: '{search_q2}'")
                 r2 = await client.get(
                     f"{self.base_url}{self.search_search_path}",
                     params={"search": search_q2, "sort": settings.tcggo_sort},
@@ -177,6 +182,7 @@ class RapidAPITCGGOProvider(CardProvider):
                 )
                 r2.raise_for_status()
                 payload = r2.json()
+                print(f"DEBUG: TCGGO broader search returned {len(payload) if isinstance(payload, list) else len(payload.get('data', []))} results")
                 # Re-extract cards
                 if isinstance(payload, list):
                     cards = payload

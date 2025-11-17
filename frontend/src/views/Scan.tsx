@@ -194,7 +194,13 @@ export default function ScanView({ session, preview, loading, analyzing, status,
         try {
           const res = await fetch(`/api/scans/${result.duplicate_of}`);
           const originalScan = await res.json();
-          const mergedResult = { ...originalScan, duplicate_of: result.duplicate_of, duplicate_distance: result.duplicate_distance };
+          // Preserve scan_id from current scan result for publishing
+          const mergedResult = { 
+            ...originalScan, 
+            scan_id: result.scan_id, // Keep NEW scan's ID for publishing
+            duplicate_of: result.duplicate_of, 
+            duplicate_distance: result.duplicate_distance 
+          };
           
           if (mergedResult.detected) {
             const newFormData: any = { ...mergedResult.detected };
