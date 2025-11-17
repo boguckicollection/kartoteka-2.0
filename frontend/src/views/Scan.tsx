@@ -57,6 +57,7 @@ export default function ScanView({ session, preview, loading, analyzing, status,
   const [selectedPrimaryImage, setSelectedPrimaryImage] = useState<{source: 'tcggo' | 'scan' | 'upload', url: string | null, file?: File | null}>({source: 'tcggo', url: null});
   const [additionalImages, setAdditionalImages] = useState<File[]>([]);
   const [candidatesPanelOpen, setCandidatesPanelOpen] = useState(false);
+  const [manualPriceEdit, setManualPriceEdit] = useState(false);
 
   const handleCandidateSelect = async (candidate: Candidate) => {
     // 1. Immediately update UI for responsiveness
@@ -78,8 +79,16 @@ export default function ScanView({ session, preview, loading, analyzing, status,
       }
       const enrichedData = await res.json();
 
-      // 3. Update form data with the complete new details
-      const newFormData = { ...enrichedData };
+      // 3. Merge new data with existing form data (preserve user edits)
+      const newFormData = { 
+        ...formData, // Keep existing values
+        ...enrichedData, // Override with new data from API
+        // Ensure critical fields are preserved even if API returns null/undefined
+        name: enrichedData.name || formData.name || candidate.name,
+        number: enrichedData.number || formData.number || candidate.number,
+        set: enrichedData.set || formData.set || candidate.set,
+        set_code: enrichedData.set_code || formData.set_code,
+      };
 
       // Re-apply defaults for language and condition if not present
       if (!newFormData['64']) { // Język (Language)
@@ -90,11 +99,23 @@ export default function ScanView({ session, preview, loading, analyzing, status,
       }
 
       setFormData(newFormData);
+      setManualPriceEdit(false); // Reset flag when selecting new candidate
       
       // Update the primary image to the newly selected candidate's image
       if (enrichedData.image) {
         setSelectedPrimaryImage({ source: 'tcggo', url: enrichedData.image });
       }
+
+      // Update scanResult.detected to keep it in sync (preserve variants!)
+      setScanResult((prev: any) => ({
+        ...prev,
+        detected: {
+          ...prev.detected,
+          ...newFormData,
+          // Preserve variants if they exist in enrichedData or previous state
+          variants: enrichedData.variants || prev.detected?.variants || []
+        }
+      }));
 
     } catch (e) {
       console.error("Failed to fetch details for selected candidate", e);
@@ -149,10 +170,12 @@ export default function ScanView({ session, preview, loading, analyzing, status,
     if (!result) {
       setScanResult(null);
       setFormData({});
+      setManualPriceEdit(false);
       return;
     }
 
     setScanResult(result);
+    setManualPriceEdit(false); // Reset flag on new scan
 
     if (result.duplicate_of) {
       setToast({ message: `Wykryto duplikat skanu #${result.duplicate_of}.`, type: 'success' });
@@ -247,6 +270,9 @@ export default function ScanView({ session, preview, loading, analyzing, status,
   }, [result, shoperCategories]);
 
   useEffect(() => {
+    // Don't auto-update price if user manually edited it
+    if (manualPriceEdit) return;
+
     const finishAttrId = '65';
     const selectedFinishId = formData[finishAttrId];
     // If there are no variants to check against, do nothing.
@@ -283,7 +309,7 @@ export default function ScanView({ session, preview, loading, analyzing, status,
     if (newPrice !== null && newPrice !== formData.price_pln_final) {
       setFormData(prev => ({ ...prev, price_pln_final: newPrice }));
     }
-  }, [formData['65'], scanResult, formData.price_pln_final]);
+  }, [formData['65'], scanResult, formData.price_pln_final, manualPriceEdit]);
 
   useEffect(() => {
     // Set the primary image, preferring TCGGO's and falling back to the user's scan
@@ -329,8 +355,19 @@ export default function ScanView({ session, preview, loading, analyzing, status,
         body: JSON.stringify({ name: formData.name, number: formData.number, set: formData.set })
       });
       const data = await res.json();
-      const normalVariant = data.variants?.find(v => v.label === 'Normal');
+      
+      // Update variants in scanResult for automatic price switching
+      setScanResult((prev: any) => ({
+        ...prev,
+        detected: {
+          ...prev.detected,
+          variants: data.variants || []
+        }
+      }));
+
+      const normalVariant = data.variants?.find((v: any) => v.label === 'Normal');
       if (normalVariant) {
+        setManualPriceEdit(false); // Reset flag so automatic switching works
         setFormData(prev => ({...prev, price_pln_final: normalVariant.price_pln_final}));
       }
     } catch (e) {
@@ -347,6 +384,7 @@ export default function ScanView({ session, preview, loading, analyzing, status,
         body: JSON.stringify({ eur: manualPrice })
       });
       const data = await res.json();
+      setManualPriceEdit(false); // Reset flag so automatic switching works
       setFormData(prev => ({...prev, price_pln_final: data.price_pln_final}));
     } catch (e) {
       console.error("Failed to calculate price", e);
@@ -719,7 +757,16 @@ return (
                   <div className="grid grid-cols-2 gap-2 items-end">
                     <div>
                       <label className="text-xs text-gray-400">Cena (PLN)</label>
-                      <input type="number" step="0.01" value={formData.price_pln_final || ''} onChange={(e) => setFormData({...formData, price_pln_final: parseFloat(e.target.value)})} className="w-full p-2 rounded bg-gray-700 text-white" />
+                      <input 
+                        type="number" 
+                        step="0.01" 
+                        value={formData.price_pln_final || ''} 
+                        onChange={(e) => {
+                          setManualPriceEdit(true);
+                          setFormData({...formData, price_pln_final: parseFloat(e.target.value)});
+                        }} 
+                        className="w-full p-2 rounded bg-gray-700 text-white" 
+                      />
                     </div>
                     <button onClick={handleFetchPrice} className="w-full h-10 rounded-lg bg-primary text-white text-sm font-bold">Pobierz z CM</button>
                   </div>
