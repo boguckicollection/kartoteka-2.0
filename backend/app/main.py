@@ -24,7 +24,7 @@ from .pricing import extract_prices_from_payload, compute_price_pln, list_varian
 from .db import init_db, SessionLocal, Scan, ScanCandidate, Product, Fingerprint
 from sqlalchemy import func
 from .db import Session as ScanSession
-from .shoper import ShoperClient, upsert_products, publish_scan_to_shoper, build_shoper_payload, _category_name_from_id, get_shoper_categories
+from .shoper import ShoperClient, upsert_products, publish_scan_to_shoper, build_shoper_payload, _category_name_from_id, get_shoper_categories, _get_related_products_from_category
 from rapidfuzz import fuzz
 from .attributes import map_detected_to_shoper_attributes, simplify_attributes, simplify_categories
 from .db import PushSubscription
@@ -2208,8 +2208,7 @@ async def publish_single_scan(
         client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
         related_product_ids = []
         if set_id:
-            from .shoper import _get_related_products_from_category
-            related_product_ids = _get_related_products_from_category(set_id, limit=10)
+            related_product_ids = await _get_related_products_from_category(client, set_id, limit=10)
         
         # 6. Publish to Shoper with images and related products
         print(f"INFO: Publishing scan {scan_id} to Shoper...")
