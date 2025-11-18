@@ -2199,14 +2199,19 @@ async def publish_single_scan(
                 set_id = None
         if not set_id:
             set_name = payload.detected.get('set') if payload.detected else None
+            print(f"DEBUG: set_id not found in payload. Attempting to match by set_name: '{set_name}'")
             if set_name:
                 match = await _find_best_category_match_internal(set_name)
                 if match and match.get('id'):
                     set_id = match.get('id')
+                    print(f"DEBUG: Matched set_name '{set_name}' to category_id (set_id): {set_id}")
+                else:
+                    print(f"DEBUG: No category match found for set_name: '{set_name}'")
 
         # 5. Fetch related products from same category (set)
         client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
         related_product_ids = []
+        print(f"DEBUG: Final set_id before fetching related products: {set_id}")
         if set_id:
             related_product_ids = await _get_related_products_from_category(client, set_id, limit=10)
         

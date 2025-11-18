@@ -778,12 +778,26 @@ return (
                     </div>
                     <div>
                       <label className="text-xs text-gray-400">Zestaw</label>
-                      <input
-                        type="text"
+                      <select
                         className="w-full p-2 rounded bg-gray-700 text-white"
-                        value={formData.set || ''}
-                        onChange={(e) => setFormData({...formData, set: e.target.value, set_id: undefined })}
-                      />
+                        value={formData.set_id || ''}
+                        onChange={(e) => {
+                          const selectedCategoryId = e.target.value;
+                          const selectedCategory = shoperCategories?.find(c => String(c.category_id) === selectedCategoryId);
+                          setFormData({
+                            ...formData,
+                            set_id: selectedCategoryId,
+                            set: selectedCategory ? selectedCategory.name : ''
+                          });
+                        }}
+                      >
+                        <option value="">-- Wybierz zestaw --</option>
+                        {shoperCategories?.sort((a, b) => a.name.localeCompare(b.name)).map((cat: any) => (
+                          <option key={cat.category_id} value={cat.category_id}>
+                            {cat.name}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   </div>
 
