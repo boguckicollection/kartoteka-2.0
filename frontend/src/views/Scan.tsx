@@ -189,7 +189,7 @@ export default function ScanView({ session, preview, loading, analyzing, status,
     setManualPriceEdit(false); // Reset flag on new scan
 
     if (result.duplicate_of) {
-      setToast({ message: `Wykryto duplikat skanu #${result.duplicate_of}.`, type: 'success' });
+      setToast({ message: `Wykryto duplikat. Możesz opublikować, aby zaktualizować stan magazynowy.`, type: 'success' });
       const fetchOriginalScan = async () => {
         try {
           const res = await fetch(`/api/scans/${result.duplicate_of}`);
@@ -284,7 +284,7 @@ export default function ScanView({ session, preview, loading, analyzing, status,
 
       mapAttributes();
     }
-  }, [result, shoperCategories]);
+  }, [result]);
 
   // Reset manual price edit flag when finish changes (user wants auto-pricing)
   useEffect(() => {
