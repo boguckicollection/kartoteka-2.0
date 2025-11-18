@@ -1299,23 +1299,55 @@ async def build_shoper_payload(client: ShoperClient, scan: Scan, candidate: Opti
     return payload
 
 
-def _get_related_products_from_category(category_id: int, limit: int = 10) -> list[int]:
-    """Fetch product IDs from the same category using the local database."""
+    async def validate_product_ids(self, product_ids: list[int]) -> list[int]:
+        """Given a list of product IDs, return a sub-list of those that exist in Shoper."""
+        if not product_ids:
+            return []
+        
+        url = f"{self.base_url}{settings.shoper_products_path}"
+        filters = {"product_id": {"in": product_ids}}
+        params = {"filters": json.dumps(filters), "limit": str(len(product_ids))}
+        headers = {"Authorization": f"Bearer {self.token}"}
+        
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(url, params=params, headers=headers)
+                r.raise_for_status()
+                data = r.json()
+                items = data.get("items") or data.get("list") or []
+                existing_ids = {int(item["product_id"]) for item in items if "product_id" in item}
+                return [pid for pid in product_ids if pid in existing_ids]
+        except Exception as e:
+            print(f"WARNING: Failed to validate product IDs: {e}")
+            return product_ids
+
+async def _get_related_products_from_category(client: ShoperClient, category_id: int, limit: int = 10) -> list[int]:
+    """Fetch product IDs from the same category using local DB and validate with Shoper API."""
     db = SessionLocal()
     try:
-        print(f"DEBUG: Fetching related products from category {category_id} using local DB...")
+        print(f"DEBUG: Fetching related product candidates from category {category_id} using local DB...")
         products = (
             db.query(Product.shoper_id)
             .filter(Product.category_id == category_id)
             .order_by(desc(Product.shoper_id))
-            .limit(limit)
+            .limit(limit * 2)  # Fetch more to have a buffer for validation
             .all()
         )
-        product_ids = [p.shoper_id for p in products if p.shoper_id is not None]
-        print(f"INFO: Found {len(product_ids)} products in category {category_id} for related products from local DB")
-        return product_ids
+        candidate_ids = [p.shoper_id for p in products if p.shoper_id is not None]
+
+        if not candidate_ids:
+            print(f"INFO: No related product candidates found in local DB for category {category_id}")
+            return []
+
+        print(f"DEBUG: Validating existence of {len(candidate_ids)} product IDs with Shoper API...")
+        existing_ids = await client.validate_product_ids(candidate_ids)
+        
+        final_ids = existing_ids[:limit]
+        print(f"INFO: Found {len(final_ids)} valid related products in category {category_id}")
+        return final_ids
+
     except Exception as e:
-        print(f"ERROR: Failed to get related products from local DB: {e}")
+        print(f"ERROR: Failed to get related products: {e}")
         return []
     finally:
         db.close()
