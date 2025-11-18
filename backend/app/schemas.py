@@ -16,6 +16,9 @@ class DetectedData(BaseModel):
     price_pln_final: Optional[float] = None
     variants: Optional[list] = None
 
+    class Config:
+        extra = "allow"
+
 
 class Candidate(BaseModel):
     id: str
