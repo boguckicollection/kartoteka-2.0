@@ -1481,6 +1481,9 @@ async def confirm_candidate(payload: ConfirmRequest):
 
         # Update scan with form data if provided
         if payload.detected:
+            # Store the whole detected payload as JSON for complete data restoration
+            scan.detected_payload = json.dumps(payload.detected)
+
             scan.detected_name = payload.detected.get('name')
             scan.detected_number = payload.detected.get('number')
             scan.detected_set = payload.detected.get('set')
@@ -2057,6 +2060,16 @@ def scan_detail(scan_id: int):
             rarity=s.detected_rarity,
             energy=s.detected_energy,
         )
+
+        # If full payload is stored from a confirmation, use it to enrich the detected data
+        if getattr(s, 'detected_payload', None):
+            try:
+                payload_data = json.loads(s.detected_payload)
+                detected_dict = detected.dict()
+                detected_dict.update(payload_data)
+                detected = DetectedData(**detected_dict)
+            except Exception:
+                pass # Fallback to individually stored fields
 
         return ScanDetailResponse(
             id=s.id,

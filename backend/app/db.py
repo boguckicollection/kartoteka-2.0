@@ -55,6 +55,7 @@ class Scan(Base):
     detected_condition = Column(String(64), nullable=True)
     detected_rarity = Column(String(64), nullable=True)
     detected_energy = Column(String(64), nullable=True)
+    detected_payload = Column(Text, nullable=True)
 
     # Product publishing preferences
     use_tcggo_image = Column(Boolean, default=True, nullable=True)  # True = TCGGO, False = local scan
@@ -217,6 +218,8 @@ def init_db():
                     alters.append("ALTER TABLE scans ADD COLUMN detected_rarity VARCHAR(64)")
                 if "detected_energy" not in have:
                     alters.append("ALTER TABLE scans ADD COLUMN detected_energy VARCHAR(64)")
+                if "detected_payload" not in have:
+                    alters.append("ALTER TABLE scans ADD COLUMN detected_payload TEXT")
                 if "stored_path_back" not in have:
                     alters.append("ALTER TABLE scans ADD COLUMN stored_path_back TEXT")
                 if "use_tcggo_image" not in have:

@@ -210,20 +210,7 @@ export default function ScanView({ session, preview, loading, analyzing, status,
               newFormData.price_pln_final = mergedResult.pricing.price_pln_final;
             }
 
-            // 2. Restore Attributes by mapping
-            try {
-              const attrRes = await fetch('/api/shoper/map_attributes', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(mergedResult.detected),
-              });
-              const attrMapping = await attrRes.json();
-              if (attrMapping.attributes) {
-                Object.assign(newFormData, attrMapping.attributes);
-              }
-            } catch (e) {
-              console.error("Failed to map attributes for duplicate", e);
-            }
+            // Attributes are now included in the detected payload, so no need to map them again.
             
             // Set default values for Language and Condition if not mapped
             if (!newFormData['64']) { // Język (Language)
