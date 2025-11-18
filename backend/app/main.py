@@ -1196,12 +1196,40 @@ async def scan_image(file: UploadFile = File(...), session_id: int | None = None
                     rarity=orig.detected_rarity,
                     energy=orig.detected_energy,
                 )
+                
+                # Also copy candidates from original scan to the new scan
+                orig_candidates_db = db.query(ScanCandidate).filter(ScanCandidate.scan_id == orig.id).all()
+                response_candidates = []
+                for c_orig in orig_candidates_db:
+                    new_cand = ScanCandidate(
+                        scan_id=scan.id,
+                        provider_id=c_orig.provider_id,
+                        name=c_orig.name,
+                        set=c_orig.set,
+                        set_code=c_orig.set_code,
+                        number=c_orig.number,
+                        rarity=c_orig.rarity,
+                        image=c_orig.image,
+                        score=c_orig.score,
+                        chosen=c_orig.chosen,
+                    )
+                    db.add(new_cand)
+                    response_candidates.append(Candidate(
+                        id=new_cand.provider_id,
+                        name=new_cand.name,
+                        set=new_cand.set,
+                        set_code=new_cand.set_code,
+                        number=new_cand.number,
+                        image=new_cand.image,
+                        score=new_cand.score,
+                    ))
+
                 scan.message = f"duplicate_of:{duplicate_hit_id} distance:{duplicate_distance}"
                 db.commit()
                 return ScanResponse(
                     scan_id=scan.id,
                     detected=detected,
-                    candidates=[],
+                    candidates=response_candidates,
                     message=scan.message,
                     stored_path=scan.stored_path,
                     image_url=image_url,
