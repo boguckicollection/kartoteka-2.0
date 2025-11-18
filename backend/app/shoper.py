@@ -633,6 +633,28 @@ class ShoperClient:
             page += 1
         return results
 
+    async def validate_product_ids(self, product_ids: list[int]) -> list[int]:
+        """Given a list of product IDs, return a sub-list of those that exist in Shoper."""
+        if not product_ids:
+            return []
+        
+        url = f"{self.base_url}{settings.shoper_products_path}"
+        filters = {"product_id": {"in": product_ids}}
+        params = {"filters": json.dumps(filters), "limit": str(len(product_ids))}
+        headers = {"Authorization": f"Bearer {self.token}"}
+        
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(url, params=params, headers=headers)
+                r.raise_for_status()
+                data = r.json()
+                items = data.get("items") or data.get("list") or []
+                existing_ids = {int(item["product_id"]) for item in items if "product_id" in item}
+                return [pid for pid in product_ids if pid in existing_ids]
+        except Exception as e:
+            print(f"WARNING: Failed to validate product IDs: {e}")
+            return product_ids
+
 
 def _parse_float(v: Any) -> Optional[float]:
     try:
@@ -1298,28 +1320,6 @@ async def build_shoper_payload(client: ShoperClient, scan: Scan, candidate: Opti
 
     return payload
 
-
-    async def validate_product_ids(self, product_ids: list[int]) -> list[int]:
-        """Given a list of product IDs, return a sub-list of those that exist in Shoper."""
-        if not product_ids:
-            return []
-        
-        url = f"{self.base_url}{settings.shoper_products_path}"
-        filters = {"product_id": {"in": product_ids}}
-        params = {"filters": json.dumps(filters), "limit": str(len(product_ids))}
-        headers = {"Authorization": f"Bearer {self.token}"}
-        
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                r = await client.get(url, params=params, headers=headers)
-                r.raise_for_status()
-                data = r.json()
-                items = data.get("items") or data.get("list") or []
-                existing_ids = {int(item["product_id"]) for item in items if "product_id" in item}
-                return [pid for pid in product_ids if pid in existing_ids]
-        except Exception as e:
-            print(f"WARNING: Failed to validate product IDs: {e}")
-            return product_ids
 
 async def _get_related_products_from_category(client: ShoperClient, category_id: int, limit: int = 10) -> list[int]:
     """Fetch product IDs from the same category using local DB and validate with Shoper API."""
