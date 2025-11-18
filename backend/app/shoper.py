@@ -4,11 +4,15 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 import json
 import httpx
+from sqlalchemy import desc
 
 from .settings import settings
 from pathlib import Path
 import unicodedata
-from .db import SessionLocal, Product, Scan, ScanCandidate, PriceHistory # Added PriceHistory
+from sqlalchemy import desc
+
+from .db import Product, SessionLocal, Scan, ScanCandidate
+from .settings import settings
 
 
 _shoper_categories_cache: List[Dict[str, Any]] | None = None
@@ -1295,47 +1299,26 @@ async def build_shoper_payload(client: ShoperClient, scan: Scan, candidate: Opti
     return payload
 
 
-async def _get_related_products_from_category(client: ShoperClient, category_id: int, limit: int = 10) -> list[int]:
-    """Fetch product IDs from the same category to use as related products.
-    
-    Returns a list of valid product IDs, excluding any that don't exist.
-    Limits to a reasonable number to avoid overloading the related products field.
-    """
+def _get_related_products_from_category(category_id: int, limit: int = 10) -> list[int]:
+    """Fetch product IDs from the same category using the local database."""
+    db = SessionLocal()
     try:
-        print(f"DEBUG: Fetching related products from category {category_id}...")
-        headers = {"Authorization": f"Bearer {client.token}", "Accept": "application/json"}
-        url = f"{client.base_url}{settings.shoper_products_path}"
-        params = {
-            "filters": f'{{"category_id": {category_id}}}',
-            "limit": str(limit),
-            "order": "product_id DESC"  # Get newest products first
-        }
-        
-        async with httpx.AsyncClient(timeout=30) as http:
-            r = await http.get(url, params=params, headers=headers)
-            if r.status_code != 200:
-                print(f"WARNING: Failed to fetch products from category {category_id}: {r.status_code}")
-                return []
-            
-            result = r.json()
-            items = result.get("items") or result.get("list") or []
-            
-            # Extract product IDs
-            product_ids = []
-            for item in items:
-                pid = item.get("product_id") or item.get("id")
-                if pid:
-                    try:
-                        product_ids.append(int(pid))
-                    except (ValueError, TypeError):
-                        continue
-            
-            print(f"INFO: Found {len(product_ids)} products in category {category_id} for related products")
-            return product_ids
-            
+        print(f"DEBUG: Fetching related products from category {category_id} using local DB...")
+        products = (
+            db.query(Product.shoper_id)
+            .filter(Product.category_id == category_id)
+            .order_by(desc(Product.shoper_id))
+            .limit(limit)
+            .all()
+        )
+        product_ids = [p.shoper_id for p in products if p.shoper_id is not None]
+        print(f"INFO: Found {len(product_ids)} products in category {category_id} for related products from local DB")
+        return product_ids
     except Exception as e:
-        print(f"ERROR: Failed to get related products from category: {e}")
+        print(f"ERROR: Failed to get related products from local DB: {e}")
         return []
+    finally:
+        db.close()
 
 
 async def _find_and_update_product_by_code(client: ShoperClient, code: str, payload: Dict[str, Any]) -> Dict[str, Any]:

@@ -2209,7 +2209,7 @@ async def publish_single_scan(
         related_product_ids = []
         if set_id:
             from .shoper import _get_related_products_from_category
-            related_product_ids = await _get_related_products_from_category(client, set_id, limit=10)
+            related_product_ids = _get_related_products_from_category(set_id, limit=10)
         
         # 6. Publish to Shoper with images and related products
         print(f"INFO: Publishing scan {scan_id} to Shoper...")
