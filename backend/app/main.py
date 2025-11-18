@@ -2204,8 +2204,14 @@ async def publish_single_scan(
                 if match and match.get('id'):
                     set_id = match.get('id')
 
-        # 5. Publish to Shoper with images
+        # 5. Fetch related products from same category (set)
         client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+        related_product_ids = []
+        if set_id:
+            from .shoper import _get_related_products_from_category
+            related_product_ids = await _get_related_products_from_category(client, set_id, limit=10)
+        
+        # 6. Publish to Shoper with images and related products
         print(f"INFO: Publishing scan {scan_id} to Shoper...")
         result = await publish_scan_to_shoper(
             client,
@@ -2213,7 +2219,8 @@ async def publish_single_scan(
             cand,
             set_id=set_id,
             primary_image=primary_image_path_or_url,
-            additional_images=additional_image_paths
+            additional_images=additional_image_paths,
+            related_ids=related_product_ids if related_product_ids else None
         )
 
         print(f"INFO: Shoper publish result: {json.dumps(result, indent=2, default=str)}")

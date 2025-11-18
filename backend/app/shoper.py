@@ -1049,7 +1049,7 @@ async def build_product_attributes_payload(client: ShoperClient, scan: Scan, can
     return attributes_payload
 
 
-async def build_shoper_payload(client: ShoperClient, scan: Scan, candidate: Optional[ScanCandidate], set_id: int | None = None, gfx_id: str | None = None) -> Dict[str, Any]:
+async def build_shoper_payload(client: ShoperClient, scan: Scan, candidate: Optional[ScanCandidate], set_id: int | None = None, gfx_id: str | None = None, related_ids: list[int] | None = None) -> Dict[str, Any]:
     """Build Shoper product payload for given scan + chosen candidate.
     
     NOTE: Attributes SHOULD NOT be included in the POST payload during product creation.
@@ -1162,7 +1162,7 @@ async def build_shoper_payload(client: ShoperClient, scan: Scan, candidate: Opti
 
     # Translations pl_PL
     nm = (candidate.name if candidate else None) or scan.detected_name or 'Karta'
-    num = (candidate.number if candidate else None) or (scan.detected_number or '')
+    num = number_for_code
     st = (candidate.set if candidate else None) or (scan.detected_set or '')
     name = nm.strip() # Use only the card name as requested
 
@@ -1289,7 +1289,53 @@ async def build_shoper_payload(client: ShoperClient, scan: Scan, candidate: Opti
     if gfx_id:
         payload["stock"]["gfx_id"] = int(gfx_id)
 
+    if related_ids:
+        payload["related"] = related_ids
+
     return payload
+
+
+async def _get_related_products_from_category(client: ShoperClient, category_id: int, limit: int = 10) -> list[int]:
+    """Fetch product IDs from the same category to use as related products.
+    
+    Returns a list of valid product IDs, excluding any that don't exist.
+    Limits to a reasonable number to avoid overloading the related products field.
+    """
+    try:
+        print(f"DEBUG: Fetching related products from category {category_id}...")
+        headers = {"Authorization": f"Bearer {client.token}", "Accept": "application/json"}
+        url = f"{client.base_url}{settings.shoper_products_path}"
+        params = {
+            "filters": f'{{"category_id": {category_id}}}',
+            "limit": str(limit),
+            "order": "product_id DESC"  # Get newest products first
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as http:
+            r = await http.get(url, params=params, headers=headers)
+            if r.status_code != 200:
+                print(f"WARNING: Failed to fetch products from category {category_id}: {r.status_code}")
+                return []
+            
+            result = r.json()
+            items = result.get("items") or result.get("list") or []
+            
+            # Extract product IDs
+            product_ids = []
+            for item in items:
+                pid = item.get("product_id") or item.get("id")
+                if pid:
+                    try:
+                        product_ids.append(int(pid))
+                    except (ValueError, TypeError):
+                        continue
+            
+            print(f"INFO: Found {len(product_ids)} products in category {category_id} for related products")
+            return product_ids
+            
+    except Exception as e:
+        print(f"ERROR: Failed to get related products from category: {e}")
+        return []
 
 
 async def _find_and_update_product_by_code(client: ShoperClient, code: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1372,7 +1418,8 @@ async def publish_scan_to_shoper(
     candidate: ScanCandidate,
     set_id: int | None = None,
     primary_image: str | Path | None = None,
-    additional_images: list[str | Path] | None = None
+    additional_images: list[str | Path] | None = None,
+    related_ids: list[int] | None = None
 ) -> Dict[str, Any]:
     """
     Builds payload, creates a product in Shoper, and uploads primary and additional images.
@@ -1437,7 +1484,7 @@ async def publish_scan_to_shoper(
         print(f"INFO: Attributes payload prepared for separate PUT request: {attributes_payload}")
 
     # Build the main product payload WITHOUT attributes.
-    payload = await build_shoper_payload(client, scan, candidate, set_id=set_id, gfx_id=None)
+    payload = await build_shoper_payload(client, scan, candidate, set_id=set_id, gfx_id=None, related_ids=related_ids)
 
     # Log the complete payload (truncate for readability)
     import json
@@ -1465,6 +1512,18 @@ async def publish_scan_to_shoper(
         
         # Use json= parameter which handles serialization AND sets Content-Type automatically
         r = await http.post(url, json=payload, headers=headers)
+
+        # NEW: Handle invalid 'related' ID error and retry
+        if r.status_code == 400:
+            try:
+                error_data = r.json()
+                error_desc = error_data.get("error_description", "").lower()
+                if "related" in error_desc and ("nie znaleziono" in error_desc or "not found" in error_desc):
+                    print(f"WARNING: Invalid 'related' ID detected. Retrying without related products. Error: {error_desc}")
+                    payload.pop("related", None) # Remove the problematic field
+                    r = await http.post(url, json=payload, headers=headers) # Retry the request
+            except Exception as e:
+                print(f"DEBUG: Could not handle potential 'related' field error: {e}")
         
         # Handle "code already exists" error - update existing product instead
         if r.status_code == 400:
