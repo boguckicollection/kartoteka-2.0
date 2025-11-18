@@ -35,14 +35,105 @@ git revert <commit-id>
 git status
 ```
 
-**Important Notes:**
-- Token is securely stored in git config (not committed)
-- All commits are visible in GitHub repository
-- This enables proper version control, change tracking, and collaboration
+---
+
+## Recent Changes (2025-11-18)
+
+**FIXES: Improved handling of related products in Shoper API**
+
+1.  ✅ **Fixed `AttributeError` for `validate_product_ids`** (`backend/app/shoper.py`):
+    *   **Problem**: The `validate_product_ids` function was incorrectly defined outside the `ShoperClient` class, even though it was called as its method, leading to an `AttributeError`.
+    *   **Solution**: Moved the definition of `validate_product_ids` into the `ShoperClient` class, making it a proper method.
+    *   **Result**: Correct validation of related products before their publication.
+
+2.  ✅ **Fixed issue with related products not appearing in Shoper** (`backend/app/shoper.py`):
+    *   **Problem**: Related products, sent in the `related` field during product creation (`POST` method), were not being saved by the Shoper API and did not appear on the store page.
+    *   **Solution**: 
+        1.  Updated the `ShoperClient.get_product` method to also fetch data about related products (`"related"`) in the `with` parameter, enabling diagnosis.
+        2.  Modified the `ShoperClient.update_product` method to accept and process the `related` field in the payload.
+        3.  In the `publish_scan_to_shoper` function, added an explicit call to `ShoperClient.update_product` with the `related` field after successful product creation. This forces the saving of associations in a separate `PUT` request.
+    *   **Result**: Related products are now correctly saved and visible in the Shoper store.
 
 ---
 
-## Recent Changes (2025-11-14)
+## Recent Changes (2025-11-17)
+
+**IMPROVEMENT: Attribute handling and duplicate publication feedback**
+
+1.  ✅ **Default Attribute Handling for "Not Applicable" and "Normal"** (`attributes.py`, `ids_dump.json`):
+    *   **Problem**: When a scanned card lacked a specific "Energy" or "Card Type" (e.g., a Trainer card), or had a standard "Finish", these attributes were being skipped during product publication, leading to incomplete product data in Shoper.
+    *   **Solution**:
+        1.  The backend logic in `map_detected_to_shoper_attributes` was updated to automatically select a default option if no specific value is detected.
+        2.  It now defaults to **"Nie dotyczy"** (Not Applicable) for "Energia" (Energy) and "Typ karty" (Card Type).
+        3.  It now defaults to **"Normal"** for "Wykończenie" (Finish).
+    *   **Implementation**: The correct `option_id`s for these new defaults (`182`, `183`, `184`) were fetched from the Shoper API and saved in the local `ids_dump.json` cache.
+    *   **Result**: Products published from the application will now always have these critical attributes set, ensuring data consistency.
+
+2.  ✅ **Fixed Silent Failure on Duplicate Publication** (`frontend/src/views/Scan.tsx`):
+    *   **Problem**: When publishing a scan that was detected as a duplicate of an existing product, the UI would show no confirmation or error, making it seem like the action failed.
+    *   **Root Cause**: The frontend was only prepared to handle the API response for a *new* product creation and did not correctly interpret the response for a stock update on an *existing* product.
+    *   **Solution**: The success handler in the frontend was modified to correctly parse both types of responses.
+    *   **Result**: The UI now displays a clear success message, such as "Updated existing product - stock increased to X", when a duplicate is published.
+
+---
+
+## Recent Changes (2025-11-17)
+
+**FINAL FIX: Attributes must be in POST /products payload AND filtered by category**
+
+1. ✅ **Attributes included DIRECTLY in POST /products during creation** (`shoper.py:1183-1190, 1335-1342`):
+   - **Problem**: Attributes sent via separate PUT `/products/{id}/attributes` or PUT `/products/{id}` after creation were ignored
+   - **Root Cause**: Shoper API only accepts attributes DURING product creation in POST payload, not via separate update
+   - **Solution**: Added attributes directly to `build_shoper_payload()` and removed separate `set_product_attributes()` call
+   - **Format** (verified from actual Shoper product 1081):
+     ```json
+     {
+       "category_id": 70,
+       "translations": {...},
+       "stock": {...},
+       "attributes": {
+         "11": {"38": "Common", "65": "Reverse Holo"},
+         "14": {"64": "Angielski"},
+         "15": {"66": "Near Mint"}
+       }
+     }
+     ```
+   - **IMPORTANT**: Values are OPTION TEXT (e.g., "Near Mint"), NOT option IDs (not "176")!
+   - **Result**: Attributes are now set correctly when product is created
+
+2. ✅ **Reverted to option TEXT values** (`attributes.py:97-120, 208-220`):
+   - **Discovery**: Actual Shoper products store attributes with TEXT values, not numeric IDs
+   - **Example from product 1081**: `{"11": {"38": "Double Rare"}}` (text, not ID)
+   - **Solution**: Reverted `_best_option_id()` to return option text value instead of option_id
+   - **Result**: Attributes match Shoper's expected format
+
+3. ✅ **Added attribute_group_id fallback** (`shoper.py:959-979, 1023-1040`):
+   - **Problem**: Shoper API doesn't always return `attribute_group_id` in `/attributes` response
+   - **Solution**: Added `_get_attribute_group_from_fallback()` to load group IDs from `ids_dump.json`
+   - **Fallback mapping**:
+     - Rzadkość (38) → Group 11
+     - Typ karty (39) → Group 12
+     - Energia (63) → Group 13
+     - Język (64) → Group 14
+     - Wykończenie (65) → Group 11
+     - Jakość (66) → Group 15
+
+4. ⚠️ **Removed POST-creation attribute update** (`shoper.py:1411-1423`):
+   - Removed `set_product_attributes()` call after product creation
+   - Endpoint `/products/{id}/attributes` does NOT work (returns errors or creates duplicate products)
+   - Endpoint `PUT /products/{id}` with attributes field does NOT work (attributes ignored)
+   - **Only working method**: Include attributes in POST `/products` payload during creation
+
+5. ✅ **Filter attributes by category assignment** (`shoper.py:959-989, 1213-1235`):
+   - **Problem**: Shoper API rejects attributes from groups not assigned to product's category
+   - **Error**: `"Attribute '14' does not exist"` or `"Attribute '15' does not exist"`
+   - **Root Cause**: Category 70 (White Flare) has groups `[11, 12, 13, 14]` but NOT group 15
+   - **Solution**: Added `_get_category_attribute_groups()` to load allowed groups from `ids_dump.json`
+   - **Filtering**: Only include attributes from groups assigned to the product's category
+   - **Example**: Category 70 allows groups 11-14, so group 15 (Jakość) is filtered out
+   - **Result**: No more "Attribute 'X' does not exist" errors
+
+**Previous attribute fixes (2025-11-14):**
 
 **ATTRIBUTE FIX: Attributes POST/PUT endpoint now works correctly**
 
@@ -50,7 +141,7 @@ git status
    - **Problem**: Shoper API was returning `400: "Wartość pola 'name' jest niepoprawna: Pole wymagane"` when trying to add attributes
    - **Root Cause**: Payload sent to attribute endpoints was missing `name` field in `translations` object
    - **Solution**: Added `"name": "Product"` placeholder to `translations` in `set_product_attributes()` method
-   - **Format now**: `{ "translations": { "pl_PL": { "name": "Product", "active": true } }, "category_id": ..., "stock": ..., "11": { "66": "Near Mint" } }`
+   - **Format now**: `{ "translations": { "pl_PL": { "name": "Product", "active": true } }, "category_id": ..., "stock": ..., "11": { "66": "176" } }`
    - **Result**: Attributes now successfully added to products via PUT/POST after creation
 
 2. ✅ **Payload field ordering optimized** (`shoper.py:383-405`):

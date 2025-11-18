@@ -91,6 +91,44 @@ W projekcie `kartoteka-2.0` komponenty frontendowe, takie jak `ScanView`, są cz
 - `GET /shoper/attributes`, `GET /shoper/categories` — taksonomia Shoper
 - `POST /sessions/start`, `GET /sessions/{id}/summary`, `POST /sessions/{id}/publish` — sesje i publikacja
 
+## Ostatnie Zmiany (2025-11-18)
+
+**POPRAWKI: Ulepszona obsługa produktów powiązanych w Shoper API**
+
+1.  ✅ **Naprawiono błąd `AttributeError` dla `validate_product_ids`** (`backend/app/shoper.py`):
+    *   **Problem**: Funkcja `validate_product_ids` była niepoprawnie zdefiniowana poza klasą `ShoperClient`, mimo że była wywoływana jako jej metoda, co prowadziło do błędu `AttributeError`.
+    *   **Rozwiązanie**: Przeniesiono definicję `validate_product_ids` do klasy `ShoperClient`, czyniąc ją poprawną metodą.
+    *   **Wynik**: Poprawne działanie walidacji produktów powiązanych przed ich publikacją.
+
+2.  ✅ **Naprawiono problem z niewidocznymi produktami powiązanymi w Shoperze** (`backend/app/shoper.py`):
+    *   **Problem**: Produkty powiązane, wysyłane w polu `related` podczas tworzenia produktu (metodą `POST`), nie były zapisywane przez Shoper API i nie pojawiały się na stronie sklepu.
+    *   **Rozwiązanie**:
+        1.  Zaktualizowano metodę `ShoperClient.get_product`, aby pobierała również dane o produktach powiązanych (`"related"`) w parametrze `with`, co umożliwiło diagnostykę.
+        2.  Zmodyfikowano metodę `ShoperClient.update_product`, aby akceptowała i przetwarzała pole `related` w payloadzie.
+        3.  W funkcji `publish_scan_to_shoper` dodano jawne wywołanie `ShoperClient.update_product` z polem `related` po pomyślnym utworzeniu produktu. To wymusza zapisanie powiązań w oddzielnym żądaniu `PUT`.
+    *   **Wynik**: Produkty powiązane są teraz poprawnie zapisywane i widoczne w sklepie Shoper.
+
+## Ostatnie Zmiany (2025-11-17)
+
+**POPRAWKI: Ulepszona obsługa atrybutów i publikacji duplikatów**
+
+1.  ✅ **Domyślna obsługa atrybutów "Nie dotyczy" i "Normal"** (`attributes.py`, `ids_dump.json`):
+    *   **Problem**: Gdy skanowana karta nie miała określonego typu, energii (np. karta Trenera) lub miała standardowe wykończenie, te atrybuty były pomijane podczas publikacji produktu, co prowadziło do niekompletnych danych w Shoper.
+    *   **Rozwiązanie**:
+        1.  Zaktualizowano logikę backendu (`map_detected_to_shoper_attributes`), aby automatycznie wybierała opcję domyślną, jeśli nie zostanie wykryta żadna konkretna wartość.
+        2.  System domyślnie wybiera teraz **"Nie dotyczy"** dla atrybutów "Energia" i "Typ karty".
+        3.  System domyślnie wybiera teraz **"Normal"** dla atrybutu "Wykończenie".
+    *   **Implementacja**: Prawidłowe `option_id` dla tych opcji (`182`, `183`, `184`) zostały pobrane z API Shoper i zapisane w lokalnej pamięci podręcznej `ids_dump.json`.
+    *   **Wynik**: Produkty publikowane z aplikacji będą teraz zawsze miały ustawione te kluczowe atrybuty, co zapewnia spójność danych.
+
+2.  ✅ **Naprawiono cichą awarię przy publikacji duplikatu** (`frontend/src/views/Scan.tsx`):
+    *   **Problem**: Podczas publikowania skanu, który został wykryty jako duplikat istniejącego produktu, interfejs użytkownika nie wyświetlał żadnego potwierdzenia ani błędu, sprawiając wrażenie, że akcja nie powiodła się.
+    *   **Przyczyna**: Frontend był przygotowany tylko na obsługę odpowiedzi API dla tworzenia *nowego* produktu i nie interpretował poprawnie odpowiedzi oznaczającej aktualizację stanu magazynowego *istniejącego* produktu.
+    *   **Rozwiązanie**: Poprawiono obsługę odpowiedzi w komponencie frontendu, aby prawidłowo rozpoznawał oba typy odpowiedzi.
+    *   **Wynik**: Interfejs użytkownika wyświetla teraz jasny komunikat o sukcesie, np. "Zaktualizowano istniejący produkt - stan magazynowy zwiększony do X", gdy publikowany jest duplikat.
+
+---
+
 ## Ostatnie Zmiany (2025-11-14)
 
 **NAPRAWA ATRYBUTÓW: Endpoint do dodawania atrybutów produktów działa prawidłowo**
