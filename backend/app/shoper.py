@@ -604,7 +604,7 @@ class ShoperClient:
             # The 'with' parameter is a common pattern in Shoper to embed related
             # resources like translations, images, attributes, and stock information
             # in a single API call, which is more efficient than making multiple requests.
-            params = {"with": "translations,images,attributes,stock"}
+            params = {"with": "translations,images,attributes,stock,related"}
             data = await self._get_json(url, params=params)
             if isinstance(data, dict):
                 return data
@@ -1573,6 +1573,16 @@ async def publish_scan_to_shoper(
                     pass
 
             print(f"INFO: Extracted product_id={product_id} from response type={type(response_json).__name__}")
+
+            # DEBUG: Verify related products
+            if product_id:
+                print(f"DEBUG: Verifying related products for created product {product_id}...")
+                created_product_data = await client.get_product(product_id)
+                if created_product_data:
+                    related_products_from_get = created_product_data.get("related")
+                    print(f"DEBUG: Product {product_id} verification - related products from GET: {related_products_from_get}")
+                else:
+                    print(f"WARNING: Could not fetch product {product_id} for verification.")
 
             # STEP 2: Set attributes in a separate PUT request if product was created
             if product_id and attributes_payload:
