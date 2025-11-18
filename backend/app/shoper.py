@@ -355,6 +355,10 @@ class ShoperClient:
         if "code" in updates:
             payload["code"] = updates["code"]
 
+        if "related" in updates:
+            payload["related"] = updates["related"]
+
+
         # NOTE: Attributes are handled via separate PUT request with proper format
         # Remove attributes from this update to avoid format conflicts
         # They must be sent in a separate call using set_product_attributes()
@@ -1613,6 +1617,15 @@ async def publish_scan_to_shoper(
                     else:
                         # Log the error but don't fail the whole process
                         print(f"WARNING: Failed to set attributes for product {product_id}. Reason: {attr_result.get('message', 'Unknown error')}")
+
+            # Set related products in a separate PUT request
+            if product_id and related_ids:
+                print(f"INFO: Setting related products for product {product_id}...")
+                update_result = await client.update_product(product_id, {"related": related_ids})
+                if update_result.get("ok"):
+                    print(f"SUCCESS: Related products set for product {product_id}.")
+                else:
+                    print(f"WARNING: Failed to set related products for product {product_id}. Reason: {update_result.get('text', 'Unknown error')}")
 
             # Upload main image AFTER product creation (via product-images endpoint)
             if product_id and image_to_upload:
