@@ -1368,7 +1368,7 @@ async def _find_and_update_product_by_code(client: ShoperClient, code: str, payl
         print(f"DEBUG: Searching for product with code '{code}'...")
         headers = {"Authorization": f"Bearer {client.token}", "Accept": "application/json"}
         url = f"{client.base_url}{settings.shoper_products_path}"
-        params = {"filters": f'{{"code": "{code}"}}'}
+        params = {"code": code}
         
         async with httpx.AsyncClient(timeout=30) as http:
             r = await http.get(url, params=params, headers=headers)
