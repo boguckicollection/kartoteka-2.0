@@ -9,6 +9,27 @@ def _read_b64(path: str) -> str:
         return base64.b64encode(f.read()).decode('ascii')
 
 
+def _normalize_card_number(number_str: str | None) -> str | None:
+    """Extract just the card number, removing total count after slash.
+    
+    Examples:
+        '016/165' -> '016'
+        '51/100' -> '51'
+        '5' -> '5'
+        'SV05' -> 'SV05'
+    """
+    if not number_str:
+        return None
+    
+    num = str(number_str).strip()
+    
+    # If contains slash, take only the part before it
+    if '/' in num:
+        num = num.split('/')[0].strip()
+    
+    return num if num else None
+
+
 def extract_fields_with_openai(image_path: str) -> dict:
     """Call OpenAI Vision to extract fields from the card image.
     Returns a dict with keys: name, set, set_code, number, language, variant, condition, rarity, energy.
@@ -120,7 +141,7 @@ def extract_fields_with_openai(image_path: str) -> dict:
             'name': _scalar(data.get('name')),
             'set': _scalar(data.get('set')),
             'set_code': _scalar(data.get('set_code')),
-            'number': _scalar(data.get('number')),
+            'number': _normalize_card_number(_scalar(data.get('number'))),
             'language': _scalar(data.get('language')),
             'variant': _scalar(data.get('variant')),
             'condition': _scalar(data.get('condition')),

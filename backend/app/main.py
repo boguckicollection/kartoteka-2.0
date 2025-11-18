@@ -1505,6 +1505,19 @@ async def confirm_candidate(payload: ConfirmRequest):
         scan.price_pln_final = computed.get("price_pln_final")
         scan.graded_psa10 = extracted.get("graded_psa10")
         scan.graded_currency = extracted.get("graded_currency")
+
+        # ALWAYS prefer price from frontend if provided (user may have manually edited)
+        if payload.detected and 'price_pln_final' in payload.detected:
+             try:
+                 price_from_frontend = payload.detected['price_pln_final']
+                 if price_from_frontend is not None and price_from_frontend != '':
+                     price_override = float(price_from_frontend)
+                     if price_override > 0:  # Only override if positive
+                         scan.price_pln_final = price_override
+                         print(f"DEBUG: Using price from frontend: {price_override} PLN")
+             except (ValueError, TypeError) as e:
+                 print(f"WARNING: Invalid price_pln_final from frontend: {payload.detected.get('price_pln_final')} - {e}")
+                 pass # keep calculated price
         db.commit()
 
         pricing_payload = {
@@ -2108,8 +2121,6 @@ def session_summary(session_id: int):
 
 
 from fastapi import Form, Request
-
-# ... (other imports)
 
 @app.post("/scans/{scan_id}/publish")
 async def publish_single_scan(
