@@ -1,25 +1,63 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 
+// Helper for finish mapping (same as Scan.tsx)
+const FINISH_MAP: Record<string, string> = {
+  '184': 'normal',  // Normal
+  '149': 'holo',    // Holo
+  '150': 'reverse', // Reverse Holo
+  '151': 'holo',    // Full Art (treat as holo pricing)
+  '155': 'normal',  // PokéBall Pattern
+  '156': 'holo',    // MasterBall Pattern
+  '157': 'holo',    // Gold (premium)
+  '158': 'holo',    // Rainbow (premium)
+};
+
 type BatchItem = {
   id: number;
   filename: string;
   status: 'pending' | 'processing' | 'success' | 'failed';
   image_url?: string;
+  
+  // Detected
   detected_name?: string;
   detected_set?: string;
   detected_number?: string;
+  
+  // Matched
   matched_name?: string;
   matched_set?: string;
   matched_number?: string;
   matched_image?: string;
   match_score?: number;
+  matched_provider_id?: string;
+  
+  // Pricing
   price_eur?: number;
   price_pln?: number;
+  price_pln_final?: number;
+  variants?: any[]; // Pricing variants
+  
+  // Attributes (option IDs)
+  attr_language?: string;
+  attr_condition?: string;
+  attr_finish?: string;
+  attr_rarity?: string;
+  attr_energy?: string;
+  attr_card_type?: string;
+  
+  // Duplicates
+  duplicate_of_scan_id?: number;
+  duplicate_distance?: number;
+  
+  // Warehouse
+  warehouse_code?: string;
+  
+  // Meta
   fields_complete?: number;
   fields_total?: number;
   error_message?: string;
   publish_status?: string;
-  warehouse_code?: string;
+  candidates?: any[];
 };
 
 type BatchStatus = {
@@ -43,13 +81,38 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
   const [status, setStatus] = useState<BatchStatus | null>(null);
   const [items, setItems] = useState<BatchItem[]>([]);
   const [selectedItem, setSelectedItem] = useState<BatchItem | null>(null);
+  
+  // Global data
+  const [shoperAttributes, setShoperAttributes] = useState<any[]>([]);
+  const [shoperCategories, setShoperCategories] = useState<any[]>([]);
+  
   const [isUploading, setIsUploading] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
+
+  // Load attributes on mount
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const [attrRes, catRes] = await Promise.all([
+          fetch(`${apiBase}/shoper/attributes`),
+          fetch(`${apiBase}/shoper/categories`)
+        ]);
+        const attrs = await attrRes.json();
+        const cats = await catRes.json();
+        setShoperAttributes(attrs.items || []);
+        setShoperCategories(cats.items || []);
+      } catch (e) {
+        console.error("Failed to load shoper data", e);
+      }
+    };
+    loadData();
+  }, [apiBase]);
 
   useEffect(() => {
     if (toast) {
@@ -57,6 +120,53 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
       return () => clearTimeout(t);
     }
   }, [toast]);
+
+  // Handle attribute change with price logic
+  const handleItemAttributeChange = (item: BatchItem, attrId: string, value: string) => {
+    const updates: Partial<BatchItem> = {};
+    
+    // Map generic attrId to specific field
+    if (attrId === '64') updates.attr_language = value;
+    if (attrId === '66') updates.attr_condition = value;
+    if (attrId === '65') updates.attr_finish = value;
+    if (attrId === '38') updates.attr_rarity = value;
+    if (attrId === '63') updates.attr_energy = value;
+    if (attrId === '39') updates.attr_card_type = value;
+    
+    // Price logic for Finish (65)
+    if (attrId === '65' && item.variants) {
+      const finishType = FINISH_MAP[value] || 'normal';
+      let targetLabel = 'Normal';
+      if (finishType === 'holo') targetLabel = 'Holo';
+      if (finishType === 'reverse') targetLabel = 'Reverse Holo';
+      
+      const variant = item.variants.find((v: any) => v.label === targetLabel);
+      // Fallback to Normal if specific variant not found
+      const normalVariant = item.variants.find((v: any) => v.label === 'Normal');
+      
+      const bestVariant = variant || normalVariant;
+      
+      if (bestVariant && bestVariant.price_pln_final) {
+        updates.price_pln_final = bestVariant.price_pln_final;
+      }
+    }
+    
+    return updates;
+  };
+
+  // Handle candidate selection
+  const handleCandidateSelect = (item: BatchItem, candidate: any) => {
+    return {
+      matched_name: candidate.name,
+      matched_set: candidate.set,
+      matched_number: candidate.number,
+      matched_image: candidate.image,
+      matched_provider_id: candidate.id,
+      match_score: candidate.score,
+      // Reset pricing as it might not match the new candidate (until re-analyzed)
+      // But we keep old price as fallback if user doesn't change it
+    };
+  };
 
   // Handle file upload
   const handleUpload = async (files: FileList | File[]) => {
@@ -88,7 +198,7 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
           failed_items: 0,
           progress_percent: 0,
         });
-        // Set initial items with filename as temporary key
+        // Initial items with temporary ID
         setItems(data.items.map((it: any, idx: number) => ({
           id: idx,
           filename: it.filename,
@@ -259,7 +369,6 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
   }, []);
 
   const successItems = items.filter(it => it.status === 'success');
-  const failedItems = items.filter(it => it.status === 'failed');
   const readyToPublish = successItems.filter(it => !it.publish_status);
 
   return (
@@ -459,11 +568,17 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
                       <span className="text-xs text-cyan-400">#{item.matched_number}</span>
                     )}
                   </div>
-                  {item.price_eur && (
-                    <p className="text-xs text-green-400 mt-1">{item.price_eur.toFixed(2)} EUR</p>
+                  {item.price_pln_final && (
+                    <p className="text-xs text-green-400 mt-1">{item.price_pln_final.toFixed(2)} PLN</p>
                   )}
                   {item.error_message && (
                     <p className="text-xs text-red-400 mt-1 truncate">{item.error_message}</p>
+                  )}
+                  {item.duplicate_of_scan_id && (
+                    <div className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-500/20 text-amber-400 rounded text-[10px] mt-1">
+                      <span className="material-symbols-outlined text-[12px]">content_copy</span>
+                      Duplikat
+                    </div>
                   )}
                 </div>
 
@@ -522,8 +637,8 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
       {selectedItem && (
         <div className="fixed inset-0 z-50 flex justify-end">
           <div className="absolute inset-0 bg-black/50" onClick={() => setSelectedItem(null)} />
-          <div className="relative w-full max-w-md bg-[#0f172a] border-l border-gray-700 overflow-y-auto">
-            <div className="sticky top-0 bg-[#0f172a] border-b border-gray-700 p-4 flex items-center justify-between">
+          <div className="relative w-full max-w-md bg-[#0f172a] border-l border-gray-700 overflow-y-auto shadow-2xl">
+            <div className="sticky top-0 bg-[#0f172a] border-b border-gray-700 p-4 flex items-center justify-between z-10">
               <h3 className="text-lg font-semibold">Edytuj karte</h3>
               <button
                 onClick={() => setSelectedItem(null)}
@@ -533,9 +648,9 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
               </button>
             </div>
 
-            <div className="p-4 space-y-4">
+            <div className="p-4 space-y-6">
               {/* Image Preview */}
-              <div className="aspect-[3/4] bg-gray-800 rounded-lg overflow-hidden">
+              <div className="aspect-[3/4] bg-gray-800 rounded-lg overflow-hidden relative group">
                 {selectedItem.matched_image ? (
                   <img
                     src={selectedItem.matched_image}
@@ -553,9 +668,14 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
                     <span className="material-symbols-outlined text-6xl text-gray-600">image</span>
                   </div>
                 )}
+                {selectedItem.duplicate_of_scan_id && (
+                  <div className="absolute top-2 right-2 px-3 py-1 bg-amber-500 text-black font-bold rounded-lg shadow-lg text-sm">
+                    DUPLIKAT
+                  </div>
+                )}
               </div>
 
-              {/* Status */}
+              {/* Status Info */}
               <div className={`px-3 py-2 rounded-lg text-sm font-medium text-center
                 ${selectedItem.status === 'success' ? 'bg-green-500/20 text-green-400' : ''}
                 ${selectedItem.status === 'failed' ? 'bg-red-500/20 text-red-400' : ''}
@@ -568,10 +688,11 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
                 {selectedItem.status === 'processing' && 'Analizowanie...'}
               </div>
 
-              {/* Editable Fields */}
+              {/* Basic Info */}
               <div className="space-y-3">
+                <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-1">Dane podstawowe</h4>
                 <div>
-                  <label className="text-xs text-gray-400 uppercase tracking-wider">Nazwa karty</label>
+                  <label className="text-xs text-gray-400">Nazwa karty</label>
                   <input
                     type="text"
                     value={selectedItem.matched_name || selectedItem.detected_name || ''}
@@ -581,7 +702,7 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
                 </div>
 
                 <div>
-                  <label className="text-xs text-gray-400 uppercase tracking-wider">Set</label>
+                  <label className="text-xs text-gray-400">Set</label>
                   <input
                     type="text"
                     value={selectedItem.matched_set || selectedItem.detected_set || ''}
@@ -592,7 +713,7 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-xs text-gray-400 uppercase tracking-wider">Numer</label>
+                    <label className="text-xs text-gray-400">Numer</label>
                     <input
                       type="text"
                       value={selectedItem.matched_number || selectedItem.detected_number || ''}
@@ -601,31 +722,110 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-gray-400 uppercase tracking-wider">Cena EUR</label>
+                    <label className="text-xs text-gray-400">Kod magazynowy</label>
                     <input
-                      type="number"
-                      step="0.01"
-                      value={selectedItem.price_eur || ''}
-                      onChange={(e) => setSelectedItem({ ...selectedItem, price_eur: parseFloat(e.target.value) || undefined })}
+                      type="text"
+                      value={selectedItem.warehouse_code || ''}
+                      onChange={(e) => setSelectedItem({ ...selectedItem, warehouse_code: e.target.value })}
                       className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
                     />
                   </div>
                 </div>
+              </div>
 
-                <div>
-                  <label className="text-xs text-gray-400 uppercase tracking-wider">Kod magazynowy</label>
-                  <input
-                    type="text"
-                    value={selectedItem.warehouse_code || ''}
-                    onChange={(e) => setSelectedItem({ ...selectedItem, warehouse_code: e.target.value })}
-                    className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                  />
+              {/* Candidates */}
+              {selectedItem.candidates && selectedItem.candidates.length > 0 && (
+                <div className="space-y-3">
+                  <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-1">Inne dopasowania</h4>
+                  <div className="flex gap-2 overflow-x-auto pb-2">
+                    {selectedItem.candidates.map((cand) => (
+                      <div 
+                        key={cand.id}
+                        onClick={() => {
+                          const updates = handleCandidateSelect(selectedItem, cand);
+                          setSelectedItem({ ...selectedItem, ...updates });
+                        }}
+                        className={`flex-shrink-0 w-24 cursor-pointer border rounded-lg overflow-hidden transition-all hover:scale-105
+                          ${selectedItem.matched_provider_id === cand.id ? 'border-cyan-500 ring-2 ring-cyan-500/20' : 'border-gray-700 opacity-60 hover:opacity-100'}`}
+                      >
+                        <div className="aspect-[3/4] bg-gray-800">
+                          <img src={cand.image} alt={cand.name} className="w-full h-full object-cover" />
+                        </div>
+                        <div className="p-1 bg-[#0f172a] text-[10px]">
+                          <p className="truncate text-white">{cand.name}</p>
+                          <p className="text-gray-500">{cand.set}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Shoper Attributes */}
+              <div className="space-y-3">
+                <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-1">Atrybuty Shoper</h4>
+                
+                {shoperAttributes.map(attr => {
+                  // Map attribute to item field
+                  let val = '';
+                  if (attr.attribute_id === '64') val = selectedItem.attr_language || '142';
+                  if (attr.attribute_id === '66') val = selectedItem.attr_condition || '176';
+                  if (attr.attribute_id === '65') val = selectedItem.attr_finish || '184';
+                  if (attr.attribute_id === '38') val = selectedItem.attr_rarity || '';
+                  if (attr.attribute_id === '63') val = selectedItem.attr_energy || '';
+                  if (attr.attribute_id === '39') val = selectedItem.attr_card_type || '';
+
+                  return (
+                    <div key={attr.attribute_id}>
+                      <label className="text-xs text-gray-400">{attr.name}</label>
+                      <select
+                        value={val}
+                        onChange={(e) => {
+                          const updates = handleItemAttributeChange(selectedItem, attr.attribute_id, e.target.value);
+                          setSelectedItem({ ...selectedItem, ...updates });
+                        }}
+                        className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      >
+                        <option value="">- Wybierz -</option>
+                        {attr.options.map((opt: any) => (
+                          <option key={opt.option_id} value={opt.option_id}>{opt.value}</option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Pricing */}
+              <div className="space-y-3">
+                <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-1">Cena</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-gray-400">Cena PLN</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={selectedItem.price_pln_final || ''}
+                      onChange={(e) => setSelectedItem({ ...selectedItem, price_pln_final: parseFloat(e.target.value) || undefined })}
+                      className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-400">Bazowa EUR</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={selectedItem.price_eur || ''}
+                      readOnly
+                      className="w-full mt-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-gray-400 cursor-not-allowed"
+                    />
+                  </div>
                 </div>
               </div>
 
               {/* Match Score */}
               {selectedItem.match_score !== undefined && (
-                <div className="flex items-center gap-2 text-sm">
+                <div className="flex items-center gap-2 text-sm pt-2">
                   <span className="text-gray-400">Dopasowanie:</span>
                   <span className={`font-medium ${selectedItem.match_score > 0.7 ? 'text-green-400' : selectedItem.match_score > 0.4 ? 'text-yellow-400' : 'text-red-400'}`}>
                     {Math.round(selectedItem.match_score * 100)}%
@@ -640,12 +840,20 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
                     matched_name: selectedItem.matched_name,
                     matched_set: selectedItem.matched_set,
                     matched_number: selectedItem.matched_number,
-                    price_eur: selectedItem.price_eur,
+                    matched_image: selectedItem.matched_image,
+                    matched_provider_id: selectedItem.matched_provider_id,
+                    price_pln_final: selectedItem.price_pln_final,
                     warehouse_code: selectedItem.warehouse_code,
+                    attr_language: selectedItem.attr_language,
+                    attr_condition: selectedItem.attr_condition,
+                    attr_finish: selectedItem.attr_finish,
+                    attr_rarity: selectedItem.attr_rarity,
+                    attr_energy: selectedItem.attr_energy,
+                    attr_card_type: selectedItem.attr_card_type,
                   });
                   setSelectedItem(null);
                 }}
-                className="w-full py-3 bg-gradient-to-r from-cyan-600 to-blue-600 rounded-lg font-medium hover:from-cyan-500 hover:to-blue-500 transition-all"
+                className="w-full py-3 bg-gradient-to-r from-cyan-600 to-blue-600 rounded-lg font-medium hover:from-cyan-500 hover:to-blue-500 transition-all shadow-lg shadow-cyan-500/20"
               >
                 Zapisz zmiany
               </button>

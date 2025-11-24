@@ -4176,7 +4176,9 @@ async def batch_update_item(batch_id: int, item_id: int, request: Request):
             "detected_name", "detected_set", "detected_number",
             "detected_variant", "detected_condition", "detected_language",
             "matched_provider_id", "matched_name", "matched_set", "matched_number", "matched_image",
-            "price_eur", "price_pln", "warehouse_code"
+            "price_eur", "price_pln", "price_pln_final", "warehouse_code",
+            "attr_language", "attr_condition", "attr_finish", "attr_rarity", "attr_energy", "attr_card_type",
+            "matched_rarity", "detected_rarity", "detected_energy"
         ]
         
         for field in updatable:
@@ -4189,12 +4191,13 @@ async def batch_update_item(batch_id: int, item_id: int, request: Request):
             "set": bool(item.matched_set or item.detected_set),
             "number": bool(item.matched_number or item.detected_number),
             "image": bool(item.matched_image),
-            "price": bool(item.price_eur or item.price_pln),
-            "variant": bool(item.detected_variant),
-            "condition": bool(item.detected_condition),
+            "price": bool(item.price_pln_final or item.price_eur),
+            "rarity": bool(item.matched_rarity or item.detected_rarity),
+            "energy": bool(item.detected_energy),
         }
         item.fields_status = json_module.dumps(fields)
         item.fields_complete = sum(1 for v in fields.values() if v)
+        item.fields_total = len(fields)
         
         db.commit()
         db.refresh(item)
