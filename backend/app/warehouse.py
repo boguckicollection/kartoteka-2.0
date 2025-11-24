@@ -146,18 +146,27 @@ def parse_warehouse_code(code: str) -> dict | None:
 def get_used_indices(db: Session) -> set[int]:
     """Queries the database for all used warehouse codes and returns them as a set of indices."""
     used_indices = set()
-    scans_with_locations = db.query(models.Scan.warehouse_code).filter(models.Scan.warehouse_code.isnot(None)).all()
     
-    for (code,) in scans_with_locations:
-        if not code:
-            continue
-        # Handle multiple codes separated by semicolons
-        for single_code in code.split(';'):
-            if not single_code:
+    def _process_query(query):
+        for (code,) in query:
+            if not code:
                 continue
-            index = location_to_index(single_code)
-            if index is not None:
-                used_indices.add(index)
+            for single_code in code.split(';'):
+                if not single_code:
+                    continue
+                index = location_to_index(single_code)
+                if index is not None:
+                    used_indices.add(index)
+
+    # Check Scans
+    _process_query(db.query(models.Scan.warehouse_code).filter(models.Scan.warehouse_code.isnot(None)).all())
+    
+    # Check Inventory Items
+    _process_query(db.query(models.InventoryItem.warehouse_code).filter(models.InventoryItem.warehouse_code.isnot(None)).all())
+    
+    # Check Batch Scan Items
+    _process_query(db.query(models.BatchScanItem.warehouse_code).filter(models.BatchScanItem.warehouse_code.isnot(None)).all())
+    
     return used_indices
 
 def get_next_free_location(db: Session, starting_code: str | None = None) -> str:

@@ -163,8 +163,6 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
       matched_image: candidate.image,
       matched_provider_id: candidate.id,
       match_score: candidate.score,
-      // Reset pricing as it might not match the new candidate (until re-analyzed)
-      // But we keep old price as fallback if user doesn't change it
     };
   };
 
@@ -529,34 +527,46 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
               <div
                 key={`${item.filename}-${index}`}
                 onClick={() => setSelectedItem(item)}
-                className={`flex items-center gap-4 p-3 bg-[#0f172a] border rounded-xl cursor-pointer transition-all hover:bg-gray-800/50
+                className={`relative overflow-hidden flex items-center gap-4 p-3 bg-[#0f172a] border rounded-xl cursor-pointer transition-all hover:bg-gray-800/50
                   ${item.status === 'success' ? 'border-green-500/50' : ''}
                   ${item.status === 'failed' ? 'border-red-500/50' : ''}
-                  ${item.status === 'processing' ? 'border-cyan-500/50' : ''}
+                  ${item.status === 'processing' ? 'border-cyan-500/50 bg-gradient-to-r from-cyan-900/20 to-blue-900/20 animate-pulse' : ''}
                   ${item.status === 'pending' ? 'border-gray-700/50' : ''}
                   ${item.publish_status === 'published' ? 'ring-2 ring-green-400' : ''}`}
               >
-                {/* Thumbnail */}
-                <div className="w-16 h-20 flex-shrink-0 bg-gray-800 rounded-lg overflow-hidden flex items-center justify-center">
-                  {item.matched_image ? (
-                    <img
-                      src={item.matched_image}
-                      alt={item.matched_name || item.filename}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : item.image_url ? (
-                    <img
-                      src={`${apiBase}${item.image_url}`}
-                      alt={item.filename}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <span className="material-symbols-outlined text-2xl text-gray-600">image</span>
-                  )}
+                {/* Thumbnail Stack */}
+                <div className="flex gap-2">
+                  {/* Original Scan */}
+                  <div className="w-16 h-20 flex-shrink-0 bg-gray-800 rounded-lg overflow-hidden relative flex items-center justify-center">
+                    {item.image_url ? (
+                      <img
+                        src={`${apiBase}${item.image_url}`}
+                        alt="Scan"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <span className="material-symbols-outlined text-xl text-gray-600">image</span>
+                    )}
+                    <span className="absolute bottom-0 inset-x-0 bg-black/60 text-[8px] text-center py-0.5 font-bold text-gray-300">SKAN</span>
+                  </div>
+                  
+                  {/* Match */}
+                  <div className="w-16 h-20 flex-shrink-0 bg-gray-800 rounded-lg overflow-hidden relative flex items-center justify-center border-l border-gray-700/50 pl-2">
+                    {item.matched_image ? (
+                      <img
+                        src={item.matched_image}
+                        alt="Match"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <span className="material-symbols-outlined text-xl text-gray-600">search</span>
+                    )}
+                    <span className="absolute bottom-0 inset-x-0 bg-black/60 text-[8px] text-center py-0.5 font-bold text-cyan-400">BAZA</span>
+                  </div>
                 </div>
 
                 {/* Info */}
-                <div className="flex-grow min-w-0">
+                <div className="flex-grow min-w-0 z-10">
                   <p className="text-sm font-medium text-white truncate">
                     {item.matched_name || item.filename}
                   </p>
@@ -583,12 +593,12 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
                 </div>
 
                 {/* Progress / Status */}
-                <div className="flex-shrink-0 flex items-center gap-3">
+                <div className="flex-shrink-0 flex items-center gap-3 z-10">
                   {item.fields_complete !== undefined && (
-                    <div className="text-center">
+                    <div className="text-center hidden sm:block">
                       <div className="w-20 h-1.5 bg-gray-700 rounded-full overflow-hidden">
                         <div
-                          className="h-full bg-cyan-500"
+                          className={`h-full ${item.fields_complete === item.fields_total ? 'bg-green-500' : 'bg-cyan-500'}`}
                           style={{ width: `${(item.fields_complete / (item.fields_total || 7)) * 100}%` }}
                         />
                       </div>
@@ -637,7 +647,7 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
       {selectedItem && (
         <div className="fixed inset-0 z-50 flex justify-end">
           <div className="absolute inset-0 bg-black/50" onClick={() => setSelectedItem(null)} />
-          <div className="relative w-full max-w-md bg-[#0f172a] border-l border-gray-700 overflow-y-auto shadow-2xl">
+          <div className="relative w-full max-w-2xl bg-[#0f172a] border-l border-gray-700 overflow-y-auto shadow-2xl">
             <div className="sticky top-0 bg-[#0f172a] border-b border-gray-700 p-4 flex items-center justify-between z-10">
               <h3 className="text-lg font-semibold">Edytuj karte</h3>
               <button
@@ -649,30 +659,44 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
             </div>
 
             <div className="p-4 space-y-6">
-              {/* Image Preview */}
-              <div className="aspect-[3/4] bg-gray-800 rounded-lg overflow-hidden relative group">
-                {selectedItem.matched_image ? (
-                  <img
-                    src={selectedItem.matched_image}
-                    alt={selectedItem.matched_name || ''}
-                    className="w-full h-full object-contain"
-                  />
-                ) : selectedItem.image_url ? (
-                  <img
-                    src={`${apiBase}${selectedItem.image_url}`}
-                    alt={selectedItem.filename}
-                    className="w-full h-full object-contain"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <span className="material-symbols-outlined text-6xl text-gray-600">image</span>
+              {/* Image Comparison (Two Images) */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* Scan */}
+                <div className="space-y-1">
+                  <div className="aspect-[3/4] bg-gray-800 rounded-lg overflow-hidden relative group border border-gray-600">
+                    {selectedItem.image_url ? (
+                      <img
+                        src={`${apiBase}${selectedItem.image_url}`}
+                        alt="Scan"
+                        className="w-full h-full object-contain"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-gray-600">Brak skanu</div>
+                    )}
+                    <span className="absolute top-2 left-2 px-2 py-1 bg-black/70 rounded text-xs font-bold text-gray-300">TWOJE ZDJĘCIE</span>
                   </div>
-                )}
-                {selectedItem.duplicate_of_scan_id && (
-                  <div className="absolute top-2 right-2 px-3 py-1 bg-amber-500 text-black font-bold rounded-lg shadow-lg text-sm">
-                    DUPLIKAT
+                </div>
+
+                {/* Matched */}
+                <div className="space-y-1">
+                  <div className="aspect-[3/4] bg-gray-800 rounded-lg overflow-hidden relative group border border-cyan-500/50">
+                    {selectedItem.matched_image ? (
+                      <img
+                        src={selectedItem.matched_image}
+                        alt="Matched"
+                        className="w-full h-full object-contain"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-gray-600">Brak dopasowania</div>
+                    )}
+                    <span className="absolute top-2 right-2 px-2 py-1 bg-cyan-600/90 rounded text-xs font-bold text-white">BAZA DANYCH</span>
+                    {selectedItem.duplicate_of_scan_id && (
+                      <div className="absolute bottom-2 right-2 px-3 py-1 bg-amber-500 text-black font-bold rounded-lg shadow-lg text-sm">
+                        DUPLIKAT
+                      </div>
+                    )}
                   </div>
-                )}
+                </div>
               </div>
 
               {/* Status Info */}
@@ -688,56 +712,117 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
                 {selectedItem.status === 'processing' && 'Analizowanie...'}
               </div>
 
-              {/* Basic Info */}
-              <div className="space-y-3">
-                <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-1">Dane podstawowe</h4>
-                <div>
-                  <label className="text-xs text-gray-400">Nazwa karty</label>
-                  <input
-                    type="text"
-                    value={selectedItem.matched_name || selectedItem.detected_name || ''}
-                    onChange={(e) => setSelectedItem({ ...selectedItem, matched_name: e.target.value })}
-                    className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-xs text-gray-400">Set</label>
-                  <input
-                    type="text"
-                    value={selectedItem.matched_set || selectedItem.detected_set || ''}
-                    onChange={(e) => setSelectedItem({ ...selectedItem, matched_set: e.target.value })}
-                    className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
+              {/* Form Fields */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Left Column - Basic */}
+                <div className="space-y-3">
+                  <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-1">Dane podstawowe</h4>
                   <div>
-                    <label className="text-xs text-gray-400">Numer</label>
+                    <label className="text-xs text-gray-400">Nazwa karty</label>
                     <input
                       type="text"
-                      value={selectedItem.matched_number || selectedItem.detected_number || ''}
-                      onChange={(e) => setSelectedItem({ ...selectedItem, matched_number: e.target.value })}
+                      value={selectedItem.matched_name || selectedItem.detected_name || ''}
+                      onChange={(e) => setSelectedItem({ ...selectedItem, matched_name: e.target.value })}
                       className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
                     />
                   </div>
+
                   <div>
-                    <label className="text-xs text-gray-400">Kod magazynowy</label>
+                    <label className="text-xs text-gray-400">Set</label>
                     <input
                       type="text"
-                      value={selectedItem.warehouse_code || ''}
-                      onChange={(e) => setSelectedItem({ ...selectedItem, warehouse_code: e.target.value })}
+                      value={selectedItem.matched_set || selectedItem.detected_set || ''}
+                      onChange={(e) => setSelectedItem({ ...selectedItem, matched_set: e.target.value })}
                       className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
                     />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs text-gray-400">Numer</label>
+                      <input
+                        type="text"
+                        value={selectedItem.matched_number || selectedItem.detected_number || ''}
+                        onChange={(e) => setSelectedItem({ ...selectedItem, matched_number: e.target.value })}
+                        className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400">Kod magazynowy</label>
+                      <input
+                        type="text"
+                        value={selectedItem.warehouse_code || ''}
+                        onChange={(e) => setSelectedItem({ ...selectedItem, warehouse_code: e.target.value })}
+                        className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Column - Attributes & Price */}
+                <div className="space-y-3">
+                  <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-1">Atrybuty i Cena</h4>
+                  
+                  {shoperAttributes.map(attr => {
+                    // Map attribute to item field
+                    let val = '';
+                    if (attr.attribute_id === '64') val = selectedItem.attr_language || '142';
+                    if (attr.attribute_id === '66') val = selectedItem.attr_condition || '176';
+                    if (attr.attribute_id === '65') val = selectedItem.attr_finish || '184';
+                    if (attr.attribute_id === '38') val = selectedItem.attr_rarity || '';
+                    if (attr.attribute_id === '63') val = selectedItem.attr_energy || '';
+                    if (attr.attribute_id === '39') val = selectedItem.attr_card_type || '';
+
+                    return (
+                      <div key={attr.attribute_id}>
+                        <label className="text-xs text-gray-400">{attr.name}</label>
+                        <select
+                          value={val}
+                          onChange={(e) => {
+                            const updates = handleItemAttributeChange(selectedItem, attr.attribute_id, e.target.value);
+                            setSelectedItem({ ...selectedItem, ...updates });
+                          }}
+                          className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        >
+                          <option value="">- Wybierz -</option>
+                          {attr.options.map((opt: any) => (
+                            <option key={opt.option_id} value={opt.option_id}>{opt.value}</option>
+                          ))}
+                        </select>
+                      </div>
+                    );
+                  })}
+
+                  <div className="grid grid-cols-2 gap-3 pt-2">
+                    <div>
+                      <label className="text-xs text-gray-400">Cena PLN</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={selectedItem.price_pln_final || ''}
+                        onChange={(e) => setSelectedItem({ ...selectedItem, price_pln_final: parseFloat(e.target.value) || undefined })}
+                        className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400">Bazowa EUR</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={selectedItem.price_eur || ''}
+                        readOnly
+                        className="w-full mt-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-gray-400 cursor-not-allowed"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
 
               {/* Candidates */}
               {selectedItem.candidates && selectedItem.candidates.length > 0 && (
-                <div className="space-y-3">
-                  <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-1">Inne dopasowania</h4>
-                  <div className="flex gap-2 overflow-x-auto pb-2">
+                <div className="space-y-3 pt-4 border-t border-gray-700">
+                  <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider">Inne dopasowania (kliknij aby zmienić)</h4>
+                  <div className="flex gap-3 overflow-x-auto pb-4">
                     {selectedItem.candidates.map((cand) => (
                       <div 
                         key={cand.id}
@@ -745,15 +830,20 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
                           const updates = handleCandidateSelect(selectedItem, cand);
                           setSelectedItem({ ...selectedItem, ...updates });
                         }}
-                        className={`flex-shrink-0 w-24 cursor-pointer border rounded-lg overflow-hidden transition-all hover:scale-105
+                        className={`flex-shrink-0 w-28 cursor-pointer border rounded-lg overflow-hidden transition-all hover:scale-105
                           ${selectedItem.matched_provider_id === cand.id ? 'border-cyan-500 ring-2 ring-cyan-500/20' : 'border-gray-700 opacity-60 hover:opacity-100'}`}
                       >
-                        <div className="aspect-[3/4] bg-gray-800">
+                        <div className="aspect-[3/4] bg-gray-800 relative">
                           <img src={cand.image} alt={cand.name} className="w-full h-full object-cover" />
+                          {selectedItem.matched_provider_id === cand.id && (
+                            <div className="absolute inset-0 bg-cyan-500/20 flex items-center justify-center">
+                              <span className="material-symbols-outlined text-white text-3xl drop-shadow-lg">check_circle</span>
+                            </div>
+                          )}
                         </div>
-                        <div className="p-1 bg-[#0f172a] text-[10px]">
-                          <p className="truncate text-white">{cand.name}</p>
-                          <p className="text-gray-500">{cand.set}</p>
+                        <div className="p-2 bg-[#0f172a] text-[10px] border-t border-gray-700">
+                          <p className="truncate text-white font-bold">{cand.name}</p>
+                          <p className="text-gray-500 truncate">{cand.set} #{cand.number}</p>
                         </div>
                       </div>
                     ))}
@@ -761,73 +851,11 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
                 </div>
               )}
 
-              {/* Shoper Attributes */}
-              <div className="space-y-3">
-                <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-1">Atrybuty Shoper</h4>
-                
-                {shoperAttributes.map(attr => {
-                  // Map attribute to item field
-                  let val = '';
-                  if (attr.attribute_id === '64') val = selectedItem.attr_language || '142';
-                  if (attr.attribute_id === '66') val = selectedItem.attr_condition || '176';
-                  if (attr.attribute_id === '65') val = selectedItem.attr_finish || '184';
-                  if (attr.attribute_id === '38') val = selectedItem.attr_rarity || '';
-                  if (attr.attribute_id === '63') val = selectedItem.attr_energy || '';
-                  if (attr.attribute_id === '39') val = selectedItem.attr_card_type || '';
-
-                  return (
-                    <div key={attr.attribute_id}>
-                      <label className="text-xs text-gray-400">{attr.name}</label>
-                      <select
-                        value={val}
-                        onChange={(e) => {
-                          const updates = handleItemAttributeChange(selectedItem, attr.attribute_id, e.target.value);
-                          setSelectedItem({ ...selectedItem, ...updates });
-                        }}
-                        className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                      >
-                        <option value="">- Wybierz -</option>
-                        {attr.options.map((opt: any) => (
-                          <option key={opt.option_id} value={opt.option_id}>{opt.value}</option>
-                        ))}
-                      </select>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Pricing */}
-              <div className="space-y-3">
-                <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-1">Cena</h4>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs text-gray-400">Cena PLN</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={selectedItem.price_pln_final || ''}
-                      onChange={(e) => setSelectedItem({ ...selectedItem, price_pln_final: parseFloat(e.target.value) || undefined })}
-                      className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-400">Bazowa EUR</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={selectedItem.price_eur || ''}
-                      readOnly
-                      className="w-full mt-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-gray-400 cursor-not-allowed"
-                    />
-                  </div>
-                </div>
-              </div>
-
               {/* Match Score */}
               {selectedItem.match_score !== undefined && (
-                <div className="flex items-center gap-2 text-sm pt-2">
-                  <span className="text-gray-400">Dopasowanie:</span>
-                  <span className={`font-medium ${selectedItem.match_score > 0.7 ? 'text-green-400' : selectedItem.match_score > 0.4 ? 'text-yellow-400' : 'text-red-400'}`}>
+                <div className="flex items-center gap-2 text-sm pt-2 justify-center">
+                  <span className="text-gray-400">Dopasowanie automatyczne:</span>
+                  <span className={`font-bold ${selectedItem.match_score > 0.7 ? 'text-green-400' : selectedItem.match_score > 0.4 ? 'text-yellow-400' : 'text-red-400'}`}>
                     {Math.round(selectedItem.match_score * 100)}%
                   </span>
                 </div>
@@ -853,7 +881,7 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
                   });
                   setSelectedItem(null);
                 }}
-                className="w-full py-3 bg-gradient-to-r from-cyan-600 to-blue-600 rounded-lg font-medium hover:from-cyan-500 hover:to-blue-500 transition-all shadow-lg shadow-cyan-500/20"
+                className="w-full py-4 bg-gradient-to-r from-cyan-600 to-blue-600 rounded-lg font-bold hover:from-cyan-500 hover:to-blue-500 transition-all shadow-lg shadow-cyan-500/20 text-lg"
               >
                 Zapisz zmiany
               </button>

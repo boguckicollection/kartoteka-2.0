@@ -3910,7 +3910,22 @@ async def batch_analyze_next(batch_id: int):
                 next_item.matched_number = best_candidate.number
                 next_item.matched_rarity = best_candidate.rarity
                 next_item.matched_image = candidates_list[0].get("image") if candidates_list else best_candidate.image
-                next_item.match_score = best_candidate.score
+                
+                # Calculate robust match score with penalties
+                base_score = best_candidate.score
+                penalty = 0.0
+                
+                # Penalty for missing price (implies obscure card)
+                prices = best_candidate.cardmarket if hasattr(best_candidate, 'cardmarket') else {}
+                has_price = bool(prices)
+                if not has_price:
+                    penalty += 0.15
+                
+                # Penalty for missing rarity
+                if not next_item.matched_rarity and not next_item.detected_rarity:
+                    penalty += 0.10
+                    
+                next_item.match_score = max(0.0, base_score - penalty)
                 
                 # Update from details
                 if details:
@@ -3918,7 +3933,7 @@ async def batch_analyze_next(batch_id: int):
                     next_item.matched_set_code = details.get("episode", {}).get("code") or next_item.matched_set_code
                     next_item.matched_rarity = details.get("rarity") or next_item.matched_rarity
                     
-                    # Extract energy
+                    # Extract energy from types list
                     types = details.get('types')
                     if isinstance(types, list) and types:
                         next_item.detected_energy = types[0]
@@ -3963,6 +3978,7 @@ async def batch_analyze_next(batch_id: int):
                     "condition": next_item.detected_condition,
                     "energy": next_item.detected_energy,
                     "language": next_item.detected_language,
+                    "type": details.get("supertype") if details else None, # Add Card Type
                 }
                 
                 if settings.shoper_base_url and settings.shoper_access_token:
@@ -3970,7 +3986,10 @@ async def batch_analyze_next(batch_id: int):
                     tax = await client.fetch_attributes()
                     items = tax.get("items") if isinstance(tax, dict) else []
                     if items:
-                        mapped = map_detected_to_shoper_attributes(detected_attrs, items)
+                        # USE FORM IDs mapping!
+                        from .attributes import map_detected_to_form_ids
+                        mapped = map_detected_to_form_ids(detected_attrs, items)
+                        
                         next_item.attr_language = mapped.get('64')  # Language
                         next_item.attr_condition = mapped.get('66')  # Condition  
                         next_item.attr_finish = mapped.get('65')  # Finish
