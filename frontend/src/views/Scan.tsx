@@ -480,37 +480,114 @@ return (
       <main className="p-4 md:p-6">
         {toast && <Toast message={toast.message} onClose={() => setToast(null)} />}
         {scanMode === 'choice' && (
-          <div className="flex flex-col items-center justify-center h-full text-center">
-            <h3 className="text-xl font-bold text-white mb-8">Wybierz metodę skanowania</h3>
-            <div className="flex flex-wrap justify-center gap-8">
-              <button onClick={() => setScanMode('image')} className="flex flex-col items-center justify-center w-48 h-48 p-4 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-colors duration-200">
-                <span className="material-symbols-outlined text-6xl text-primary mb-2">image_search</span>
-                <span className="text-lg font-bold text-white">Skanuj z komputera</span>
-                <span className="text-sm text-gray-400 mt-1">Prześlij pliki graficzne kart</span>
-              </button>
-              <button onClick={() => setScanMode('csv')} className="flex flex-col items-center justify-center w-48 h-48 p-4 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-colors duration-200">
-                <span className="material-symbols-outlined text-6xl text-green-600 mb-2">cloud_upload</span>
-                <span className="text-lg font-bold text-white">Importuj z CSV</span>
-                <span className="text-sm text-gray-400 mt-1">Załaduj dane kart z pliku CSV</span>
-              </button>
+          <div className="flex flex-col items-center justify-center min-h-[60vh] p-4">
+            {/* Header */}
+            <div className="text-center mb-10">
+              <div className="inline-flex items-center justify-center w-16 h-16 mb-4 bg-gradient-to-br from-cyan-500/20 to-blue-600/20 rounded-full border border-cyan-500/30">
+                <span className="material-symbols-outlined text-3xl text-cyan-400">qr_code_scanner</span>
+              </div>
+              <h3 className="text-2xl font-bold text-white mb-2">Wybierz metodę skanowania</h3>
+              <p className="text-gray-400 text-sm">Jak chcesz wprowadzić karty do systemu?</p>
+            </div>
+            
+            {/* Cards */}
+            <div className="flex flex-wrap justify-center gap-6">
+              {/* Skanuj z komputera */}
+              <div className="relative group">
+                <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500/30 to-blue-500/30 rounded-2xl blur-lg opacity-0 group-hover:opacity-100 transition duration-500"></div>
+                <button 
+                  onClick={() => setScanMode('image')} 
+                  className="relative flex flex-col items-center justify-center w-52 h-56 p-6 bg-[#0f172a] border border-gray-700/50 rounded-2xl shadow-xl hover:border-cyan-500/50 transition-all duration-300 group-hover:shadow-cyan-500/10"
+                >
+                  <div className="relative mb-4">
+                    <div className="absolute inset-0 bg-cyan-500/20 rounded-full blur-xl opacity-50 group-hover:opacity-100 transition-opacity"></div>
+                    <div className="relative w-20 h-20 flex items-center justify-center bg-gradient-to-br from-cyan-500/10 to-blue-600/10 rounded-full border border-cyan-500/30">
+                      <span className="material-symbols-outlined text-4xl text-cyan-400">image_search</span>
+                    </div>
+                  </div>
+                  <span className="text-lg font-bold text-white mb-1">Skanuj z komputera</span>
+                  <span className="text-xs text-gray-400 text-center px-2">Prześlij pliki graficzne kart</span>
+                </button>
+              </div>
+
+              {/* Importuj z CSV */}
+              <div className="relative group">
+                <div className="absolute -inset-1 bg-gradient-to-r from-green-500/30 to-emerald-500/30 rounded-2xl blur-lg opacity-0 group-hover:opacity-100 transition duration-500"></div>
+                <button 
+                  onClick={() => setScanMode('csv')} 
+                  className="relative flex flex-col items-center justify-center w-52 h-56 p-6 bg-[#0f172a] border border-gray-700/50 rounded-2xl shadow-xl hover:border-green-500/50 transition-all duration-300 group-hover:shadow-green-500/10"
+                >
+                  <div className="relative mb-4">
+                    <div className="absolute inset-0 bg-green-500/20 rounded-full blur-xl opacity-50 group-hover:opacity-100 transition-opacity"></div>
+                    <div className="relative w-20 h-20 flex items-center justify-center bg-gradient-to-br from-green-500/10 to-emerald-600/10 rounded-full border border-green-500/30">
+                      <span className="material-symbols-outlined text-4xl text-green-400">cloud_upload</span>
+                    </div>
+                  </div>
+                  <span className="text-lg font-bold text-white mb-1">Importuj z CSV</span>
+                  <span className="text-xs text-gray-400 text-center px-2">Załaduj dane kart z pliku</span>
+                </button>
+              </div>
             </div>
           </div>
         )}
 
         {scanMode === 'image' && !scanSubMode && (
-          <div className="flex flex-col items-center justify-center h-full text-center">
-            <h3 className="text-xl font-bold text-white mb-8">Wybierz tryb skanowania z komputera</h3>
-            <div className="flex flex-wrap justify-center gap-8">
-              <button onClick={() => setScanSubMode('single')} className="flex flex-col items-center justify-center w-48 h-48 p-4 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-colors duration-200">
-                <span className="material-symbols-outlined text-6xl text-primary mb-2">image</span>
-                <span className="text-lg font-bold text-white">Pojedynczy plik</span>
-                <span className="text-sm text-gray-400 mt-1">Prześlij jeden obraz karty</span>
-              </button>
-              <button onClick={() => { onStartSession?.(); setScanSubMode('folder'); }} className="flex flex-col items-center justify-center w-48 h-48 p-4 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-colors duration-200">
-                <span className="material-symbols-outlined text-6xl text-primary mb-2">folder_open</span>
-                <span className="text-lg font-bold text-white">Cały folder</span>
-                <span className="text-sm text-gray-400 mt-1">Prześlij cały folder ze skanami</span>
-              </button>
+          <div className="flex flex-col items-center justify-center min-h-[60vh] p-4 relative">
+            {/* Back button */}
+            <button 
+              onClick={() => setScanMode('choice')} 
+              className="absolute top-4 left-4 flex items-center gap-2 px-3 py-2 text-gray-400 hover:text-cyan-400 bg-gray-800/50 hover:bg-gray-800 rounded-lg border border-gray-700/50 hover:border-cyan-500/30 transition-all duration-300"
+            >
+              <span className="material-symbols-outlined text-lg">arrow_back</span>
+              <span className="text-sm">Wstecz</span>
+            </button>
+
+            {/* Header */}
+            <div className="text-center mb-10">
+              <div className="inline-flex items-center justify-center w-16 h-16 mb-4 bg-gradient-to-br from-cyan-500/20 to-blue-600/20 rounded-full border border-cyan-500/30">
+                <span className="material-symbols-outlined text-3xl text-cyan-400">computer</span>
+              </div>
+              <h3 className="text-2xl font-bold text-white mb-2">Wybierz tryb skanowania</h3>
+              <p className="text-gray-400 text-sm">Prześlij pojedynczy plik lub cały folder</p>
+            </div>
+            
+            {/* Cards */}
+            <div className="flex flex-wrap justify-center gap-6">
+              {/* Pojedynczy plik */}
+              <div className="relative group">
+                <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500/30 to-blue-500/30 rounded-2xl blur-lg opacity-0 group-hover:opacity-100 transition duration-500"></div>
+                <button 
+                  onClick={() => setScanSubMode('single')} 
+                  className="relative flex flex-col items-center justify-center w-52 h-56 p-6 bg-[#0f172a] border border-gray-700/50 rounded-2xl shadow-xl hover:border-cyan-500/50 transition-all duration-300 group-hover:shadow-cyan-500/10"
+                >
+                  <div className="relative mb-4">
+                    <div className="absolute inset-0 bg-cyan-500/20 rounded-full blur-xl opacity-50 group-hover:opacity-100 transition-opacity"></div>
+                    <div className="relative w-20 h-20 flex items-center justify-center bg-gradient-to-br from-cyan-500/10 to-blue-600/10 rounded-full border border-cyan-500/30">
+                      <span className="material-symbols-outlined text-4xl text-cyan-400">image</span>
+                    </div>
+                  </div>
+                  <span className="text-lg font-bold text-white mb-1">Pojedynczy plik</span>
+                  <span className="text-xs text-gray-400 text-center px-2">Prześlij jeden obraz karty</span>
+                </button>
+              </div>
+
+              {/* Cały folder */}
+              <div className="relative group">
+                <div className="absolute -inset-1 bg-gradient-to-r from-purple-500/30 to-pink-500/30 rounded-2xl blur-lg opacity-0 group-hover:opacity-100 transition duration-500"></div>
+                <button 
+                  onClick={() => { onStartSession?.(); setScanSubMode('folder'); }} 
+                  className="relative flex flex-col items-center justify-center w-52 h-56 p-6 bg-[#0f172a] border border-gray-700/50 rounded-2xl shadow-xl hover:border-purple-500/50 transition-all duration-300 group-hover:shadow-purple-500/10"
+                >
+                  <div className="relative mb-4">
+                    <div className="absolute inset-0 bg-purple-500/20 rounded-full blur-xl opacity-50 group-hover:opacity-100 transition-opacity"></div>
+                    <div className="relative w-20 h-20 flex items-center justify-center bg-gradient-to-br from-purple-500/10 to-pink-600/10 rounded-full border border-purple-500/30">
+                      <span className="material-symbols-outlined text-4xl text-purple-400">folder_open</span>
+                    </div>
+                  </div>
+                  <span className="text-lg font-bold text-white mb-1">Cały folder</span>
+                  <span className="text-xs text-gray-400 text-center px-2">Prześlij folder ze skanami</span>
+                </button>
+              </div>
             </div>
           </div>
         )}

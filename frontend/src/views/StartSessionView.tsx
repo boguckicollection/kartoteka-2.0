@@ -115,80 +115,180 @@ export default function StartSessionView({ onSessionStarted, apiBase }: Props) {
 
 
   return (
-    <div className="flex flex-col items-center justify-center h-full">
-      <div className="w-full max-w-md p-8 space-y-6 bg-gray-800 border border-gray-700 rounded-2xl shadow-lg">
-        <div className="flex flex-col items-center text-center mb-4">
-          <span className="material-symbols-outlined text-5xl text-primary mb-3">box</span>
-          <h2 className="text-2xl font-bold text-white">Rozpocznij Skanowanie</h2>
-          <p className="text-sm text-gray-400 mt-1">Wybierz lokalizację początkową, aby rozpocząć.</p>
-        </div>
-        <div>
-          <div className="flex justify-between items-end">
-            <label className="block text-sm font-medium text-gray-300">
-              Lokalizacja (opcjonalnie)
-            </label>
-            <button onClick={handleFetchNextCode} className="text-xs text-primary hover:text-indigo-400 font-semibold">
-              Użyj następnej wolnej
-            </button>
+    <div className="flex flex-col items-center justify-center min-h-[80vh] p-4">
+      {/* Main Card with Glow Effect */}
+      <div className="relative w-full max-w-md">
+        {/* Glow background */}
+        <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500/20 via-blue-500/20 to-purple-500/20 rounded-2xl blur-xl opacity-75"></div>
+        
+        {/* Card Content */}
+        <div className="relative w-full p-6 space-y-6 bg-[#0f172a] border border-gray-700/50 rounded-2xl shadow-2xl backdrop-blur-sm">
+          
+          {/* Header with Icon */}
+          <div className="flex flex-col items-center text-center">
+            <div className="relative mb-4">
+              {/* Icon glow */}
+              <div className="absolute inset-0 bg-cyan-500/30 rounded-full blur-xl"></div>
+              <div className="relative w-20 h-20 flex items-center justify-center bg-gradient-to-br from-cyan-500/20 to-blue-600/20 rounded-full border border-cyan-500/30">
+                <span className="material-symbols-outlined text-4xl text-cyan-400">inventory_2</span>
+              </div>
+            </div>
+            <h2 className="text-2xl font-bold text-white tracking-wide">Rozpocznij Sesję</h2>
+            <p className="text-sm text-gray-400 mt-2 max-w-xs">
+              Ustaw lokalizację startową dla numeracji magazynowej
+            </p>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 mt-1">
-            <div className="flex items-center">
-              <span className="inline-flex items-center px-3 text-gray-300 bg-gray-900 border border-r-0 border-gray-600 rounded-l-md sm:text-sm">
-                K
-              </span>
-              <input
-                type="text"
-                value={box}
-                onChange={(e) => setBox(e.target.value.toUpperCase())}
-                placeholder="10"
-                className="flex-1 block w-full min-w-0 px-3 py-2 text-white placeholder-gray-500 bg-gray-700 border border-gray-600 rounded-none rounded-r-md shadow-sm appearance-none focus:outline-none focus:ring-primary focus:border-primary sm:text-sm"
-              />
+          {/* Divider */}
+          <div className="h-px bg-gradient-to-r from-transparent via-gray-600 to-transparent"></div>
+
+          {/* Location Input Section */}
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <label className="text-sm font-medium text-gray-300 flex items-center gap-2">
+                <span className="material-symbols-outlined text-lg text-cyan-400">location_on</span>
+                Lokalizacja
+              </label>
+              <button 
+                onClick={handleFetchNextCode} 
+                className="flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 font-medium transition-colors"
+              >
+                <span className="material-symbols-outlined text-sm">auto_awesome</span>
+                Następna wolna
+              </button>
             </div>
-            <div className="flex items-center">
-              <span className="inline-flex items-center px-3 text-gray-300 bg-gray-900 border border-r-0 border-gray-600 rounded-l-md sm:text-sm">
-                R
-              </span>
-              <input
-                type="number"
-                value={row}
-                onChange={(e) => setRow(e.target.value)}
-                placeholder="4"
-                className="flex-1 block w-full min-w-0 px-3 py-2 text-white placeholder-gray-500 bg-gray-700 border border-gray-600 rounded-none rounded-r-md shadow-sm appearance-none focus:outline-none focus:ring-primary focus:border-primary sm:text-sm"
-              />
+
+            {/* Input Grid */}
+            <div className="grid grid-cols-3 gap-3">
+              {/* Box Input */}
+              <div className="space-y-1">
+                <label className="text-xs text-gray-500 uppercase tracking-wider">Karton</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-cyan-400 font-bold text-sm">K</span>
+                  <input
+                    type="text"
+                    value={box}
+                    onChange={(e) => setBox(e.target.value.toUpperCase())}
+                    placeholder="10"
+                    maxLength={3}
+                    className="w-full pl-8 pr-3 py-3 text-white placeholder-gray-600 bg-gray-800/50 border border-gray-600/50 rounded-lg shadow-inner focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition-all text-center font-mono text-lg"
+                  />
+                </div>
+              </div>
+
+              {/* Row Input */}
+              <div className="space-y-1">
+                <label className="text-xs text-gray-500 uppercase tracking-wider">Rząd</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-cyan-400 font-bold text-sm">R</span>
+                  <input
+                    type="number"
+                    value={row}
+                    onChange={(e) => setRow(e.target.value)}
+                    placeholder="4"
+                    min="1"
+                    max="9"
+                    className="w-full pl-8 pr-3 py-3 text-white placeholder-gray-600 bg-gray-800/50 border border-gray-600/50 rounded-lg shadow-inner focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition-all text-center font-mono text-lg [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                </div>
+              </div>
+
+              {/* Position Input */}
+              <div className="space-y-1">
+                <label className="text-xs text-gray-500 uppercase tracking-wider">Pozycja</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-cyan-400 font-bold text-sm">P</span>
+                  <input
+                    type="number"
+                    value={pos}
+                    onChange={(e) => setPos(e.target.value)}
+                    placeholder="0001"
+                    min="1"
+                    className="w-full pl-8 pr-3 py-3 text-white placeholder-gray-600 bg-gray-800/50 border border-gray-600/50 rounded-lg shadow-inner focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition-all text-center font-mono text-lg [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                </div>
+              </div>
             </div>
-            <div className="flex items-center">
-              <span className="inline-flex items-center px-3 text-gray-300 bg-gray-900 border border-r-0 border-gray-600 rounded-l-md sm:text-sm">
-                P
-              </span>
-              <input
-                type="number"
-                value={pos}
-                onChange={(e) => setPos(e.target.value)}
-                placeholder="1000"
-                className="flex-1 block w-full min-w-0 px-3 py-2 text-white placeholder-gray-500 bg-gray-700 border border-gray-600 rounded-none rounded-r-md shadow-sm appearance-none focus:outline-none focus:ring-primary focus:border-primary sm:text-sm"
-              />
-            </div>
-          </div>
-          
-          <div className="h-5 mt-2 text-sm text-center">
-            {validation && (
-              <>
-                {validation.status === 'available' && <p className="text-green-400">Lokalizacja jest dostępna.</p>}
-                {validation.status === 'taken' && <p className="text-red-400">Zajęta. Następna wolna: {validation.next_available}</p>}
-                {validation.status === 'invalid_format' && <p className="text-yellow-400">{validation.message || 'Nieprawidłowy format.'}</p>}
-                {validation.status === 'error' && <p className="text-red-400">{validation.message || 'Wystąpił błąd.'}</p>}
-              </>
+
+            {/* Generated Code Display */}
+            {code && (
+              <div className="flex items-center justify-center gap-2 py-3 px-4 bg-gray-800/30 rounded-lg border border-gray-700/50">
+                <span className="material-symbols-outlined text-gray-500">tag</span>
+                <span className="font-mono text-lg text-white tracking-wider">{code}</span>
+              </div>
             )}
+            
+            {/* Validation Messages */}
+            <div className="h-6 flex items-center justify-center">
+              {validation && (
+                <div className="flex items-center gap-2 text-sm">
+                  {validation.status === 'available' && (
+                    <>
+                      <span className="material-symbols-outlined text-green-400 text-lg">check_circle</span>
+                      <span className="text-green-400">Lokalizacja dostępna</span>
+                    </>
+                  )}
+                  {validation.status === 'taken' && (
+                    <>
+                      <span className="material-symbols-outlined text-amber-400 text-lg">warning</span>
+                      <span className="text-amber-400">
+                        Zajęta. Następna: <span className="font-mono font-bold">{validation.next_available}</span>
+                      </span>
+                    </>
+                  )}
+                  {validation.status === 'invalid_format' && (
+                    <>
+                      <span className="material-symbols-outlined text-red-400 text-lg">error</span>
+                      <span className="text-red-400">{validation.message || 'Nieprawidłowy format'}</span>
+                    </>
+                  )}
+                  {validation.status === 'error' && (
+                    <>
+                      <span className="material-symbols-outlined text-red-400 text-lg">error</span>
+                      <span className="text-red-400">{validation.message || 'Wystąpił błąd'}</span>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
+
+          {/* Divider */}
+          <div className="h-px bg-gradient-to-r from-transparent via-gray-600 to-transparent"></div>
+
+          {/* Action Button */}
+          <button
+            onClick={handleStartSession}
+            disabled={!isCodeValidForStart || isLoading}
+            className="relative w-full group"
+          >
+            {/* Button glow on hover */}
+            <div className="absolute -inset-0.5 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-xl blur opacity-30 group-hover:opacity-60 transition duration-300 group-disabled:opacity-0"></div>
+            
+            <div className={`relative flex items-center justify-center gap-3 w-full px-6 py-4 font-bold text-white rounded-xl transition-all duration-300
+              ${isCodeValidForStart && !isLoading 
+                ? 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 shadow-lg shadow-cyan-500/25' 
+                : 'bg-gray-700 cursor-not-allowed'}`}
+            >
+              {isLoading ? (
+                <>
+                  <span className="spinner"></span>
+                  <span>Rozpoczynam...</span>
+                </>
+              ) : (
+                <>
+                  <span className="material-symbols-outlined">play_arrow</span>
+                  <span>Rozpocznij Skanowanie</span>
+                </>
+              )}
+            </div>
+          </button>
+
+          {/* Skip option */}
+          <p className="text-center text-xs text-gray-500">
+            Pozostaw puste, aby użyć automatycznej numeracji
+          </p>
         </div>
-        <button
-          onClick={handleStartSession}
-          disabled={!isCodeValidForStart || isLoading}
-          className="w-full px-4 py-2 text-sm font-bold text-white bg-primary border border-transparent rounded-md shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-primary disabled:bg-gray-600 disabled:cursor-not-allowed"
-        >
-          {isLoading ? 'Rozpoczynam...' : 'Rozpocznij Skanowanie'}
-        </button>
       </div>
     </div>
   );
