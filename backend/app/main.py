@@ -1219,6 +1219,28 @@ async def get_shoper_product(product_id: int):
     return product
 
 
+@app.get("/products/{shoper_id}/locations")
+async def get_product_locations(shoper_id: int):
+    """
+    Returns all warehouse_codes for a given Shoper product ID.
+    It finds all scans linked to the product and returns their locations.
+    """
+    db = SessionLocal()
+    try:
+        # Find all scans that have been published with this shoper_id
+        scans = db.query(Scan).filter(Scan.published_shoper_id == shoper_id, Scan.warehouse_code.isnot(None)).all()
+        
+        if not scans:
+            return []
+            
+        # Return a list of unique warehouse codes
+        locations = sorted(list({s.warehouse_code for s in scans if s.warehouse_code}))
+        
+        return [{"warehouse_code": code} for code in locations]
+    finally:
+        db.close()
+
+
 async def _find_best_category_match_internal(name: str, threshold: int = 85) -> dict | None:
     """
     Internal helper to find the best Shoper category for a given set name.

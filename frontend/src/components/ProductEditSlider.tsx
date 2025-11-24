@@ -150,21 +150,25 @@ export default function ProductEditSlider({ product, onClose, onUpdate, apiBase 
               </div>
 
               <div className="border-t border-white/10 pt-4 mt-4">
-                <h4 className="text-sm font-medium text-gray-300 mb-2">Miejsca magazynowe:</h4>
-                {isLoadingLocations && <p className="text-sm text-gray-500">Ładowanie miejsc magazynowych...</p>}
-                {locationsError && <p className="text-sm text-red-500">Błąd: {locationsError}</p>}
+                <h4 className="text-sm font-medium text-gray-300 mb-2 flex items-center gap-2">
+                  <span className="material-symbols-outlined text-lg text-cyan-400">inventory_2</span>
+                  Miejsca magazynowe
+                </h4>
+                {isLoadingLocations && <p className="text-sm text-gray-500">Ładowanie...</p>}
+                {locationsError && <p className="text-sm text-red-400">Błąd: {locationsError}</p>}
                 {locations && locations.length > 0 ? (
-                  <ul className="space-y-1">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                     {locations.map((loc, index) => (
-                      <li key={index} className="text-sm font-mono bg-gray-800 px-2 py-1 rounded">
-                        Karton: {loc.karton}, Rząd: {loc.row}, Pozycja: {loc.position}
-                      </li>
+                      <div key={index} className="text-sm font-mono bg-gray-800/50 border border-gray-700/50 px-3 py-2 rounded-lg text-center text-white">
+                        {loc.warehouse_code}
+                      </div>
                     ))}
-                  </ul>
+                  </div>
                 ) : (
                   !isLoadingLocations && !locationsError && (
-                    <div className="p-3 rounded-lg bg-gray-800 border border-yellow-600/50">
-                      <p className="text-lg font-bold text-yellow-400 text-center">karton premium</p>
+                    <div className="p-3 rounded-lg bg-gray-800/50 border border-yellow-600/50 text-center">
+                      <p className="font-bold text-yellow-400">Karton Premium</p>
+                      <p className="text-xs text-gray-500 mt-1">Brak przypisanej lokalizacji</p>
                     </div>
                   )
                 )}

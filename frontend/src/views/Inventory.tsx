@@ -25,6 +25,21 @@ export default function InventoryView({ items, page, limit, hasNext, sort, order
   const [localLimit, setLocalLimit] = useState<number>(limit)
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
   const [isSliderOpen, setIsSliderOpen] = useState(false)
+  const [hoveredImage, setHoveredImage] = useState<{ src: string; x: number; y: number } | null>(null)
+
+  const handleMouseEnter = (e: React.MouseEvent<HTMLTableCellElement>, image: string | null | undefined) => {
+    if (!image) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    setHoveredImage({
+      src: image,
+      x: rect.left + rect.width / 2,
+      y: rect.top,
+    })
+  }
+
+  const handleMouseLeave = () => {
+    setHoveredImage(null)
+  }
 
   const handleProductClick = (product: Product) => {
     setSelectedProduct(product)
@@ -38,6 +53,19 @@ export default function InventoryView({ items, page, limit, hasNext, sort, order
 
   return (
     <div className="font-display">
+      {hoveredImage && (
+        <div
+          className="fixed z-50 p-2 bg-gray-900 border border-cyan-500 rounded-lg shadow-2xl pointer-events-none"
+          style={{
+            left: hoveredImage.x,
+            top: hoveredImage.y,
+            transform: 'translate(-50%, -100%)',
+            marginTop: '-10px',
+          }}
+        >
+          <img src={hoveredImage.src} alt="Podgląd" className="w-64 h-auto rounded" />
+        </div>
+      )}
       <header className="flex items-center justify-between whitespace-nowrap border-b border-gray-800 px-2 md:px-6 py-3">
         <div className="flex items-center gap-3 text-white">
           <span className="material-symbols-outlined text-primary">visibility</span>
@@ -88,7 +116,11 @@ export default function InventoryView({ items, page, limit, hasNext, sort, order
             <tbody>
               {items.map(p => (
                 <tr key={p.id} className="border-t border-white/10 cursor-pointer hover:bg-white/5" onClick={() => handleProductClick(p)}>
-                  <td className="p-2">
+                  <td 
+                    className="p-2"
+                    onMouseEnter={(e) => handleMouseEnter(e, p.image)}
+                    onMouseLeave={handleMouseLeave}
+                  >
                     {p.image ? (
                       <div className="w-12 h-12 rounded overflow-hidden border border-white/10">
                         <img src={p.image} alt={p.name} className="w-full h-full object-cover object-top" />
