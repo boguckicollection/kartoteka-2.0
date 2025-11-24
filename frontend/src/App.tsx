@@ -39,22 +39,9 @@ export default function App() {
   const isAndroid = useMemo(()=>/Android/i.test(navigator.userAgent||''), [])
 
   const apiBase = useMemo(() => {
-    const env = (import.meta as any).env?.VITE_API_BASE_URL as string | undefined
-    if (env) return env
-    try {
-      const loc = window.location
-      // If served over HTTPS, use Vite proxy at /api to avoid mixed content
-      if (loc.protocol === 'https:') {
-        return '/api'
-      }
-      const url = new URL(loc.href)
-      const port = url.port === '5173' ? '8000' : url.port
-      url.port = port || '8000'
-      url.pathname = ''
-      return `${url.origin.replace(/:\\d+$/, ':' + (port || '8000'))}`
-    } catch {
-      return 'http://localhost:8000'
-    }
+    // Always use the Vite proxy in development.
+    // The VITE_API_BASE_URL is for building for production.
+    return (import.meta as any).env?.VITE_API_BASE_URL || '/api';
   }, [])
 
   useEffect(()=>{ if(!toast) return; const t = setTimeout(()=> setToast(null), 2500); return ()=> clearTimeout(t) }, [toast])

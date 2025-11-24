@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { OrderReceipt } from '../components/OrderReceipt';
+import { ThermalReceipt } from '../components/ThermalReceipt';
 
 type Props = { items: any[] }
 
@@ -9,7 +9,44 @@ export default function OrdersView({ items }: Props){
   const receiptRef = useRef<HTMLDivElement>(null);
 
   const handlePrint = () => {
-    window.print();
+    const receiptElement = receiptRef.current;
+    if (!receiptElement) return;
+
+    // Create a new, invisible iframe
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'absolute';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = 'none';
+    document.body.appendChild(iframe);
+
+    // Get the content window of the iframe
+    const printWindow = iframe.contentWindow;
+    if (!printWindow) {
+      document.body.removeChild(iframe);
+      return;
+    }
+
+    // Write the HTML of the receipt to the iframe
+    printWindow.document.open();
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Paragon</title>
+        </head>
+        <body>
+          ${receiptElement.innerHTML}
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+
+    // Wait for the iframe to load, then print and remove it
+    iframe.onload = function() {
+      printWindow.focus();
+      printWindow.print();
+      document.body.removeChild(iframe);
+    };
   };
 
   const onOpen = (o: any) => { setSelected(o); setOpen(true) }
@@ -65,8 +102,8 @@ export default function OrdersView({ items }: Props){
       {/* Right drawer */}
       <div className={`fixed inset-0 z-40 ${open ? 'pointer-events-auto' : 'pointer-events-none'}`}>
         <div className={`absolute inset-0 bg-black/50 transition-opacity ${open ? 'opacity-100' : 'opacity-0'}`} onClick={onClose} />
-        <div className={`absolute right-0 top-0 h-full w-full sm:w-[520px] bg-[#111418] border-l border-white/10 shadow-xl transition-transform duration-300 ${open ? 'translate-x-0' : 'translate-x-full'}`}>
-          <div className="flex items-center justify-between p-4 border-b border-white/10">
+        <div className={`absolute right-0 top-0 h-full w-full sm:w-[520px] bg-[#111418] border-l border-white/10 shadow-xl transition-transform duration-300 ${open ? 'translate-x-0' : 'translate-x-full'} flex flex-col`}>
+          <div className="flex items-center justify-between p-4 border-b border-white/10 flex-shrink-0">
             <div className="flex items-center gap-3">
               <div className="text-white font-semibold">Szczegóły zamówienia {selected ? `#${selected.id}` : ''}</div>
               {!!selected && (
@@ -77,7 +114,7 @@ export default function OrdersView({ items }: Props){
             </div>
             <button className="text-white/80 hover:text-white" onClick={onClose}><span className="material-symbols-outlined">close</span></button>
           </div>
-          <div className="p-4 overflow-y-auto h-[calc(100%-104px)]">
+          <div className="p-4 overflow-y-auto flex-grow">
             {!selected ? null : (
               <div className="grid gap-4">
                 {/* Buyer */}
@@ -131,8 +168,8 @@ export default function OrdersView({ items }: Props){
       </div>
 
       {/* Hidden receipt for printing */}
-      <div className="printable">
-        {selected && <OrderReceipt ref={receiptRef} order={selected} />}
+      <div className="hidden">
+        {selected && <ThermalReceipt ref={receiptRef} order={selected} />}
       </div>
     </div>
   )

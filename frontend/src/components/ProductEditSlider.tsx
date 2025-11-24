@@ -34,9 +34,17 @@ export default function ProductEditSlider({ product, onClose, onUpdate, apiBase 
         setIsLoadingLocations(true);
         setLocationsError(null);
         try {
-          const response = await fetch(`${apiBase}/products/${product.shoper_id}/locations`);
+          // Use /api directly to avoid any issues with apiBase propagation
+          const response = await fetch(`/api/products/${product.shoper_id}/locations`);
           if (!response.ok) {
-            throw new Error('Failed to fetch locations');
+            throw new Error(`Failed to fetch locations: ${response.status}`);
+          }
+          // Check if response is JSON
+          const contentType = response.headers.get("content-type");
+          if (!contentType || !contentType.includes("application/json")) {
+             const text = await response.text();
+             console.error("Received non-JSON response:", text.substring(0, 200));
+             throw new Error("Received invalid response from server (not JSON)");
           }
           const data = await response.json();
           setLocations(data);
@@ -50,7 +58,7 @@ export default function ProductEditSlider({ product, onClose, onUpdate, apiBase 
     } else {
       setLocations(null);
     }
-  }, [product.shoper_id, apiBase]);
+  }, [product.shoper_id]); // Removed apiBase from dependency array as we hardcoded /api
 
   const handleClose = () => {
     setOpen(false);
@@ -96,14 +104,14 @@ export default function ProductEditSlider({ product, onClose, onUpdate, apiBase 
   return (
     <div className={`fixed inset-0 z-40 ${open ? 'pointer-events-auto' : 'pointer-events-none'}`}>
       <div className={`absolute inset-0 bg-black/50 transition-opacity ${open ? 'opacity-100' : 'opacity-0'}`} onClick={handleClose} />
-      <div className={`absolute right-0 top-0 h-full w-full sm:w-[520px] bg-[#111418] border-l border-white/10 shadow-xl transition-transform duration-300 ${open ? 'translate-x-0' : 'translate-x-full'}`}>
-        <div className="flex items-center justify-between p-4 border-b border-white/10">
+      <div className={`absolute right-0 top-0 h-full w-full sm:w-[520px] bg-[#111418] border-l border-white/10 shadow-xl transition-transform duration-300 ${open ? 'translate-x-0' : 'translate-x-full'} flex flex-col`}>
+        <div className="flex items-center justify-between p-4 border-b border-white/10 flex-shrink-0">
           <div className="flex items-center gap-3">
             <div className="text-white font-semibold">{isEditMode ? `Edytuj: ${product.name}` : `Szczegóły karty`}</div>
           </div>
           <button className="text-white/80 hover:text-white" onClick={handleClose}><span className="material-symbols-outlined">close</span></button>
         </div>
-        <div className="p-4 pb-8 overflow-y-auto h-[calc(100%-104px)]">
+        <div className="p-4 pb-8 overflow-y-auto flex-grow">
           {product.image && (
             <div className="mb-4 flex justify-center">
               <img src={product.image} alt={product.name} className="w-48 h-auto object-contain rounded-lg border border-white/10" />
