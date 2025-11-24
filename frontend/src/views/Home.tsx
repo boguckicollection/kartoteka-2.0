@@ -75,17 +75,18 @@ export default function Home({ stats, onNav, onRefresh }: Props){
                 <div className={`absolute -inset-0.5 bg-gradient-to-r ${config.color} rounded-xl blur opacity-0 group-hover:opacity-75 transition duration-300`}></div>
               )}
               
-              <div className={`relative h-32 flex flex-col items-center justify-center rounded-xl p-3 bg-[#0f172a] border border-gray-700/50 transition-all duration-300 ${item.nav ? 'hover:border-gray-600 group-hover:shadow-lg' : ''}`}>
+              <div className={`relative h-24 flex items-center rounded-xl p-4 bg-[#0f172a] border border-gray-700/50 transition-all duration-300 ${item.nav ? 'hover:border-gray-600 group-hover:shadow-lg' : ''}`}>
                 {/* Icon */}
-                <div className={`w-10 h-10 flex items-center justify-center bg-gradient-to-br ${config.color} rounded-lg border border-gray-700/50 mb-2`}>
-                  <span className="material-symbols-outlined text-xl text-white/80">{config.icon}</span>
+                <div className={`flex-shrink-0 w-12 h-12 flex items-center justify-center bg-gradient-to-br ${config.color} rounded-lg border border-gray-700/50 mr-4`}>
+                  <span className="material-symbols-outlined text-2xl text-white/80">{config.icon}</span>
                 </div>
                 
-                {/* Value */}
-                <p className="text-2xl font-bold text-white">{item.value ?? '-'}</p>
-                
-                {/* Label */}
-                <p className="text-[10px] text-center text-gray-400 mt-1 leading-tight">{item.label}</p>
+                <div className="flex-grow">
+                  {/* Label */}
+                  <p className="text-xs text-gray-400 leading-tight">{item.label}</p>
+                  {/* Value */}
+                  <p className="text-xl font-bold text-white">{item.value ?? '-'}</p>
+                </div>
                 
                 {/* Click indicator */}
                 {item.nav && (
