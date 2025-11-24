@@ -55,7 +55,9 @@ services:
     ports:
       - "5173:5173"
     volumes:
-    - ./frontend/certs:/app/certs:ro  
+      - ./frontend:/app
+      - /app/node_modules
+      - ./frontend/certs:/app/certs:ro  
     depends_on:
       api:
         condition: service_healthy

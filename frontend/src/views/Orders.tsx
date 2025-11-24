@@ -1,5 +1,4 @@
 import React, { useState, useRef } from 'react';
-import { useReactToPrint } from 'react-to-print';
 import { OrderReceipt } from '../components/OrderReceipt';
 
 type Props = { items: any[] }
@@ -9,9 +8,9 @@ export default function OrdersView({ items }: Props){
   const [selected, setSelected] = useState<any | null>(null)
   const receiptRef = useRef<HTMLDivElement>(null);
 
-  const handlePrint = useReactToPrint({
-    content: () => receiptRef.current,
-  });
+  const handlePrint = () => {
+    window.print();
+  };
 
   const onOpen = (o: any) => { setSelected(o); setOpen(true) }
   const onClose = () => { setOpen(false); setTimeout(()=>setSelected(null), 250) }
@@ -132,7 +131,7 @@ export default function OrdersView({ items }: Props){
       </div>
 
       {/* Hidden receipt for printing */}
-      <div className="hidden">
+      <div className="printable">
         {selected && <OrderReceipt ref={receiptRef} order={selected} />}
       </div>
     </div>
