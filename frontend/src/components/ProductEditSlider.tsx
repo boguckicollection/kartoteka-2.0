@@ -175,22 +175,27 @@ export default function ProductEditSlider({ product, onClose, onUpdate, apiBase 
                 {isLoadingLocations && <p className="text-sm text-gray-500">Ładowanie...</p>}
                 {locationsError && <p className="text-sm text-red-400">Błąd: {locationsError}</p>}
                 {locations && locations.length > 0 ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-4">
                     {locations.map((loc, index) => {
                       const parsed = parseWarehouseCode(loc.warehouse_code);
                       return (
-                        <div key={index} className="bg-gray-800/50 border border-gray-700/50 p-3 rounded-lg">
-                          <div className="flex justify-between items-baseline">
-                            <span className="text-xs text-gray-500">Karton</span>
-                            <span className="font-mono text-lg text-cyan-400">{parsed?.karton || '-'}</span>
+                        <div key={index} className="bg-gray-800/50 border border-gray-700/50 p-4 rounded-xl flex flex-col items-center justify-center text-center shadow-lg">
+                          {/* KARTON */}
+                          <div className="mb-4">
+                            <div className="text-xs text-gray-500 uppercase tracking-widest mb-1 font-semibold">Karton</div>
+                            <div className="text-4xl font-bold text-white tracking-tight">{parsed?.karton || '-'}</div>
                           </div>
-                          <div className="flex justify-between items-baseline mt-1">
-                            <span className="text-xs text-gray-500">Rząd</span>
-                            <span className="font-mono text-lg text-cyan-400">{parsed?.rzad || '-'}</span>
-                          </div>
-                          <div className="flex justify-between items-baseline mt-1">
-                            <span className="text-xs text-gray-500">Pozycja</span>
-                            <span className="font-mono text-lg text-cyan-400">{parsed?.pozycja || '-'}</span>
+                          
+                          {/* RZĄD & POZYCJA row */}
+                          <div className="flex w-full justify-center gap-8 border-t border-white/10 pt-4">
+                            <div>
+                              <div className="text-xs text-gray-500 uppercase tracking-widest mb-1 font-semibold">Rząd</div>
+                              <div className="text-2xl font-bold text-cyan-400">{parsed?.rzad || '-'}</div>
+                            </div>
+                            <div>
+                              <div className="text-xs text-gray-500 uppercase tracking-widest mb-1 font-semibold">Pozycja</div>
+                              <div className="text-2xl font-bold text-cyan-400">{parsed?.pozycja || '-'}</div>
+                            </div>
                           </div>
                         </div>
                       );
