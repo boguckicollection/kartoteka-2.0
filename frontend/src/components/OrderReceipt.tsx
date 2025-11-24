@@ -6,7 +6,13 @@ interface OrderReceiptProps {
 
 export const OrderReceipt = React.forwardRef<HTMLDivElement, OrderReceiptProps>((props, ref) => {
   const { order } = props;
-  const sum = order.products.reduce((acc: number, p: any) => acc + parseFloat(p.price), 0);
+
+  // Guard against null or undefined order/products
+  if (!order || !order.products) {
+    return <div ref={ref}></div>; // Render an empty div if data is not ready
+  }
+
+  const sum = order.products.reduce((acc: number, p: any) => acc + parseFloat(p.price || 0), 0);
 
   return (
     <div ref={ref} className="p-4 bg-white text-black font-mono" style={{ width: '60mm', height: '90mm' }}>
