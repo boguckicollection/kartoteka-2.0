@@ -99,11 +99,11 @@ export default function ProductEditSlider({ product, onClose, onUpdate, apiBase 
       <div className={`absolute right-0 top-0 h-full w-full sm:w-[520px] bg-[#111418] border-l border-white/10 shadow-xl transition-transform duration-300 ${open ? 'translate-x-0' : 'translate-x-full'}`}>
         <div className="flex items-center justify-between p-4 border-b border-white/10">
           <div className="flex items-center gap-3">
-            <div className="text-white font-semibold">{isEditMode ? `Edytuj Produkt: ${product.name}` : `Szczegóły Produktu`}</div>
+            <div className="text-white font-semibold">{isEditMode ? `Edytuj: ${product.name}` : `Szczegóły karty`}</div>
           </div>
           <button className="text-white/80 hover:text-white" onClick={handleClose}><span className="material-symbols-outlined">close</span></button>
         </div>
-        <div className="p-4 overflow-y-auto h-[calc(100%-104px)]">
+        <div className="p-4 pb-8 overflow-y-auto h-[calc(100%-104px)]">
           {product.image && (
             <div className="mb-4 flex justify-center">
               <img src={product.image} alt={product.name} className="w-48 h-auto object-contain rounded-lg border border-white/10" />
