@@ -1,10 +1,18 @@
-import React, { useState } from 'react'
+import React, { useState, useRef } from 'react';
+import { useReactToPrint } from 'react-to-print';
+import { OrderReceipt } from '../components/OrderReceipt';
 
 type Props = { items: any[] }
 
 export default function OrdersView({ items }: Props){
   const [open, setOpen] = useState(false)
   const [selected, setSelected] = useState<any | null>(null)
+  const receiptRef = useRef<HTMLDivElement>(null);
+
+  const handlePrint = useReactToPrint({
+    content: () => receiptRef.current,
+  });
+
   const onOpen = (o: any) => { setSelected(o); setOpen(true) }
   const onClose = () => { setOpen(false); setTimeout(()=>setSelected(null), 250) }
   const statusLabel = (o: any) => {
@@ -108,10 +116,24 @@ export default function OrdersView({ items }: Props){
           </div>
           {/* Footer total */}
           <div className="flex items-center justify-between p-4 border-t border-white/10">
-            <div className="text-gray-300 text-sm">Wartość zamówienia:</div>
-            <div className="text-white font-semibold">{selected?.total != null ? `${Number(String(selected.total).replace(',', '.')).toFixed(2)} PLN` : '-'}</div>
+            <button
+              onClick={handlePrint}
+              className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-300 bg-gray-800/50 rounded-lg border border-gray-700/50 hover:bg-gray-700 hover:text-white transition-colors"
+            >
+              <span className="material-symbols-outlined text-lg">print</span>
+              Drukuj
+            </button>
+            <div className="text-right">
+              <div className="text-gray-300 text-sm">Wartość zamówienia:</div>
+              <div className="text-white font-semibold">{selected?.total != null ? `${Number(String(selected.total).replace(',', '.')).toFixed(2)} PLN` : '-'}</div>
+            </div>
           </div>
         </div>
+      </div>
+
+      {/* Hidden receipt for printing */}
+      <div className="hidden">
+        {selected && <OrderReceipt ref={receiptRef} order={selected} />}
       </div>
     </div>
   )
