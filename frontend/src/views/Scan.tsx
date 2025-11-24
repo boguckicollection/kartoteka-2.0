@@ -164,6 +164,57 @@ export default function ScanView({ session, preview, loading, analyzing, status,
     }
   }, [formData['65']]);
 
+  // Handle attribute change with special logic for Finish (recalculate price)
+  const handleAttributeChange = async (attrId: string, value: string) => {
+    // Update form data immediately
+    setFormData((prev: any) => ({...prev, [attrId]: value}));
+    
+    // Special handling for Finish attribute (ID 65) - recalculate price
+    if (attrId === '65' && scanResult?.scan_id && !manualPriceEdit) {
+      // Map option ID to finish type
+      const finishMap: Record<string, string> = {
+        '184': 'normal',  // Normal
+        '149': 'holo',    // Holo
+        '150': 'reverse', // Reverse Holo
+        '151': 'holo',    // Full Art (treat as holo pricing)
+        '155': 'normal',  // PokéBall Pattern
+        '156': 'holo',    // MasterBall Pattern
+        '157': 'holo',    // Gold (premium)
+        '158': 'holo',    // Rainbow (premium)
+      };
+      const finish = finishMap[value] || 'normal';
+      
+      try {
+        const res = await fetch('/api/pricing/recalculate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            scan_id: scanResult.scan_id,
+            finish: finish 
+          })
+        });
+        
+        if (res.ok) {
+          const priceData = await res.json();
+          if (priceData.price_pln_final !== null) {
+            setFormData((prev: any) => ({
+              ...prev, 
+              price_pln_final: priceData.price_pln_final,
+              price_pln: priceData.price_pln,
+              base_eur: priceData.base_eur,
+            }));
+            
+            // Show toast if price was estimated
+            if (priceData.estimated) {
+              setToast({ message: `Cena została oszacowana (brak danych dla ${finish})`, type: 'info' });
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Failed to recalculate price", e);
+      }
+    }
+  };
 
   useEffect(() => {
     const fetchShoperData = async () => {
@@ -834,7 +885,7 @@ return (
                                             <select 
                                               className="w-full p-2 rounded bg-gray-700 text-white"
                                               value={formData[attr.attribute_id] || ''}
-                                              onChange={(e) => setFormData({...formData, [attr.attribute_id]: e.target.value})}
+                                              onChange={(e) => handleAttributeChange(attr.attribute_id, e.target.value)}
                                             >
                                               <option value="">-</option>
                                               {attr.options.map((opt: any) => (

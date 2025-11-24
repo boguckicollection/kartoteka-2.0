@@ -73,6 +73,16 @@ class Settings(BaseSettings):
     min_quality_probe_warn: float = Field(default=0.45, alias="MIN_QUALITY_PROBE_WARN")
     min_quality_commit: float = Field(default=0.55, alias="MIN_QUALITY_COMMIT")
 
+    # Price auto-update settings
+    price_auto_update_enabled: bool = Field(default=False, alias="PRICE_AUTO_UPDATE_ENABLED")
+    price_update_interval_hours: int = Field(default=24, alias="PRICE_UPDATE_INTERVAL_HOURS")
+    min_price_pln: float = Field(default=5.0, alias="MIN_PRICE_PLN")
+    max_price_change_percent: float = Field(default=50.0, alias="MAX_PRICE_CHANGE_PERCENT")
+    
+    # Price estimation multipliers (when variant price is not available)
+    holo_price_multiplier: float = Field(default=3.0, alias="HOLO_PRICE_MULTIPLIER")
+    reverse_holo_price_multiplier: float = Field(default=2.0, alias="REVERSE_HOLO_PRICE_MULTIPLIER")
+
     # Note: Do NOT define a nested Config when using model_config (pydantic v2)
 
 

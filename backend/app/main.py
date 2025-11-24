@@ -21,7 +21,7 @@ from .analysis.fingerprint import compute_fingerprint, pack_ndarray, unpack_ndar
 from .providers import get_provider, PokemonTCGProvider
 import httpx
 from .pricing import extract_prices_from_payload, compute_price_pln, list_variant_prices
-from .db import init_db, SessionLocal, Scan, ScanCandidate, Product, Fingerprint, Session
+from .db import init_db, SessionLocal, Scan, ScanCandidate, Product, Fingerprint, Session, CardCatalog
 from sqlalchemy import func
 from .db import Session as ScanSession
 from .shoper import ShoperClient, upsert_products, publish_scan_to_shoper, build_shoper_payload, _category_name_from_id, get_shoper_categories, _get_related_products_from_category
@@ -32,6 +32,151 @@ from .warehouse import get_storage_summary, get_next_free_location, NoFreeLocati
 from pywebpush import webpush, WebPushException
 import asyncio
 import re
+
+
+def _get_or_create_catalog_entry(
+    db,
+    provider_id: str,
+    name: str,
+    set_name: str | None = None,
+    set_code: str | None = None,
+    number: str | None = None,
+    rarity: str | None = None,
+    energy: str | None = None,
+    image_url: str | None = None,
+    price_normal_eur: float | None = None,
+    price_holo_eur: float | None = None,
+    price_reverse_eur: float | None = None,
+    api_payload: dict | None = None,
+) -> CardCatalog:
+    """
+    Find existing CardCatalog entry by provider_id, or create a new one.
+    Returns the catalog entry (existing or newly created).
+    """
+    existing = db.query(CardCatalog).filter(CardCatalog.provider_id == provider_id).first()
+    if existing:
+        # Update with latest data if provided
+        if name:
+            existing.name = name
+        if set_name:
+            existing.set_name = set_name
+        if set_code:
+            existing.set_code = set_code
+        if number:
+            existing.number = number
+        if rarity:
+            existing.rarity = rarity
+        if energy:
+            existing.energy = energy
+        if image_url:
+            existing.image_url = image_url
+        if price_normal_eur is not None:
+            existing.price_normal_eur = price_normal_eur
+        if price_holo_eur is not None:
+            existing.price_holo_eur = price_holo_eur
+        if price_reverse_eur is not None:
+            existing.price_reverse_eur = price_reverse_eur
+        if api_payload:
+            existing.api_payload = json.dumps(api_payload)
+        existing.prices_updated_at = datetime.utcnow()
+        db.commit()
+        return existing
+    
+    # Create new entry
+    new_entry = CardCatalog(
+        provider_id=provider_id,
+        name=name,
+        set_name=set_name,
+        set_code=set_code,
+        number=number,
+        rarity=rarity,
+        energy=energy,
+        image_url=image_url,
+        price_normal_eur=price_normal_eur,
+        price_holo_eur=price_holo_eur,
+        price_reverse_eur=price_reverse_eur,
+        api_payload=json.dumps(api_payload) if api_payload else None,
+        prices_updated_at=datetime.utcnow(),
+    )
+    db.add(new_entry)
+    db.commit()
+    db.refresh(new_entry)
+    return new_entry
+
+
+def _extract_prices_for_catalog(details: dict) -> dict:
+    """Extract price variants from TCGGO API response for CardCatalog."""
+    prices = details.get("prices") or {}
+    cardmarket = prices.get("cardmarket") or details.get("cardmarket") or {}
+    
+    # Normal price
+    normal = None
+    for k in ["avg7", "7d_average", "avg7d", "trendPrice"]:
+        if cardmarket.get(k) is not None:
+            normal = float(cardmarket.get(k))
+            break
+    
+    # Holo price
+    holo = None
+    for k in ["holofoilAvg7", "holofoil7", "holofoil7d", "holofoilTrend"]:
+        if cardmarket.get(k) is not None:
+            holo = float(cardmarket.get(k))
+            break
+    
+    # Reverse Holo price
+    reverse = None
+    for k in ["reverseHoloAvg7", "reverseHolo7", "reverseHolo7d", "reverseHoloTrend"]:
+        if cardmarket.get(k) is not None:
+            reverse = float(cardmarket.get(k))
+            break
+    
+    return {
+        "price_normal_eur": normal,
+        "price_holo_eur": holo,
+        "price_reverse_eur": reverse,
+    }
+
+
+def _calculate_price_from_catalog(catalog: CardCatalog, finish: str = "normal") -> dict:
+    """
+    Calculate PLN price based on finish type and CardCatalog prices.
+    Falls back to estimation if specific price not available.
+    """
+    finish_lower = (finish or "normal").lower()
+    base_eur = None
+    estimated = False
+    
+    if "reverse" in finish_lower:
+        base_eur = catalog.price_reverse_eur
+        if base_eur is None and catalog.price_normal_eur:
+            base_eur = catalog.price_normal_eur * settings.reverse_holo_price_multiplier
+            estimated = True
+    elif "holo" in finish_lower:
+        base_eur = catalog.price_holo_eur
+        if base_eur is None and catalog.price_normal_eur:
+            base_eur = catalog.price_normal_eur * settings.holo_price_multiplier
+            estimated = True
+    else:  # normal
+        base_eur = catalog.price_normal_eur
+    
+    if base_eur is None:
+        return {"base_eur": None, "price_pln": None, "price_pln_final": None, "estimated": False}
+    
+    # Apply minimum price
+    price_pln = base_eur * settings.eur_pln_rate
+    price_pln_final = price_pln * settings.price_multiplier
+    
+    # Apply minimum price constraint
+    min_price = getattr(settings, 'min_price_pln', 5.0)
+    if price_pln_final < min_price:
+        price_pln_final = min_price
+    
+    return {
+        "base_eur": round(base_eur, 2),
+        "price_pln": round(price_pln, 2),
+        "price_pln_final": round(price_pln_final, 2),
+        "estimated": estimated,
+    }
 
 
 def _product_image_url(row: Product) -> str | None:
@@ -507,11 +652,86 @@ try:
 except Exception:
     pass
 
+async def _auto_update_prices_task():
+    """
+    Background task that periodically updates prices from TCGGO API
+    and syncs them to Shoper if enabled.
+    """
+    if not getattr(settings, 'price_auto_update_enabled', False):
+        print("Price auto-update is disabled")
+        return
+    
+    interval_hours = getattr(settings, 'price_update_interval_hours', 24)
+    interval_seconds = interval_hours * 3600
+    
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            print(f"Starting scheduled price update...")
+            
+            db = SessionLocal()
+            try:
+                # Get all catalog entries that need updating
+                entries = db.query(CardCatalog).limit(500).all()
+                
+                if not entries:
+                    print("No catalog entries to update")
+                    continue
+                
+                provider = get_provider()
+                updated_count = 0
+                
+                for entry in entries:
+                    try:
+                        details = await provider.details(entry.provider_id)
+                        prices_data = _extract_prices_for_catalog(details)
+                        
+                        changed = False
+                        if prices_data.get("price_normal_eur") is not None and prices_data["price_normal_eur"] != entry.price_normal_eur:
+                            entry.price_normal_eur = prices_data["price_normal_eur"]
+                            changed = True
+                        if prices_data.get("price_holo_eur") is not None and prices_data["price_holo_eur"] != entry.price_holo_eur:
+                            entry.price_holo_eur = prices_data["price_holo_eur"]
+                            changed = True
+                        if prices_data.get("price_reverse_eur") is not None and prices_data["price_reverse_eur"] != entry.price_reverse_eur:
+                            entry.price_reverse_eur = prices_data["price_reverse_eur"]
+                            changed = True
+                        
+                        if changed:
+                            entry.prices_updated_at = datetime.utcnow()
+                            updated_count += 1
+                        
+                        # Small delay to avoid rate limiting
+                        await asyncio.sleep(0.5)
+                        
+                    except Exception as e:
+                        print(f"Failed to update catalog entry {entry.id}: {e}")
+                        continue
+                
+                db.commit()
+                print(f"Price update completed: {updated_count}/{len(entries)} entries updated")
+                
+                # TODO: Sync updated prices to Shoper products
+                # This would iterate over Product entries linked to updated CardCatalog entries
+                # and call Shoper API to update prices
+                
+            finally:
+                db.close()
+                
+        except Exception as e:
+            print(f"Price auto-update task error: {e}")
+            await asyncio.sleep(60)  # Wait a minute before retrying
+
+
 @app.on_event("startup")
 async def _on_startup():
     if settings.shoper_auto_sync_on_startup:
         await _sync_products_if_needed(force=True)
     asyncio.create_task(check_for_new_orders())
+    
+    # Start price auto-update background task
+    if getattr(settings, 'price_auto_update_enabled', False):
+        asyncio.create_task(_auto_update_prices_task())
 
 
 @app.post("/notifications/subscribe")
@@ -1220,12 +1440,90 @@ async def scan_image(
 
         # Early exit on duplicate to avoid Vision/provider
         if duplicate_hit_id is not None:
-            # Attempt to copy detected fields from original scan (best effort)
+            # Get catalog_id from the original scan's fingerprint
+            orig_fp = db.query(Fingerprint).filter(Fingerprint.scan_id == duplicate_hit_id).first()
+            catalog_entry = None
+            if orig_fp and orig_fp.catalog_id:
+                catalog_entry = db.get(CardCatalog, orig_fp.catalog_id)
+            
+            # Fallback: get original scan for candidates and legacy data
             try:
                 orig = db.get(Scan, duplicate_hit_id)
             except Exception:
                 orig = None
-            if orig:
+            
+            if catalog_entry:
+                # Use data from CardCatalog (preferred)
+                detected = DetectedData(
+                    name=catalog_entry.name,
+                    set=catalog_entry.set_name,
+                    set_code=catalog_entry.set_code,
+                    number=catalog_entry.number,
+                    rarity=catalog_entry.rarity,
+                    energy=catalog_entry.energy,
+                )
+                
+                # Calculate price from catalog (default to normal finish)
+                price_info = _calculate_price_from_catalog(catalog_entry, "normal")
+                
+                # Link scan to catalog
+                scan.catalog_id = catalog_entry.id
+                scan.detected_name = catalog_entry.name
+                scan.detected_set = catalog_entry.set_name
+                scan.detected_set_code = catalog_entry.set_code
+                scan.detected_number = catalog_entry.number
+                scan.detected_rarity = catalog_entry.rarity
+                scan.detected_energy = catalog_entry.energy
+                scan.price_pln = price_info.get("price_pln")
+                scan.price_pln_final = price_info.get("price_pln_final")
+                
+                # Update fingerprint with catalog_id
+                if fprow:
+                    fprow.catalog_id = catalog_entry.id
+                
+                # Copy candidates from original scan
+                response_candidates = []
+                if orig:
+                    orig_candidates_db = db.query(ScanCandidate).filter(ScanCandidate.scan_id == orig.id).all()
+                    for c_orig in orig_candidates_db:
+                        new_cand = ScanCandidate(
+                            scan_id=scan.id,
+                            provider_id=c_orig.provider_id,
+                            name=c_orig.name,
+                            set=c_orig.set,
+                            set_code=c_orig.set_code,
+                            number=c_orig.number,
+                            rarity=c_orig.rarity,
+                            image=c_orig.image,
+                            score=c_orig.score,
+                            chosen=c_orig.chosen,
+                        )
+                        db.add(new_cand)
+                        response_candidates.append(Candidate(
+                            id=new_cand.provider_id,
+                            name=new_cand.name,
+                            set=new_cand.set,
+                            set_code=new_cand.set_code,
+                            number=new_cand.number,
+                            image=new_cand.image,
+                            score=new_cand.score,
+                        ))
+
+                scan.message = f"duplicate_of:{duplicate_hit_id} distance:{duplicate_distance} catalog:{catalog_entry.id}"
+                db.commit()
+                return ScanResponse(
+                    scan_id=scan.id,
+                    detected=detected,
+                    candidates=response_candidates,
+                    message=scan.message,
+                    stored_path=scan.stored_path,
+                    image_url=image_url,
+                    duplicate_of=duplicate_hit_id,
+                    duplicate_distance=duplicate_distance,
+                    warehouse_code=warehouse_code,
+                )
+            elif orig:
+                # Fallback: use original scan data (legacy behavior)
                 detected = DetectedData(
                     name=orig.detected_name,
                     set=orig.detected_set,
@@ -1238,7 +1536,7 @@ async def scan_image(
                     energy=orig.detected_energy,
                 )
                 
-                # Also copy candidates from original scan to the new scan
+                # Copy candidates from original scan
                 orig_candidates_db = db.query(ScanCandidate).filter(ScanCandidate.scan_id == orig.id).all()
                 response_candidates = []
                 for c_orig in orig_candidates_db:
@@ -1276,7 +1574,7 @@ async def scan_image(
                     image_url=image_url,
                     duplicate_of=duplicate_hit_id,
                     duplicate_distance=duplicate_distance,
-                    warehouse_code=warehouse_code, # Also return code for duplicates
+                    warehouse_code=warehouse_code,
                 )
             else:
                 scan.message = f"duplicate_detected distance:{duplicate_distance}"
@@ -1411,6 +1709,40 @@ async def scan_image(
         # Re-create DetectedData with the fused data
         detected = DetectedData(**fused)
 
+        # Save to CardCatalog (for future duplicate detection and price updates)
+        catalog_entry = None
+        if candidates and len(candidates) > 0:
+            best_candidate = candidates[0]
+            try:
+                # Extract prices for catalog
+                prices_data = _extract_prices_for_catalog(details) if 'details' in dir() else {}
+                
+                catalog_entry = _get_or_create_catalog_entry(
+                    db=db,
+                    provider_id=best_candidate.id,
+                    name=best_candidate.name or detected.name,
+                    set_name=fused.get('set') or best_candidate.set,
+                    set_code=fused.get('set_code') or best_candidate.set_code,
+                    number=best_candidate.number or detected.number,
+                    rarity=fused.get('rarity') or best_candidate.rarity,
+                    energy=fused.get('energy'),
+                    image_url=best_candidate.image,
+                    price_normal_eur=prices_data.get('price_normal_eur'),
+                    price_holo_eur=prices_data.get('price_holo_eur'),
+                    price_reverse_eur=prices_data.get('price_reverse_eur'),
+                    api_payload=details if 'details' in dir() else None,
+                )
+                
+                # Link scan to catalog
+                scan.catalog_id = catalog_entry.id
+                
+                # Update fingerprint with catalog_id
+                if fprow:
+                    fprow.catalog_id = catalog_entry.id
+                    
+            except Exception as e:
+                print(f"WARNING: Failed to save to CardCatalog: {e}")
+
         # Update scan with detected and store candidates
         scan.message = scan.message or "OpenAI Vision + provider search"
         scan.detected_name = detected.name
@@ -1528,6 +1860,147 @@ async def get_candidate_details(body: dict = Body(default={})):
 
     except Exception as e:
         return JSONResponse({"error": f"Failed to get candidate details: {e}"}, status_code=500)
+
+
+@app.post("/pricing/recalculate")
+async def recalculate_price(body: dict = Body(default={})):
+    """
+    Recalculate price based on finish type (normal, holo, reverse).
+    Uses CardCatalog for cached prices.
+    
+    Body:
+        - catalog_id: int (optional) - ID from CardCatalog
+        - scan_id: int (optional) - Scan ID to look up catalog_id
+        - finish: str - "normal", "holo", or "reverse"
+    
+    Returns price information for the selected finish.
+    """
+    catalog_id = body.get("catalog_id")
+    scan_id = body.get("scan_id")
+    finish = body.get("finish", "normal")
+    
+    db = SessionLocal()
+    try:
+        catalog_entry = None
+        
+        # Get catalog entry by ID or via scan
+        if catalog_id:
+            catalog_entry = db.get(CardCatalog, catalog_id)
+        elif scan_id:
+            scan = db.get(Scan, scan_id)
+            if scan and scan.catalog_id:
+                catalog_entry = db.get(CardCatalog, scan.catalog_id)
+        
+        if not catalog_entry:
+            return JSONResponse({"error": "Card not found in catalog"}, status_code=404)
+        
+        # Calculate price for the selected finish
+        price_info = _calculate_price_from_catalog(catalog_entry, finish)
+        
+        return {
+            "catalog_id": catalog_entry.id,
+            "provider_id": catalog_entry.provider_id,
+            "name": catalog_entry.name,
+            "finish": finish,
+            "base_eur": price_info.get("base_eur"),
+            "price_pln": price_info.get("price_pln"),
+            "price_pln_final": price_info.get("price_pln_final"),
+            "estimated": price_info.get("estimated", False),
+            "prices": {
+                "normal_eur": catalog_entry.price_normal_eur,
+                "holo_eur": catalog_entry.price_holo_eur,
+                "reverse_eur": catalog_entry.price_reverse_eur,
+            }
+        }
+    finally:
+        db.close()
+
+
+@app.get("/catalog/{catalog_id}")
+async def get_catalog_entry(catalog_id: int):
+    """Get a single CardCatalog entry by ID."""
+    db = SessionLocal()
+    try:
+        entry = db.get(CardCatalog, catalog_id)
+        if not entry:
+            return JSONResponse({"error": "Catalog entry not found"}, status_code=404)
+        
+        return {
+            "id": entry.id,
+            "provider_id": entry.provider_id,
+            "name": entry.name,
+            "set_name": entry.set_name,
+            "set_code": entry.set_code,
+            "number": entry.number,
+            "rarity": entry.rarity,
+            "energy": entry.energy,
+            "image_url": entry.image_url,
+            "prices": {
+                "normal_eur": entry.price_normal_eur,
+                "holo_eur": entry.price_holo_eur,
+                "reverse_eur": entry.price_reverse_eur,
+            },
+            "prices_updated_at": entry.prices_updated_at.isoformat() if entry.prices_updated_at else None,
+            "created_at": entry.created_at.isoformat() if entry.created_at else None,
+        }
+    finally:
+        db.close()
+
+
+@app.post("/catalog/refresh-prices")
+async def refresh_catalog_prices(body: dict = Body(default={})):
+    """
+    Refresh prices for cards in CardCatalog from TCGGO API.
+    
+    Body:
+        - catalog_ids: list[int] (optional) - specific IDs to refresh
+        - all: bool (optional) - refresh all catalog entries
+        - limit: int (optional) - max entries to refresh (default 100)
+    """
+    catalog_ids = body.get("catalog_ids", [])
+    refresh_all = body.get("all", False)
+    limit = min(body.get("limit", 100), 500)  # Cap at 500
+    
+    db = SessionLocal()
+    try:
+        if catalog_ids:
+            entries = db.query(CardCatalog).filter(CardCatalog.id.in_(catalog_ids)).all()
+        elif refresh_all:
+            entries = db.query(CardCatalog).limit(limit).all()
+        else:
+            return JSONResponse({"error": "Specify catalog_ids or all=true"}, status_code=400)
+        
+        provider = get_provider()
+        updated = 0
+        errors = []
+        
+        for entry in entries:
+            try:
+                details = await provider.details(entry.provider_id)
+                prices_data = _extract_prices_for_catalog(details)
+                
+                if prices_data.get("price_normal_eur") is not None:
+                    entry.price_normal_eur = prices_data["price_normal_eur"]
+                if prices_data.get("price_holo_eur") is not None:
+                    entry.price_holo_eur = prices_data["price_holo_eur"]
+                if prices_data.get("price_reverse_eur") is not None:
+                    entry.price_reverse_eur = prices_data["price_reverse_eur"]
+                
+                entry.prices_updated_at = datetime.utcnow()
+                entry.api_payload = json.dumps(details)
+                updated += 1
+            except Exception as e:
+                errors.append({"catalog_id": entry.id, "error": str(e)})
+        
+        db.commit()
+        
+        return {
+            "updated": updated,
+            "total": len(entries),
+            "errors": errors[:10],  # Limit error list
+        }
+    finally:
+        db.close()
 
 
 @app.post("/confirm", response_model=ConfirmResponse)

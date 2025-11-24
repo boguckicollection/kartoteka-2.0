@@ -64,6 +64,7 @@ class Scan(Base):
 
     selected_candidate_id = Column(Integer, ForeignKey("scan_candidates.id"), nullable=True)
     session_id = Column(Integer, ForeignKey("sessions.id"), nullable=True, index=True)
+    catalog_id = Column(Integer, ForeignKey("card_catalog.id"), nullable=True, index=True)  # Link to CardCatalog
     publish_status = Column(String(32), nullable=True)  # pending, published, failed
     published_shoper_id = Column(Integer, nullable=True)
     published_at = Column(DateTime, nullable=True)
@@ -135,10 +136,49 @@ class InventoryItem(Base):
     added_at = Column(String(32), nullable=True)
 
 
+class CardCatalog(Base):
+    """
+    Catalog of unique cards - each card type exists once here.
+    Contains reference data and cached prices from TCGGO/Cardmarket.
+    """
+    __tablename__ = "card_catalog"
+    id = Column(Integer, primary_key=True)
+    
+    # Unique identifier from provider (e.g., "base1-4" from TCGGO)
+    provider_id = Column(String(128), unique=True, index=True, nullable=False)
+    
+    # Card identification
+    name = Column(String(255), nullable=False)
+    set_name = Column(String(255), nullable=True)
+    set_code = Column(String(64), index=True, nullable=True)
+    number = Column(String(64), nullable=True)
+    rarity = Column(String(128), nullable=True)
+    energy = Column(String(64), nullable=True)  # Card energy type (Fire, Water, etc.)
+    
+    # Reference image from provider
+    image_url = Column(Text, nullable=True)
+    
+    # Cached prices in EUR from Cardmarket/TCGGO
+    price_normal_eur = Column(Float, nullable=True)
+    price_holo_eur = Column(Float, nullable=True)
+    price_reverse_eur = Column(Float, nullable=True)
+    prices_updated_at = Column(DateTime, nullable=True)
+    
+    # Full API payload (JSON) for future use
+    api_payload = Column(Text, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class Fingerprint(Base):
+    """
+    Visual fingerprints for duplicate detection based on image similarity.
+    """
     __tablename__ = "fingerprints"
     id = Column(Integer, primary_key=True)
     scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), index=True, nullable=False)
+    catalog_id = Column(Integer, ForeignKey("card_catalog.id"), index=True, nullable=True)  # Link to catalog entry
     phash = Column(Text, nullable=False)
     dhash = Column(Text, nullable=False)
     tile_phash = Column(Text, nullable=False)
@@ -156,9 +196,12 @@ class Product(Base):
     stock = Column(Integer, nullable=True)
     image = Column(Text, nullable=True)
     updated_at = Column(DateTime, nullable=True)
-    tcggo_id = Column(String(128), nullable=True) # New: Unique ID from TCGGO
-    fingerprint_hash = Column(Text, nullable=True) # New: Hash for duplicate detection
-    last_price_update = Column(DateTime, nullable=True) # New: Timestamp of last price update
+    catalog_id = Column(Integer, ForeignKey("card_catalog.id"), nullable=True, index=True)  # Link to CardCatalog
+    finish = Column(String(32), nullable=True)  # normal, holo, reverse - for price updates
+    price_locked = Column(Boolean, default=False, nullable=True)  # If True, don't auto-update price
+    tcggo_id = Column(String(128), nullable=True)
+    fingerprint_hash = Column(Text, nullable=True)
+    last_price_update = Column(DateTime, nullable=True)
     # Extra metadata from Shoper
     category_id = Column(Integer, nullable=True)
     categories = Column(Text, nullable=True)  # JSON or comma-separated
@@ -212,6 +255,7 @@ def init_db():
             ("use_tcggo_image", "INTEGER DEFAULT 1"),
             ("additional_images", "TEXT"),
             ("warehouse_code", "VARCHAR(64)"),
+            ("catalog_id", "INTEGER"),
         ],
         "sessions": [
             ("starting_warehouse_code", "VARCHAR(64)"),
@@ -228,10 +272,16 @@ def init_db():
             ("tcggo_id", "VARCHAR(128)"),
             ("fingerprint_hash", "TEXT"),
             ("last_price_update", "DATETIME"),
+            ("catalog_id", "INTEGER"),
+            ("finish", "VARCHAR(32)"),
+            ("price_locked", "INTEGER DEFAULT 0"),
         ],
         "scan_candidates": [
             ("rarity", "VARCHAR(128)"),
-        ]
+        ],
+        "fingerprints": [
+            ("catalog_id", "INTEGER"),
+        ],
     }
 
     with engine.begin() as conn:
