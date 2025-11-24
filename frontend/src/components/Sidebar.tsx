@@ -9,7 +9,8 @@ type Props = {
 
 const items: Item[] = [
   { key: 'scan', label: 'Skanowanie', icon: 'qr_code_scanner' },
-  { key: 'inventory', label: 'Magazyn', icon: 'visibility' },
+  { key: 'inventory', label: 'Magazyn', icon: 'inventory_2' },
+  { key: 'storage', label: 'Lokalizacje', icon: 'warehouse' },
   { key: 'reports', label: 'Statystyki', icon: 'bar_chart' },
   { key: 'pricing', label: 'Wycena', icon: 'sell' },
   { key: 'bidding', label: 'Licytacje', icon: 'gavel' },

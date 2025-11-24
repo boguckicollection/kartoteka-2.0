@@ -14,6 +14,7 @@ class DetectedData(BaseModel):
     rarity: Optional[str] = None
     energy: Optional[str] = None
     price_pln_final: Optional[float] = None
+    warehouse_code: Optional[str] = None
     variants: Optional[list] = None
 
     class Config:
@@ -52,6 +53,7 @@ class ScanResponse(BaseModel):
     quality: Optional[float] = None  # 0..1
     confidence: Optional[float] = None  # 0..1
     confidence_label: Optional[str] = None  # GOOD / FAIR / POOR
+    warehouse_code: Optional[str] = None
 
 
 class ProbeResponse(BaseModel):
@@ -94,6 +96,7 @@ class ScanDetailResponse(BaseModel):
     pricing: Optional[dict] = None
     image_url: Optional[str] = None
     back_image_url: Optional[str] = None
+    warehouse_code: Optional[str] = None
 
 
 class CreateProductRequest(BaseModel):

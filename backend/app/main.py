@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import httpx
 import json
 import os
-
+from typing import Any, Optional
 
 from .settings import settings
 from .schemas import ScanResponse, DetectedData, Candidate, ConfirmRequest, ConfirmResponse, ScanHistoryItem, ScanDetailResponse, CreateProductRequest, ProbeResponse, ProductUpdateRequest
@@ -21,93 +21,17 @@ from .analysis.fingerprint import compute_fingerprint, pack_ndarray, unpack_ndar
 from .providers import get_provider, PokemonTCGProvider
 import httpx
 from .pricing import extract_prices_from_payload, compute_price_pln, list_variant_prices
-from .db import init_db, SessionLocal, Scan, ScanCandidate, Product, Fingerprint
+from .db import init_db, SessionLocal, Scan, ScanCandidate, Product, Fingerprint, Session
 from sqlalchemy import func
 from .db import Session as ScanSession
 from .shoper import ShoperClient, upsert_products, publish_scan_to_shoper, build_shoper_payload, _category_name_from_id, get_shoper_categories, _get_related_products_from_category
 from rapidfuzz import fuzz
 from .attributes import map_detected_to_shoper_attributes, simplify_attributes, simplify_categories
 from .db import PushSubscription
+from .warehouse import get_storage_summary, get_next_free_location, NoFreeLocationError, location_to_index, parse_warehouse_code
 from pywebpush import webpush, WebPushException
 import asyncio
 import re
-
-
-# ===== Warehouse Code Management =====
-
-def parse_warehouse_code(code: str) -> dict | None:
-    """Parse warehouse code like K1K1P001 into components.
-
-    Returns dict with keys: karton (int), kolumna (int), pozycja (int)
-    or None if invalid format.
-    """
-    if not code:
-        return None
-    # Match pattern: K{karton}K{kolumna}P{pozycja}
-    # Example: K1K1P001, K9K4P999
-    match = re.match(r'^K(\d+)K(\d+)P(\d+)$', code.upper())
-    if not match:
-        return None
-
-    karton = int(match.group(1))
-    kolumna = int(match.group(2))
-    pozycja = int(match.group(3))
-
-    # Validate ranges
-    if not (1 <= karton <= 9):
-        return None
-    if not (1 <= kolumna <= 4):
-        return None
-    if not (1 <= pozycja <= 1000):
-        return None
-
-    return {"karton": karton, "kolumna": kolumna, "pozycja": pozycja}
-
-
-def format_warehouse_code(karton: int, kolumna: int, pozycja: int) -> str:
-    """Format warehouse code from components.
-
-    Returns code like K1K1P001.
-    """
-    return f"K{karton}K{kolumna}P{pozycja:03d}"
-
-
-def increment_warehouse_code(code: str) -> str | None:
-    """Increment warehouse code to next position.
-
-    Examples:
-        K1K1P001 -> K1K1P002
-        K1K1P100 -> K1K1P101
-        K1K1P999 -> K1K2P001  (next column)
-        K1K4P999 -> K2K1P001  (next carton)
-        K9K4P999 -> None      (end of warehouse)
-    """
-    parsed = parse_warehouse_code(code)
-    if not parsed:
-        return None
-
-    karton = parsed["karton"]
-    kolumna = parsed["kolumna"]
-    pozycja = parsed["pozycja"]
-
-    # Increment position
-    pozycja += 1
-
-    # If position exceeds 1000, move to next column
-    if pozycja > 1000:
-        pozycja = 1
-        kolumna += 1
-
-    # If column exceeds 4, move to next carton
-    if kolumna > 4:
-        kolumna = 1
-        karton += 1
-
-    # If carton exceeds 9, we're out of warehouse space
-    if karton > 9:
-        return None
-
-    return format_warehouse_code(karton, kolumna, pozycja)
 
 
 def _product_image_url(row: Product) -> str | None:
@@ -144,6 +68,58 @@ try:
     app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
 except Exception:
     pass
+
+
+@app.post("/inventory/check_code")
+async def check_warehouse_code(body: dict = Body(default={})):
+    """
+    Checks if a warehouse code is valid and available.
+    If taken, suggests the next available code.
+    """
+    code = body.get("code")
+    if not code:
+        return JSONResponse({"error": "Code is required"}, status_code=400)
+
+    db = SessionLocal()
+    try:
+        # 1. Validate format
+        if location_to_index(code) is None:
+            return JSONResponse({"status": "invalid_format", "message": "Nieprawidłowy format kodu. Użyj K<numer>-R<rząd>-P<pozycja>."}, status_code=422)
+
+        # 2. Check if taken
+        existing = db.query(Scan).filter(func.upper(Scan.warehouse_code) == code.upper()).first()
+        if existing:
+            try:
+                next_code = get_next_free_location(db, starting_code=code)
+                return JSONResponse({"status": "taken", "next_available": next_code}, status_code=409)
+            except NoFreeLocationError:
+                return JSONResponse({"status": "taken", "next_available": None}, status_code=409)
+        else:
+            return {"status": "available"}
+    finally:
+        db.close()
+
+@app.get("/inventory/next_code")
+async def get_next_warehouse_code_endpoint():
+    """Suggests the next available warehouse code starting from the beginning."""
+    db = SessionLocal()
+    try:
+        next_code = get_next_free_location(db)
+        return {"code": next_code}
+    except NoFreeLocationError:
+        return JSONResponse({"error": "No free locations available"}, status_code=503)
+    finally:
+        db.close()
+
+@app.get("/inventory/storage_summary")
+async def get_storage_summary_endpoint():
+    """Returns a detailed summary of warehouse occupancy."""
+    db = SessionLocal()
+    try:
+        summary = get_storage_summary(db)
+        return summary
+    finally:
+        db.close()
 
 
 @app.get("/health")
@@ -198,6 +174,7 @@ def get_ids_dump():
 class FrameScanRequest(BaseModel):
     image: str
     session_id: int | None = None
+    starting_warehouse_code: str | None = None
 
 
 @app.post("/scan/probe", response_model=ProbeResponse)
@@ -251,6 +228,22 @@ async def scan_commit(payload: FrameScanRequest):
 
     db = SessionLocal()
     try:
+        # Determine the starting code. Priority:
+        # 1. Code passed directly to the endpoint.
+        # 2. Code from the session.
+        # 3. None (find first available).
+        starting_code = payload.starting_warehouse_code
+        if payload.session_id and not starting_code:
+            session = db.get(Session, payload.session_id)
+            if session and session.starting_warehouse_code:
+                starting_code = session.starting_warehouse_code
+
+        # Find warehouse code BEFORE creating the scan
+        try:
+            warehouse_code = get_next_free_location(db, starting_code=starting_code)
+        except NoFreeLocationError:
+            return JSONResponse({"error": "No free storage locations available"}, status_code=503)
+
         fused: dict[str, Any] = {}
         for k in ("name","number","total"):
             v = quick.get(k)
@@ -281,6 +274,7 @@ async def scan_commit(payload: FrameScanRequest):
             stored_path_back=None,
             message="roi+ocr + provider",
             session_id=payload.session_id,
+            warehouse_code=warehouse_code,  # Assign the code here
         )
         db.add(scan)
         db.flush()
@@ -332,6 +326,7 @@ async def scan_commit(payload: FrameScanRequest):
             quality=quality,
             confidence=confidence,
             confidence_label=label,
+            warehouse_code=warehouse_code,
         )
     finally:
         db.close()
@@ -459,6 +454,25 @@ async def scan_frame(payload: FrameScanRequest):
             duplicate_distance=None,
             overlay={"x": float(roi[0]), "y": float(roi[1]), "w": float(roi[2]), "h": float(roi[3])},
         )
+    finally:
+        db.close()
+
+
+class StartSessionRequest(BaseModel):
+    starting_warehouse_code: str | None = None
+
+@app.post("/sessions/start")
+def start_session(payload: StartSessionRequest | None = None):
+    """Starts a new session and returns its ID."""
+    db = SessionLocal()
+    try:
+        new_session = Session(
+            starting_warehouse_code=payload.starting_warehouse_code if payload else None
+        )
+        db.add(new_session)
+        db.commit()
+        db.refresh(new_session)
+        return {"session_id": new_session.id, "starting_warehouse_code": new_session.starting_warehouse_code}
     finally:
         db.close()
 
@@ -1072,7 +1086,17 @@ async def shoper_availability():
 
 
 @app.post("/scan", response_model=ScanResponse)
-async def scan_image(file: UploadFile = File(...), session_id: int | None = None, file_back: UploadFile | None = File(default=None)):
+async def scan_image(
+    file: UploadFile = File(...),
+    session_id_str: Optional[str] = Form(default=None),
+    file_back: UploadFile | None = File(default=None),
+    starting_warehouse_code: str | None = Form(default=None),
+):
+    # Manually parse session_id from string to handle empty strings from form data
+    session_id: int | None = None
+    if session_id_str and session_id_str.isdigit():
+        session_id = int(session_id_str)
+        
     # Ensure upload dir exists
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -1091,12 +1115,29 @@ async def scan_image(file: UploadFile = File(...), session_id: int | None = None
     # Persist scan early (basic data)
     db = SessionLocal()
     try:
+        # Determine the starting code. Priority:
+        # 1. Code passed directly to the endpoint.
+        # 2. Code from the session.
+        # 3. None (find first available).
+        starting_code = starting_warehouse_code
+        if session_id and not starting_code:
+            session = db.get(Session, session_id)
+            if session and session.starting_warehouse_code:
+                starting_code = session.starting_warehouse_code
+
+        # Find warehouse code BEFORE creating the scan
+        try:
+            warehouse_code = get_next_free_location(db, starting_code=starting_code)
+        except NoFreeLocationError:
+            return JSONResponse({"error": "No free storage locations available"}, status_code=503)
+
         scan = Scan(
             filename=file.filename,
             stored_path=str(target),
             stored_path_back=(str(target_back) if target_back is not None else None),
             message="pending",
             session_id=session_id,
+            warehouse_code=warehouse_code, # Assign the code here
         )
         db.add(scan)
         db.flush()
@@ -1235,6 +1276,7 @@ async def scan_image(file: UploadFile = File(...), session_id: int | None = None
                     image_url=image_url,
                     duplicate_of=duplicate_hit_id,
                     duplicate_distance=duplicate_distance,
+                    warehouse_code=warehouse_code, # Also return code for duplicates
                 )
             else:
                 scan.message = f"duplicate_detected distance:{duplicate_distance}"
@@ -1248,6 +1290,7 @@ async def scan_image(file: UploadFile = File(...), session_id: int | None = None
                     image_url=image_url,
                     duplicate_of=None,
                     duplicate_distance=duplicate_distance,
+                    warehouse_code=warehouse_code,
                 )
 
         # No duplicate: proceed with Vision + provider
@@ -1284,6 +1327,8 @@ async def scan_image(file: UploadFile = File(...), session_id: int | None = None
         for key in ["name","set","set_code","number","language","variant","condition","rarity","energy","total"]:
             if key in fused:
                 fused[key] = _scalarize(fused.get(key))
+        
+        fused['warehouse_code'] = warehouse_code
         detected = DetectedData(**fused)
 
         provider = get_provider()
@@ -1329,11 +1374,24 @@ async def scan_image(file: UploadFile = File(...), session_id: int | None = None
 
                 # Try to map attributes, but don't fail the request if this part fails
                 try:
+                    # Extract energy from 'types' field (TCGGO API returns list)
+                    energy_from_api = details.get("energy")
+                    if not energy_from_api:
+                        types = details.get('types')
+                        if isinstance(types, list) and types:
+                            energy_from_api = types[0]
+                        elif isinstance(types, str):
+                            energy_from_api = types
+                    
+                    # Use energy from API if available, fallback to Vision detection
+                    final_energy = energy_from_api or fused.get('energy')
+                    fused['energy'] = final_energy
+                    
                     detected_attrs = {
                         "rarity": details.get("rarity"),
                         "variant": detected.variant,
                         "condition": detected.condition,
-                        "energy": details.get("energy"),
+                        "energy": final_energy,
                         "type": details.get("supertype"),
                     }
                     client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
@@ -1384,6 +1442,7 @@ async def scan_image(file: UploadFile = File(...), session_id: int | None = None
             image_url=image_url,
             duplicate_of=None,
             duplicate_distance=None,
+            warehouse_code=warehouse_code,
             overlay=(
                 None if roi is None else {
                     "x": float(roi[0]),
@@ -1418,7 +1477,16 @@ async def get_candidate_details(body: dict = Body(default={})):
         fused['language'] = details.get('language')
         fused['variant'] = details.get('variant')
         fused['condition'] = details.get('condition')
-        fused['energy'] = details.get('energy')
+        
+        # Energy: TCGGO API returns 'types' as list, we take the first one
+        energy = details.get('energy')
+        if not energy:
+            types = details.get('types')
+            if isinstance(types, list) and types:
+                energy = types[0]
+            elif isinstance(types, str):
+                energy = types
+        fused['energy'] = energy
 
         # Pricing
         price_variants = list_variant_prices(details)
@@ -1618,17 +1686,29 @@ async def list_products(limit: int = 50, page: int = 1, category_id: int | None 
         # Auto-sync on first load or after TTL expiry
         await _sync_products_if_needed(force=False)
 
-        # Fetch categories for name mapping
+        # Fetch categories for name mapping from ids_dump.json
         cat_map = {}
-        if settings.shoper_base_url and settings.shoper_access_token:
-            client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
-            all_categories = await get_shoper_categories(client)
+        try:
+            # Correctly reference the ids_dump.json at the project root
+            dump_path = Path(__file__).parent.parent.parent / "ids_dump.json"
+            if not dump_path.exists():
+                # Fallback to the one in the app directory if it exists
+                dump_path = Path(__file__).parent.parent / "ids_dump.json"
+
+            with open(dump_path, "r", encoding="utf-8") as f:
+                all_categories_data = json.load(f)
+            
+            all_categories = all_categories_data.get('categories', [])
+            
             cat_map = {
-                int(c.get("category_id") or c.get("id")):
+                int(c.get("category_id")):
                 (c.get("translations", {}).get("pl_PL", {}).get("name") or c.get("name"))
                 for c in all_categories
-                if (c.get("category_id") or c.get("id"))
+                if c.get("category_id") and c.get("translations", {}).get("pl_PL")
             }
+        except (FileNotFoundError, json.JSONDecodeError, Exception) as e:
+            print(f"Error loading categories from ids_dump.json: {e}")
+            pass
 
         query = db.query(Product)
         if category_id is not None:
@@ -1676,6 +1756,34 @@ async def list_products(limit: int = 50, page: int = 1, category_id: int | None 
     finally:
         db.close()
         
+@app.get("/products/{shoper_id}/locations")
+async def get_product_locations(shoper_id: int):
+    """
+    Returns a list of warehouse locations for a given Shoper product ID.
+    Each location is parsed into carton, row, and position.
+    """
+    db = SessionLocal()
+    try:
+        # Find all scans linked to this shoper_id
+        scans = db.query(Scan).filter(Scan.published_shoper_id == shoper_id).all()
+        
+        locations = []
+        for scan in scans:
+            if scan.warehouse_code:
+                # Handle multiple codes separated by semicolons (if applicable)
+                for code in scan.warehouse_code.split(';'):
+                    parsed_location = parse_warehouse_code(code.strip())
+                    if parsed_location:
+                        locations.append({
+                            "code": code.strip(),
+                            "karton": parsed_location["karton"],
+                            "row": parsed_location["row"],
+                            "position": parsed_location["position"]
+                        })
+        
+        return locations
+    finally:
+        db.close()
         
 @app.put("/products/{shoper_id}")
 async def update_product_in_shoper(shoper_id: int, product_update: ProductUpdateRequest):
@@ -1684,6 +1792,7 @@ async def update_product_in_shoper(shoper_id: int, product_update: ProductUpdate
             {"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"},
             status_code=400,
         )
+
     
     client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
     
@@ -1971,6 +2080,8 @@ async def map_attributes_endpoint(scan_id: int | None = None, detected: dict | N
 
     Accepts either a scan_id (loads detected_* from DB) or a 'detected' dict body
     with keys like language, variant/finish, condition, rarity, energy.
+    
+    Returns option IDs (not text) for frontend form population.
     """
     if not settings.shoper_base_url or not settings.shoper_access_token:
         return JSONResponse({"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"}, status_code=400)
@@ -1993,7 +2104,9 @@ async def map_attributes_endpoint(scan_id: int | None = None, detected: dict | N
     client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
     tax = await client.fetch_attributes()
     items = tax.get("items") if isinstance(tax, dict) else []
-    out = map_detected_to_shoper_attributes(src or {}, items)
+    # Use map_detected_to_form_ids for numeric option IDs (for frontend)
+    from .attributes import map_detected_to_form_ids
+    out = map_detected_to_form_ids(src or {}, items)
     return {"attributes": out}
 
 
@@ -2018,69 +2131,38 @@ def scan_detail(scan_id: int):
                     number=c.number,
                     image=c.image,
                     score=c.score,
-                    chosen=bool(c.chosen),
                 )
             )
-            if c.chosen:
-                selected_provider_id = c.provider_id
-
-        # Build pricing dict
-        pricing_payload = None
-        if s.cardmarket_7d_average is not None or s.price_pln_final is not None:
-            pricing_payload = {
-                "cardmarket_currency": s.cardmarket_currency,
-                "cardmarket_7d_average": s.cardmarket_7d_average,
-                "eur_pln_rate": float(settings.eur_pln_rate),
-                "multiplier": float(settings.price_multiplier),
-                "price_pln": s.price_pln,
-                "price_pln_final": s.price_pln_final,
-                "graded_psa10": s.graded_psa10,
-                "graded_currency": s.graded_currency,
-            }
-
-        # Image URL
-        image_url = None
-        back_image_url = None
-        try:
-            if s.stored_path:
-                image_url = f"/uploads/{Path(s.stored_path).name}"
-            if getattr(s, 'stored_path_back', None):
-                back_image_url = f"/uploads/{Path(s.stored_path_back).name}"
-        except Exception:
-            pass
-
-        detected = DetectedData(
-            name=s.detected_name,
-            set=s.detected_set,
-            set_code=s.detected_set_code,
-            number=s.detected_number,
-            language=s.detected_language,
-            variant=s.detected_variant,
-            condition=s.detected_condition,
-            rarity=s.detected_rarity,
-            energy=s.detected_energy,
-        )
-
-        # If full payload is stored from a confirmation, use it to enrich the detected data
-        if getattr(s, 'detected_payload', None):
-            try:
-                payload_data = json.loads(s.detected_payload)
-                detected_dict = detected.dict()
-                detected_dict.update(payload_data)
-                detected = DetectedData(**detected_dict)
-            except Exception:
-                pass # Fallback to individually stored fields
-
+        # Add warehouse_code to the response
         return ScanDetailResponse(
             id=s.id,
             created_at=s.created_at.isoformat(),
             message=s.message,
-            detected=detected,
+            detected=DetectedData(
+                name=s.detected_name,
+                set=s.detected_set,
+                set_code=s.detected_set_code,
+                number=s.detected_number,
+                language=s.detected_language,
+                variant=s.detected_variant,
+                condition=s.detected_condition,
+                rarity=s.detected_rarity,
+                energy=s.detected_energy,
+                warehouse_code=s.warehouse_code, # <--- ADDED THIS LINE
+            ),
             candidates=candidates,
-            selected_candidate_id=selected_provider_id,
-            pricing=pricing_payload,
-            image_url=image_url,
-            back_image_url=back_image_url,
+            selected_candidate_id=s.selected_candidate_id,
+            pricing={
+                "cardmarket_currency": s.cardmarket_currency,
+                "cardmarket_7d_average": s.cardmarket_7d_average,
+                "price_pln": s.price_pln,
+                "price_pln_final": s.price_pln_final,
+                "graded_psa10": s.graded_psa10,
+                "graded_currency": s.graded_currency,
+            } if s.cardmarket_currency else None,
+            image_url=f"/uploads/{s.filename}" if s.filename else None,
+            back_image_url=f"/uploads/{Path(s.stored_path_back).name}" if s.stored_path_back else None,
+            warehouse_code=s.warehouse_code, # <--- ADDED THIS LINE
         )
     finally:
         db.close()

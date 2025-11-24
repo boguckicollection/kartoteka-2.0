@@ -233,6 +233,32 @@ def _energy_candidates(value: Optional[str]) -> List[str]:
     return cands
 
 
+def _rarity_candidates(value: Optional[str]) -> List[str]:
+    """Generate candidate strings for rarity matching.
+    
+    Handles variations like 'Double Rare' -> ['double rare', 'rare'],
+    'Special Illustration Rare' -> ['special illustration rare', 'illustration rare'].
+    """
+    v = _norm(value)
+    if not v:
+        return []
+    cands = [v]
+    
+    # Handle compound rarities
+    # TCGGO returns: Common, Uncommon, Rare, Double Rare, Illustration Rare, 
+    # Special Illustration Rare, Hyper Rare, Ultra Rare, Shiny, Promo, Ace Spec
+    
+    # If it contains 'rare', also try just 'rare' as fallback
+    if "rare" in v and v != "rare":
+        cands.append("rare")
+    
+    # Handle 'Special Illustration Rare' -> 'Secial Illustration Rare' (typo in Shoper)
+    if "special illustration rare" in v:
+        cands.append("secial illustration rare")  # Note typo in Shoper
+        
+    return cands
+
+
 def map_detected_to_shoper_attributes(
     detected: dict,
     shoper_attribute_items: List[dict],
@@ -311,13 +337,20 @@ def map_detected_to_shoper_attributes(
         print(f"WARNING: Attribute for language not found in Shoper (tried names: {attribute_targets['language']}).")
 
     # Finish (from variant)
+    # Default to "Normal" if no special finish detected
     meta = _find_attr(attribute_targets["finish"])
     if meta:
         fin_val = detected.get("variant") or detected.get("finish")
-        candidates = _finish_candidates(fin_val) if fin_val else ["Normal"]
-        oid = _best_option_id(meta["options"], candidates)
-        if oid:
-            result[str(meta["id"])] = str(oid)
+        if fin_val and _norm(fin_val) != "normal":
+            candidates = _finish_candidates(fin_val)
+            oid = _best_option_id(meta["options"], candidates)
+            if oid:
+                result[str(meta["id"])] = str(oid)
+        else:
+            # Default to "Normal" option
+            oid = _best_option_id(meta["options"], ["normal"])
+            if oid:
+                result[str(meta["id"])] = str(oid)
 
     # Condition
     cond_val = detected.get("condition")
@@ -331,9 +364,11 @@ def map_detected_to_shoper_attributes(
     rar_val = detected.get("rarity")
     meta = _find_attr(attribute_targets["rarity"])
     if meta and rar_val:
-        oid = _best_option_id(meta["options"], [_norm(rar_val)])
+        oid = _best_option_id(meta["options"], _rarity_candidates(rar_val))
         if oid:
             result[str(meta["id"])] = str(oid)
+        else:
+            print(f"WARNING: No option found for rarity '{rar_val}' in attribute '{meta['name']}'")
 
     # Energy
     eng_val = detected.get("energy")
@@ -404,6 +439,12 @@ def map_detected_to_form_ids(
             (prefer_attribute_names or {}).get("energy", "Energia"),
             "Energy",
         ],
+        "type": [
+            (prefer_attribute_names or {}).get("type", "Typ karty"),
+            "Rodzaj",
+            "Typ",
+            "Type",
+        ],
     }
 
     result: Dict[str, str] = {}
@@ -425,13 +466,20 @@ def map_detected_to_form_ids(
             result[str(meta["id"])] = str(oid)
 
     # Finish (from variant)
+    # Default to "Normal" if no special finish detected
     meta = _find_attr(attribute_targets["finish"])
     if meta:
         fin_val = detected.get("variant") or detected.get("finish")
-        candidates = _finish_candidates(fin_val) if fin_val else ["Normal"]
-        oid = _best_option_numeric_id(meta["options"], candidates)
-        if oid:
-            result[str(meta["id"])] = str(oid)
+        if fin_val and _norm(fin_val) != "normal":
+            candidates = _finish_candidates(fin_val)
+            oid = _best_option_numeric_id(meta["options"], candidates)
+            if oid:
+                result[str(meta["id"])] = str(oid)
+        else:
+            # Default to "Normal" option
+            oid = _best_option_numeric_id(meta["options"], ["normal"])
+            if oid:
+                result[str(meta["id"])] = str(oid)
 
     # Condition
     cond_val = detected.get("condition")
@@ -445,7 +493,7 @@ def map_detected_to_form_ids(
     rar_val = detected.get("rarity")
     meta = _find_attr(attribute_targets["rarity"])
     if meta and rar_val:
-        oid = _best_option_numeric_id(meta["options"], [_norm(rar_val)])
+        oid = _best_option_numeric_id(meta["options"], _rarity_candidates(rar_val))
         if oid:
             result[str(meta["id"])] = str(oid)
 
@@ -457,5 +505,19 @@ def map_detected_to_form_ids(
         oid = _best_option_numeric_id(meta["options"], candidates)
         if oid:
             result[str(meta["id"])] = str(oid)
+
+    # Type (Card Type) - default to "Nie dotyczy"
+    type_val = detected.get("type") or detected.get("supertype")
+    meta = _find_attr(attribute_targets["type"])
+    if meta:
+        candidates = [_norm(type_val)] if type_val else ["nie dotyczy"]
+        oid = _best_option_numeric_id(meta["options"], candidates)
+        if oid:
+            result[str(meta["id"])] = str(oid)
+        else:
+            # Fallback to "Nie dotyczy" if no match
+            oid = _best_option_numeric_id(meta["options"], ["nie dotyczy"])
+            if oid:
+                result[str(meta["id"])] = str(oid)
 
     return result

@@ -90,12 +90,18 @@ export default function ScanView({ session, preview, loading, analyzing, status,
         set_code: enrichedData.set_code || formData.set_code,
       };
 
-      // Re-apply defaults for language and condition if not present
+      // Re-apply defaults for all attributes if not present
       if (!newFormData['64']) { // Język (Language)
         newFormData['64'] = '142'; // Angielski (English)
       }
       if (!newFormData['66']) { // Jakość (Quality)
         newFormData['66'] = '176'; // Near Mint
+      }
+      if (!newFormData['65']) { // Wykończenie (Finish)
+        newFormData['65'] = '184'; // Normal
+      }
+      if (!newFormData['39']) { // Typ karty (Card Type)
+        newFormData['39'] = '182'; // Nie dotyczy (N/A)
       }
 
       setFormData(newFormData);
@@ -232,12 +238,18 @@ export default function ScanView({ session, preview, loading, analyzing, status,
     } else if (result.detected) { // Handle new scans (not duplicates)
       const newFormData: any = { ...result.detected };
 
-      // Set default values for Language and Condition if not already set
+      // Set default values for attributes if not already set
       if (!newFormData['64']) { // 64 is Język (Language)
         newFormData['64'] = '142'; // 142 is Angielski (English)
       }
       if (!newFormData['66']) { // 66 is Jakość (Quality)
         newFormData['66'] = '176'; // 176 is Near Mint
+      }
+      if (!newFormData['65']) { // 65 is Wykończenie (Finish)
+        newFormData['65'] = '184'; // 184 is Normal
+      }
+      if (!newFormData['39']) { // 39 is Typ karty (Card Type)
+        newFormData['39'] = '182'; // 182 is Nie dotyczy (N/A)
       }
       
       // Set price directly from detected data if available
@@ -836,6 +848,15 @@ return (
                   <div className="mt-4">
                     <label className="text-xs text-gray-400">Kod produktu</label>
                     <input type="text" value={productCode} readOnly className="w-full p-2 rounded bg-gray-800 text-gray-400" />
+                  </div>
+
+                  <div className="mt-4 p-3 rounded-lg bg-gray-800 border border-gray-700">
+                    <label className="text-xs text-gray-400 block mb-1">Lokalizacja Magazynowa</label>
+                    {scanResult?.warehouse_code ? (
+                      <p className="text-lg font-bold text-green-400">{scanResult.warehouse_code}</p>
+                    ) : (
+                      <p className="text-lg font-bold text-yellow-400">karton premium</p>
+                    )}
                   </div>
 
                   <div className="mt-4 flex justify-end gap-2">

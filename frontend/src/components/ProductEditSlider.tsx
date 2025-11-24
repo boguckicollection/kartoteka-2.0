@@ -9,13 +9,17 @@ type Props = {
   product: Product
   onClose: () => void
   onUpdate: (product: Product) => Promise<void>
+  apiBase: string
 }
 
-export default function ProductEditSlider({ product, onClose, onUpdate }: Props) {
+export default function ProductEditSlider({ product, onClose, onUpdate, apiBase }: Props) {
   const [formData, setFormData] = useState<Product>(product)
   const [open, setOpen] = useState(false)
   const [isUpdating, setIsUpdating] = useState(false)
   const [isEditMode, setIsEditMode] = useState(false)
+  const [locations, setLocations] = useState<any[] | null>(null);
+  const [isLoadingLocations, setIsLoadingLocations] = useState(false);
+  const [locationsError, setLocationsError] = useState<string | null>(null);
 
   useEffect(() => {
     setFormData(product)
@@ -23,6 +27,30 @@ export default function ProductEditSlider({ product, onClose, onUpdate }: Props)
     const timer = setTimeout(() => setOpen(true), 50);
     return () => clearTimeout(timer);
   }, [product])
+
+  useEffect(() => {
+    if (product.shoper_id) {
+      const fetchLocations = async () => {
+        setIsLoadingLocations(true);
+        setLocationsError(null);
+        try {
+          const response = await fetch(`${apiBase}/products/${product.shoper_id}/locations`);
+          if (!response.ok) {
+            throw new Error('Failed to fetch locations');
+          }
+          const data = await response.json();
+          setLocations(data);
+        } catch (error: any) {
+          setLocationsError(error.message);
+        } finally {
+          setIsLoadingLocations(false);
+        }
+      };
+      fetchLocations();
+    } else {
+      setLocations(null);
+    }
+  }, [product.shoper_id, apiBase]);
 
   const handleClose = () => {
     setOpen(false);
@@ -111,10 +139,6 @@ export default function ProductEditSlider({ product, onClose, onUpdate }: Props)
                     <dd className="text-sm">{getNumberFromCode(product.code)}</dd>
                   </div>
                   <div className="flex justify-between">
-                    <dt className="text-sm font-medium text-gray-400">Miejsce magazynowe</dt>
-                    <dd className="text-sm font-mono bg-gray-800 px-2 py-1 rounded">{product.code}</dd>
-                  </div>
-                  <div className="flex justify-between">
                     <dt className="text-sm font-medium text-gray-400">Cena</dt>
                     <dd className="text-sm">{product.price ?? '-'} PLN</dd>
                   </div>
@@ -123,6 +147,27 @@ export default function ProductEditSlider({ product, onClose, onUpdate }: Props)
                     <dd className="text-sm">{product.stock ?? '-'}</dd>
                   </div>
                 </dl>
+              </div>
+
+              <div className="border-t border-white/10 pt-4 mt-4">
+                <h4 className="text-sm font-medium text-gray-300 mb-2">Miejsca magazynowe:</h4>
+                {isLoadingLocations && <p className="text-sm text-gray-500">Ładowanie miejsc magazynowych...</p>}
+                {locationsError && <p className="text-sm text-red-500">Błąd: {locationsError}</p>}
+                {locations && locations.length > 0 ? (
+                  <ul className="space-y-1">
+                    {locations.map((loc, index) => (
+                      <li key={index} className="text-sm font-mono bg-gray-800 px-2 py-1 rounded">
+                        Karton: {loc.karton}, Rząd: {loc.row}, Pozycja: {loc.position}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  !isLoadingLocations && !locationsError && (
+                    <div className="p-3 rounded-lg bg-gray-800 border border-yellow-600/50">
+                      <p className="text-lg font-bold text-yellow-400 text-center">karton premium</p>
+                    </div>
+                  )
+                )}
               </div>
             </div>
           )}

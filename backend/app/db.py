@@ -118,6 +118,7 @@ class Session(Base):
     id = Column(Integer, primary_key=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     status = Column(String(32), default="open", nullable=False)
+    starting_warehouse_code = Column(String(64), nullable=True)
 
 
 class InventoryItem(Base):
@@ -187,150 +188,62 @@ class PushSubscription(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
-    # Best-effort lightweight migration for SQLite: add new columns if missing
-    if settings.database_url.startswith("sqlite"):
-        with engine.begin() as conn:
+    # Best-effort lightweight migration for SQLite
+    if not settings.database_url.startswith("sqlite"):
+        return
+
+    # Define the full desired schema
+    schema = {
+        "scans": [
+            ("cardmarket_currency", "VARCHAR(8)"),
+            ("cardmarket_7d_average", "FLOAT"),
+            ("price_pln", "FLOAT"),
+            ("price_pln_final", "FLOAT"),
+            ("graded_psa10", "FLOAT"),
+            ("graded_currency", "VARCHAR(8)"),
+            ("session_id", "INTEGER"),
+            ("publish_status", "VARCHAR(32)"),
+            ("published_shoper_id", "INTEGER"),
+            ("published_at", "DATETIME"),
+            ("detected_rarity", "VARCHAR(64)"),
+            ("detected_energy", "VARCHAR(64)"),
+            ("detected_payload", "TEXT"),
+            ("stored_path_back", "TEXT"),
+            ("use_tcggo_image", "INTEGER DEFAULT 1"),
+            ("additional_images", "TEXT"),
+            ("warehouse_code", "VARCHAR(64)"),
+        ],
+        "sessions": [
+            ("starting_warehouse_code", "VARCHAR(64)"),
+        ],
+        "products": [
+            ("category_id", "INTEGER"),
+            ("categories", "TEXT"),
+            ("producer_id", "INTEGER"),
+            ("tax_id", "INTEGER"),
+            ("permalink", "TEXT"),
+            ("main_image_gfx_id", "VARCHAR(64)"),
+            ("main_image_extension", "VARCHAR(16)"),
+            ("main_image_unic_name", "VARCHAR(64)"),
+            ("tcggo_id", "VARCHAR(128)"),
+            ("fingerprint_hash", "TEXT"),
+            ("last_price_update", "DATETIME"),
+        ],
+        "scan_candidates": [
+            ("rarity", "VARCHAR(128)"),
+        ]
+    }
+
+    with engine.begin() as conn:
+        for table_name, columns in schema.items():
             try:
-                cols = conn.exec_driver_sql("PRAGMA table_info('scans')").fetchall()
-                have = {c[1] for c in cols}
-                alters = []
-                if "cardmarket_currency" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN cardmarket_currency VARCHAR(8)")
-                if "cardmarket_7d_average" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN cardmarket_7d_average FLOAT")
-                if "price_pln" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN price_pln FLOAT")
-                if "price_pln_final" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN price_pln_final FLOAT")
-                if "graded_psa10" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN graded_psa10 FLOAT")
-                if "graded_currency" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN graded_currency VARCHAR(8)")
-                if "session_id" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN session_id INTEGER")
-                if "publish_status" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN publish_status VARCHAR(32)")
-                if "published_shoper_id" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN published_shoper_id INTEGER")
-                if "published_at" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN published_at DATETIME")
-                if "detected_rarity" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN detected_rarity VARCHAR(64)")
-                if "detected_energy" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN detected_energy VARCHAR(64)")
-                if "detected_payload" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN detected_payload TEXT")
-                if "stored_path_back" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN stored_path_back TEXT")
-                if "use_tcggo_image" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN use_tcggo_image INTEGER DEFAULT 1")
-                if "additional_images" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN additional_images TEXT")
-                if "warehouse_code" not in have:
-                    alters.append("ALTER TABLE scans ADD COLUMN warehouse_code VARCHAR(64)")
-                for stmt in alters:
-                    conn.exec_driver_sql(stmt)
-                # Ensure inventory table exists
-                conn.exec_driver_sql(
-                    "CREATE TABLE IF NOT EXISTS inventory (\n"
-                    " id INTEGER PRIMARY KEY,\n"
-                    " name VARCHAR(255),\n"
-                    " number VARCHAR(64),\n"
-                    " set VARCHAR(255),\n"
-                    " warehouse_code VARCHAR(64),\n"
-                    " price FLOAT,\n"
-                    " image TEXT,\n"
-                    " variant VARCHAR(64),\n"
-                    " sold INTEGER,\n"
-                    " added_at VARCHAR(32)\n"
-                    ")"
-                )
-                # Ensure sessions table exists
-                conn.exec_driver_sql(
-                    "CREATE TABLE IF NOT EXISTS sessions (\n"
-                    " id INTEGER PRIMARY KEY,\n"
-                    " created_at DATETIME,\n"
-                    " status VARCHAR(32)\n"
-                    ")"
-                )
-                # Ensure fingerprints table exists
-                conn.exec_driver_sql(
-                    "CREATE TABLE IF NOT EXISTS fingerprints (\n"
-                    " id INTEGER PRIMARY KEY,\n"
-                    " scan_id INTEGER,\n"
-                    " phash TEXT NOT NULL,\n"
-                    " dhash TEXT NOT NULL,\n"
-                    " tile_phash TEXT NOT NULL,\n"
-                    " orb TEXT,\n"
-                    " meta TEXT\n"
-                    ")"
-                )
-                # Ensure products table exists
-                conn.exec_driver_sql(
-                    "CREATE TABLE IF NOT EXISTS products (\n"
-                    " id INTEGER PRIMARY KEY,\n"
-                    " shoper_id INTEGER UNIQUE,\n"
-                    " code VARCHAR(128),\n"
-                    " name VARCHAR(255),\n"
-                    " price FLOAT,\n"
-                    " stock INTEGER,\n"
-                    " image TEXT,\n"
-                    " updated_at DATETIME,\n"
-                    " category_id INTEGER,\n"
-                    " categories TEXT,\n"
-                    " producer_id INTEGER,\n"
-                    " tax_id INTEGER,\n"
-                    " permalink TEXT,\n"
-                    " main_image_gfx_id VARCHAR(64),\n"
-                    " main_image_extension VARCHAR(16),\n"
-                    " main_image_unic_name VARCHAR(64)\n"
-                    ")"
-                )
-                # Ensure price_history table exists
-                conn.exec_driver_sql(
-                    "CREATE TABLE IF NOT EXISTS price_history (\n"
-                    " id INTEGER PRIMARY KEY,\n"
-                    " product_id INTEGER NOT NULL,\n"
-                    " price FLOAT NOT NULL,\n"
-                    " timestamp DATETIME NOT NULL,\n"
-                    " FOREIGN KEY(product_id) REFERENCES products(id)\n"
-                    ")"
-                )
-                # Add columns if table exists from earlier
-                cols_p = conn.exec_driver_sql("PRAGMA table_info('products')").fetchall()
-                have_p = {c[1] for c in cols_p}
-                add_cols = []
-                if "category_id" not in have_p:
-                    add_cols.append("ALTER TABLE products ADD COLUMN category_id INTEGER")
-                if "categories" not in have_p:
-                    add_cols.append("ALTER TABLE products ADD COLUMN categories TEXT")
-                if "producer_id" not in have_p:
-                    add_cols.append("ALTER TABLE products ADD COLUMN producer_id INTEGER")
-                if "tax_id" not in have_p:
-                    add_cols.append("ALTER TABLE products ADD COLUMN tax_id INTEGER")
-                if "permalink" not in have_p:
-                    add_cols.append("ALTER TABLE products ADD COLUMN permalink TEXT")
-                if "main_image_gfx_id" not in have_p:
-                    add_cols.append("ALTER TABLE products ADD COLUMN main_image_gfx_id VARCHAR(64)")
-                if "main_image_extension" not in have_p:
-                    add_cols.append("ALTER TABLE products ADD COLUMN main_image_extension VARCHAR(16)")
-                if "main_image_unic_name" not in have_p:
-                    add_cols.append("ALTER TABLE products ADD COLUMN main_image_unic_name VARCHAR(64)")
-                if "tcggo_id" not in have_p:
-                    add_cols.append("ALTER TABLE products ADD COLUMN tcggo_id VARCHAR(128)")
-                if "fingerprint_hash" not in have_p:
-                    add_cols.append("ALTER TABLE products ADD COLUMN fingerprint_hash TEXT")
-                if "last_price_update" not in have_p:
-                    add_cols.append("ALTER TABLE products ADD COLUMN last_price_update DATETIME")
-                for stmt in add_cols:
-                    conn.exec_driver_sql(stmt)
-                # Migrate scan_candidates table
-                cols_sc = conn.exec_driver_sql("PRAGMA table_info('scan_candidates')").fetchall()
-                have_sc = {c[1] for c in cols_sc}
-                add_cols_sc = []
-                if "rarity" not in have_sc:
-                    add_cols_sc.append("ALTER TABLE scan_candidates ADD COLUMN rarity VARCHAR(128)")
-                for stmt in add_cols_sc:
-                    conn.exec_driver_sql(stmt)
-            except Exception:
-                pass
+                # Check if table exists
+                res = conn.exec_driver_sql(f"PRAGMA table_info('{table_name}')").fetchall()
+                existing_columns = {row[1] for row in res}
+                
+                for col_name, col_type in columns:
+                    if col_name not in existing_columns:
+                        print(f"Adding column '{col_name}' to table '{table_name}'...")
+                        conn.exec_driver_sql(f'ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}')
+            except Exception as e:
+                print(f"Could not migrate table {table_name}: {e}")
