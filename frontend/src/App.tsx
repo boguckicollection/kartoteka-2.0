@@ -446,7 +446,6 @@ export default function App() {
           product={selectedProduct} 
           onClose={handleCloseSlider} 
           onUpdate={handleUpdateProduct}
-          // The apiBase prop needs to be passed here
           apiBase={apiBase}
         />
       )}

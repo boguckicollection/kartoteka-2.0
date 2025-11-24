@@ -83,6 +83,16 @@ export default function ProductEditSlider({ product, onClose, onUpdate, apiBase 
     return parts[parts.length - 1] || 'N/A';
   };
 
+  const parseWarehouseCode = (code: string) => {
+    const match = code.match(/K(P|\d+)-R(\d+)-P(\d+)/);
+    if (!match) return null;
+    return {
+      karton: match[1] === 'P' ? 'Premium' : match[1],
+      rzad: match[2],
+      pozycja: match[3],
+    };
+  };
+
   return (
     <div className={`fixed inset-0 z-40 ${open ? 'pointer-events-auto' : 'pointer-events-none'}`}>
       <div className={`absolute inset-0 bg-black/50 transition-opacity ${open ? 'opacity-100' : 'opacity-0'}`} onClick={handleClose} />
@@ -157,12 +167,26 @@ export default function ProductEditSlider({ product, onClose, onUpdate, apiBase 
                 {isLoadingLocations && <p className="text-sm text-gray-500">Ładowanie...</p>}
                 {locationsError && <p className="text-sm text-red-400">Błąd: {locationsError}</p>}
                 {locations && locations.length > 0 ? (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {locations.map((loc, index) => (
-                      <div key={index} className="text-sm font-mono bg-gray-800/50 border border-gray-700/50 px-3 py-2 rounded-lg text-center text-white">
-                        {loc.warehouse_code}
-                      </div>
-                    ))}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {locations.map((loc, index) => {
+                      const parsed = parseWarehouseCode(loc.warehouse_code);
+                      return (
+                        <div key={index} className="bg-gray-800/50 border border-gray-700/50 p-3 rounded-lg">
+                          <div className="flex justify-between items-baseline">
+                            <span className="text-xs text-gray-500">Karton</span>
+                            <span className="font-mono text-lg text-cyan-400">{parsed?.karton || '-'}</span>
+                          </div>
+                          <div className="flex justify-between items-baseline mt-1">
+                            <span className="text-xs text-gray-500">Rząd</span>
+                            <span className="font-mono text-lg text-cyan-400">{parsed?.rzad || '-'}</span>
+                          </div>
+                          <div className="flex justify-between items-baseline mt-1">
+                            <span className="text-xs text-gray-500">Pozycja</span>
+                            <span className="font-mono text-lg text-cyan-400">{parsed?.pozycja || '-'}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : (
                   !isLoadingLocations && !locationsError && (
