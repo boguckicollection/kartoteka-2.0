@@ -286,7 +286,7 @@ export default function StartSessionView({ onSessionStarted, apiBase }: Props) {
 
           {/* Skip option */}
           <p className="text-center text-xs text-gray-500">
-            Pozostaw puste, aby użyć automatycznej numeracji
+            Pozostaw puste, aby uzyc automatycznej numeracji
           </p>
         </div>
       </div>

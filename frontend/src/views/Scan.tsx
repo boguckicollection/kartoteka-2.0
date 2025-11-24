@@ -36,9 +36,10 @@ type Props = {
   initStatus?: string
   zoomCaps?: {min: number, max: number, step: number} | null
   setZoom?: (zoom: number) => void
+  onBatchScan?: ()=>void
 }
 
-export default function ScanView({ session, preview, loading, analyzing, status, ripple, result, selected, onPick, onFile, onFolderChange, onCsvUpload, onStartSession, onSubmit, onConfirm, rightExtras, showFileInputs = true, torchSupported=false, torchOn=false, onToggleTorch, tapFocusSupported=false, onTapToFocus, lowLight=false, qualityCommitMin=0.55, qualityLive=null, onEndSession, onForceCommit, videoRef, initStatus, zoomCaps, setZoom }: Props){
+export default function ScanView({ session, preview, loading, analyzing, status, ripple, result, selected, onPick, onFile, onFolderChange, onCsvUpload, onStartSession, onSubmit, onConfirm, rightExtras, showFileInputs = true, torchSupported=false, torchOn=false, onToggleTorch, tapFocusSupported=false, onTapToFocus, lowLight=false, qualityCommitMin=0.55, qualityLive=null, onEndSession, onForceCommit, videoRef, initStatus, zoomCaps, setZoom, onBatchScan }: Props){
   const isAndroid = useMemo(()=>/Android/i.test(navigator.userAgent||''), [])
   const [focusPt, setFocusPt] = useState<{x:number;y:number}|null>(null)
   const [showAll, setShowAll] = useState(false)
@@ -571,11 +572,11 @@ return (
                 </button>
               </div>
 
-              {/* Cały folder */}
+              {/* Cały folder - Batch Scan */}
               <div className="relative group">
                 <div className="absolute -inset-1 bg-gradient-to-r from-purple-500/30 to-pink-500/30 rounded-2xl blur-lg opacity-0 group-hover:opacity-100 transition duration-500"></div>
                 <button 
-                  onClick={() => { onStartSession?.(); setScanSubMode('folder'); }} 
+                  onClick={() => onBatchScan?.()} 
                   className="relative flex flex-col items-center justify-center w-52 h-56 p-6 bg-[#0f172a] border border-gray-700/50 rounded-2xl shadow-xl hover:border-purple-500/50 transition-all duration-300 group-hover:shadow-purple-500/10"
                 >
                   <div className="relative mb-4">
@@ -584,8 +585,8 @@ return (
                       <span className="material-symbols-outlined text-4xl text-purple-400">folder_open</span>
                     </div>
                   </div>
-                  <span className="text-lg font-bold text-white mb-1">Cały folder</span>
-                  <span className="text-xs text-gray-400 text-center px-2">Prześlij folder ze skanami</span>
+                  <span className="text-lg font-bold text-white mb-1">Cały katalog</span>
+                  <span className="text-xs text-gray-400 text-center px-2">Prześlij wiele kart naraz</span>
                 </button>
               </div>
             </div>

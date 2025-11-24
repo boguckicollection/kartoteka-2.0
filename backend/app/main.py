@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import httpx
 import json
 import os
-from typing import Any, Optional
+from typing import Any, Optional, List
 
 from .settings import settings
 from .schemas import ScanResponse, DetectedData, Candidate, ConfirmRequest, ConfirmResponse, ScanHistoryItem, ScanDetailResponse, CreateProductRequest, ProbeResponse, ProductUpdateRequest
@@ -3531,19 +3531,21 @@ async def reports(range_days: int | None = None, low_stock_threshold: int = 1, t
         scans_per_day = [{"date": k, "count": scan_map[k]} for k in keys]
 
         # Category breakdown (top N)
-        _CATEGORY_NAMES = {}
+        # Start with fallback categories
+        _CATEGORY_NAMES = {c["category_id"]: c["name"] for c in _CATEGORIES_FALLBACK}
+        # Try to get fresh data from Shoper API
         if settings.shoper_base_url and settings.shoper_access_token:
             try:
                 client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
                 all_categories = await get_shoper_categories(client)
-                _CATEGORY_NAMES = {
-                    int(c.get("category_id") or c.get("id")):
-                    (c.get("translations", {}).get("pl_PL", {}).get("name") or c.get("name"))
-                    for c in all_categories
-                    if (c.get("category_id") or c.get("id"))
-                }
+                for c in all_categories:
+                    cid = c.get("category_id") or c.get("id")
+                    if cid:
+                        name = c.get("translations", {}).get("pl_PL", {}).get("name") or c.get("name")
+                        if name:
+                            _CATEGORY_NAMES[int(cid)] = name
             except Exception:
-                pass # Fallback to empty names
+                pass  # Keep fallback names
 
         cats = (
             db.query(Product.category_id, func.count(Product.id))
@@ -3594,6 +3596,7 @@ async def reports(range_days: int | None = None, low_stock_threshold: int = 1, t
                 "stock": s,
                 "price": p,
                 "permalink": r.permalink,
+                "image": _product_image_url(r),
                 "value": s * p,
             })
         top_value = sorted(enriched, key=lambda x: x["value"], reverse=True)[: max(1, min(50, int(top_n)))]
@@ -3624,6 +3627,739 @@ async def reports(range_days: int | None = None, low_stock_threshold: int = 1, t
         }
     finally:
         db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BATCH SCAN ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/batch/start")
+async def batch_start(
+    files: List[UploadFile] = File(...),
+    session_id: Optional[str] = Form(default=None),
+    starting_warehouse_code: Optional[str] = Form(default=None),
+):
+    """
+    Start a new batch scan session by uploading multiple images.
+    Accepts session_id for warehouse code tracking.
+    Returns batch_id and list of queued items.
+    """
+    from .db import BatchScan, BatchScanItem, Session
+    
+    db = SessionLocal()
+    try:
+        # Parse session_id
+        sess_id: int | None = None
+        if session_id and session_id.isdigit():
+            sess_id = int(session_id)
+        
+        # Get starting code from session if not provided
+        starting_code = starting_warehouse_code
+        if sess_id and not starting_code:
+            session = db.get(Session, sess_id)
+            if session and session.starting_warehouse_code:
+                starting_code = session.starting_warehouse_code
+        
+        # Create batch session
+        batch = BatchScan(
+            status="pending",
+            total_items=len(files),
+            processed_items=0,
+            successful_items=0,
+            failed_items=0,
+            session_id=sess_id,
+            starting_warehouse_code=starting_code,
+        )
+        db.add(batch)
+        db.commit()
+        db.refresh(batch)
+        
+        items_created = []
+        for file in files:
+            # Save file to disk
+            filename = file.filename or f"batch_{batch.id}_{len(items_created)}.jpg"
+            safe_filename = filename.replace("/", "_").replace("\\", "_")
+            stored_path = Path(settings.upload_dir) / f"batch_{batch.id}_{safe_filename}"
+            
+            content = await file.read()
+            stored_path.write_bytes(content)
+            
+            # Create batch item
+            item = BatchScanItem(
+                batch_id=batch.id,
+                filename=safe_filename,
+                stored_path=str(stored_path),
+                status="pending",
+            )
+            db.add(item)
+            items_created.append({
+                "filename": safe_filename,
+                "status": "pending",
+            })
+        
+        db.commit()
+        
+        return {
+            "batch_id": batch.id,
+            "session_id": sess_id,
+            "starting_warehouse_code": starting_code,
+            "total_items": len(items_created),
+            "items": items_created,
+            "status": "pending",
+        }
+    finally:
+        db.close()
+
+
+@app.get("/batch/{batch_id}/status")
+async def batch_status(batch_id: int):
+    """
+    Get current status of batch scan processing.
+    """
+    from .db import BatchScan, BatchScanItem
+    
+    db = SessionLocal()
+    try:
+        batch = db.get(BatchScan, batch_id)
+        if not batch:
+            return JSONResponse({"error": "Batch not found"}, status_code=404)
+        
+        return {
+            "batch_id": batch.id,
+            "status": batch.status,
+            "total_items": batch.total_items,
+            "processed_items": batch.processed_items,
+            "successful_items": batch.successful_items,
+            "failed_items": batch.failed_items,
+            "current_filename": batch.current_filename,
+            "progress_percent": round((batch.processed_items / max(1, batch.total_items)) * 100, 1),
+            "created_at": batch.created_at.isoformat() if batch.created_at else None,
+            "completed_at": batch.completed_at.isoformat() if batch.completed_at else None,
+        }
+    finally:
+        db.close()
+
+
+@app.post("/batch/{batch_id}/analyze-next")
+async def batch_analyze_next(batch_id: int):
+    """
+    Analyze the next pending item in the batch using FULL scan logic:
+    - OpenAI Vision analysis
+    - TCGGO provider search and details
+    - Cardmarket pricing with variants
+    - Fingerprint duplicate detection
+    - Shoper attribute mapping
+    - Warehouse code assignment
+    """
+    from .db import BatchScan, BatchScanItem, Session, Fingerprint, CardCatalog
+    import json as json_module
+    
+    db = SessionLocal()
+    try:
+        batch = db.get(BatchScan, batch_id)
+        if not batch:
+            return JSONResponse({"error": "Batch not found"}, status_code=404)
+        
+        # Find next pending item
+        next_item = db.query(BatchScanItem).filter(
+            BatchScanItem.batch_id == batch_id,
+            BatchScanItem.status == "pending"
+        ).first()
+        
+        if not next_item:
+            # All items processed
+            batch.status = "completed"
+            batch.completed_at = datetime.utcnow()
+            db.commit()
+            return {
+                "status": "completed",
+                "batch_id": batch_id,
+                "message": "All items processed",
+            }
+        
+        # Update batch status
+        batch.status = "processing"
+        batch.current_filename = next_item.filename
+        next_item.status = "processing"
+        db.commit()
+        
+        try:
+            image_path = Path(next_item.stored_path)
+            if not image_path.exists():
+                raise FileNotFoundError(f"Image not found: {next_item.stored_path}")
+            
+            # === STEP 1: Assign warehouse code ===
+            starting_code = batch.starting_warehouse_code
+            if batch.session_id and not starting_code:
+                session = db.get(Session, batch.session_id)
+                if session and session.starting_warehouse_code:
+                    starting_code = session.starting_warehouse_code
+            
+            try:
+                warehouse_code = get_next_free_location(db, starting_code=starting_code)
+                next_item.warehouse_code = warehouse_code
+            except Exception as e:
+                print(f"WARNING: Could not assign warehouse code: {e}")
+                warehouse_code = None
+            
+            # === STEP 2: Fingerprint & Duplicate Detection ===
+            duplicate_hit_id = None
+            duplicate_distance = None
+            try:
+                from PIL import Image as _PILImage
+                with _PILImage.open(image_path) as _im:
+                    fp = compute_fingerprint(_im, use_orb=True)
+                
+                # Check for duplicates
+                if settings.duplicate_check_enabled:
+                    src_phash = fp["phash"]
+                    src_dhash = fp["dhash"]
+                    src_tile = fp["tile_phash"]
+                    rows = db.query(Fingerprint).all()
+                    best_dist = None
+                    best_id = None
+                    for r in rows:
+                        try:
+                            ph = unpack_ndarray(r.phash)
+                            dh = unpack_ndarray(r.dhash)
+                            tl = unpack_ndarray(r.tile_phash)
+                        except Exception:
+                            continue
+                        score = 0
+                        score += hamming_distance(src_phash, ph)
+                        score += hamming_distance(src_dhash, dh)
+                        if getattr(settings, 'duplicate_use_tiles', True):
+                            try:
+                                for a, b in zip(src_tile, tl):
+                                    score += hamming_distance(a, b)
+                            except Exception:
+                                score += 999
+                        if best_dist is None or score < best_dist:
+                            best_dist = score
+                            best_id = r.scan_id
+                    thr = max(1, int(getattr(settings, 'duplicate_distance_threshold', 80)))
+                    if best_dist is not None and best_dist <= thr and best_id is not None:
+                        duplicate_hit_id = int(best_id)
+                        duplicate_distance = int(best_dist)
+                        next_item.duplicate_of_scan_id = duplicate_hit_id
+                        next_item.duplicate_distance = duplicate_distance
+            except Exception as e:
+                print(f"Fingerprint error: {e}")
+            
+            # === STEP 3: Vision Analysis (OpenAI) ===
+            detected_data = analyze_card(str(image_path))
+            
+            next_item.detected_name = detected_data.get("name")
+            next_item.detected_set = detected_data.get("set")
+            next_item.detected_set_code = detected_data.get("set_code")
+            next_item.detected_number = detected_data.get("number")
+            next_item.detected_language = detected_data.get("language")
+            next_item.detected_variant = detected_data.get("variant")
+            next_item.detected_condition = detected_data.get("condition")
+            next_item.detected_rarity = detected_data.get("rarity")
+            next_item.detected_energy = detected_data.get("energy")
+            
+            # === STEP 4: Provider Search ===
+            provider = get_provider()
+            detected_schema = DetectedData(**detected_data)
+            candidates = await provider.search(detected_schema)
+            
+            candidates_list = []
+            best_candidate = None
+            details = None
+            
+            if candidates:
+                for i, cand in enumerate(candidates[:5]):
+                    cand_dict = {
+                        "id": cand.id,
+                        "name": cand.name,
+                        "set": cand.set,
+                        "set_code": cand.set_code,
+                        "number": cand.number,
+                        "rarity": cand.rarity,
+                        "image": cand.image,
+                        "score": cand.score,
+                    }
+                    
+                    # Get details for top candidate
+                    if i == 0:
+                        try:
+                            details = await provider.details(cand.id)
+                            best_candidate = cand
+                            
+                            # Update image from details
+                            detailed_image = details.get("image")
+                            if not detailed_image and isinstance(details.get("images"), dict):
+                                detailed_image = details["images"].get("large") or details["images"].get("small")
+                            if detailed_image:
+                                cand_dict["image"] = detailed_image
+                                
+                        except Exception as e:
+                            print(f"Details fetch error: {e}")
+                    
+                    candidates_list.append(cand_dict)
+            
+            next_item.candidates_json = json_module.dumps(candidates_list)
+            
+            # === STEP 5: Apply best match data ===
+            if best_candidate:
+                next_item.matched_provider_id = best_candidate.id
+                next_item.matched_name = best_candidate.name
+                next_item.matched_set = best_candidate.set
+                next_item.matched_set_code = best_candidate.set_code
+                next_item.matched_number = best_candidate.number
+                next_item.matched_rarity = best_candidate.rarity
+                next_item.matched_image = candidates_list[0].get("image") if candidates_list else best_candidate.image
+                next_item.match_score = best_candidate.score
+                
+                # Update from details
+                if details:
+                    next_item.matched_set = details.get("episode", {}).get("name") or next_item.matched_set
+                    next_item.matched_set_code = details.get("episode", {}).get("code") or next_item.matched_set_code
+                    next_item.matched_rarity = details.get("rarity") or next_item.matched_rarity
+                    
+                    # Extract energy
+                    types = details.get('types')
+                    if isinstance(types, list) and types:
+                        next_item.detected_energy = types[0]
+                    elif isinstance(types, str):
+                        next_item.detected_energy = types
+            
+            # === STEP 6: Pricing with Variants ===
+            variants_data = []
+            if details:
+                try:
+                    price_variants = list_variant_prices(details)
+                    variants_data = price_variants
+                    
+                    # Find primary price
+                    primary_price_pln_final = None
+                    primary_price_eur = None
+                    for label_priority in ['Normal', 'Holo', 'Reverse Holo']:
+                        variant_info = next((p for p in price_variants if p.get('label') == label_priority), None)
+                        if variant_info:
+                            if variant_info.get('price_pln_final') is not None:
+                                primary_price_pln_final = variant_info.get('price_pln_final')
+                            if variant_info.get('eur') is not None:
+                                primary_price_eur = variant_info.get('eur')
+                            break
+                    
+                    next_item.price_pln_final = primary_price_pln_final
+                    next_item.price_eur = primary_price_eur
+                    if primary_price_eur and not primary_price_pln_final:
+                        next_item.price_pln = round(primary_price_eur * settings.eur_pln_rate, 2)
+                        next_item.price_pln_final = round(primary_price_eur * settings.eur_pln_rate * settings.price_multiplier, 2)
+                        
+                except Exception as e:
+                    print(f"Pricing error: {e}")
+            
+            next_item.variants_json = json_module.dumps(variants_data)
+            
+            # === STEP 7: Shoper Attribute Mapping ===
+            try:
+                detected_attrs = {
+                    "rarity": next_item.matched_rarity or next_item.detected_rarity,
+                    "variant": next_item.detected_variant,
+                    "condition": next_item.detected_condition,
+                    "energy": next_item.detected_energy,
+                    "language": next_item.detected_language,
+                }
+                
+                if settings.shoper_base_url and settings.shoper_access_token:
+                    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+                    tax = await client.fetch_attributes()
+                    items = tax.get("items") if isinstance(tax, dict) else []
+                    if items:
+                        mapped = map_detected_to_shoper_attributes(detected_attrs, items)
+                        next_item.attr_language = mapped.get('64')  # Language
+                        next_item.attr_condition = mapped.get('66')  # Condition  
+                        next_item.attr_finish = mapped.get('65')  # Finish
+                        next_item.attr_rarity = mapped.get('38')  # Rarity
+                        next_item.attr_energy = mapped.get('63')  # Energy
+                        next_item.attr_card_type = mapped.get('39')  # Card Type
+            except Exception as e:
+                print(f"Attribute mapping error: {e}")
+            
+            # Set defaults if not mapped
+            if not next_item.attr_language:
+                next_item.attr_language = '142'  # English
+            if not next_item.attr_condition:
+                next_item.attr_condition = '176'  # Near Mint
+            if not next_item.attr_finish:
+                next_item.attr_finish = '184'  # Normal
+            if not next_item.attr_card_type:
+                next_item.attr_card_type = '182'  # N/A
+            
+            # === STEP 8: Calculate completeness ===
+            fields = {
+                "name": bool(next_item.matched_name or next_item.detected_name),
+                "set": bool(next_item.matched_set or next_item.detected_set),
+                "number": bool(next_item.matched_number or next_item.detected_number),
+                "image": bool(next_item.matched_image),
+                "price": bool(next_item.price_pln_final or next_item.price_eur),
+                "rarity": bool(next_item.matched_rarity or next_item.detected_rarity),
+                "energy": bool(next_item.detected_energy),
+            }
+            next_item.fields_status = json_module.dumps(fields)
+            next_item.fields_complete = sum(1 for v in fields.values() if v)
+            next_item.fields_total = len(fields)
+            
+            next_item.status = "success"
+            next_item.processed_at = datetime.utcnow()
+            batch.processed_items += 1
+            batch.successful_items += 1
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            next_item.status = "failed"
+            next_item.error_message = str(e)
+            next_item.processed_at = datetime.utcnow()
+            batch.processed_items += 1
+            batch.failed_items += 1
+        
+        db.commit()
+        db.refresh(next_item)
+        
+        # Build response
+        variants = []
+        if next_item.variants_json:
+            try:
+                variants = json_module.loads(next_item.variants_json)
+            except:
+                pass
+        
+        candidates_response = []
+        if next_item.candidates_json:
+            try:
+                candidates_response = json_module.loads(next_item.candidates_json)
+            except:
+                pass
+        
+        return {
+            "status": "processed",
+            "batch_id": batch_id,
+            "item": {
+                "id": next_item.id,
+                "filename": next_item.filename,
+                "status": next_item.status,
+                "image_url": f"/uploads/{Path(next_item.stored_path).name}" if next_item.stored_path else None,
+                # Detected
+                "detected_name": next_item.detected_name,
+                "detected_set": next_item.detected_set,
+                "detected_number": next_item.detected_number,
+                "detected_rarity": next_item.detected_rarity,
+                "detected_energy": next_item.detected_energy,
+                "detected_language": next_item.detected_language,
+                "detected_variant": next_item.detected_variant,
+                "detected_condition": next_item.detected_condition,
+                # Matched
+                "matched_provider_id": next_item.matched_provider_id,
+                "matched_name": next_item.matched_name,
+                "matched_set": next_item.matched_set,
+                "matched_set_code": next_item.matched_set_code,
+                "matched_number": next_item.matched_number,
+                "matched_rarity": next_item.matched_rarity,
+                "matched_image": next_item.matched_image,
+                "match_score": next_item.match_score,
+                # Pricing
+                "price_eur": next_item.price_eur,
+                "price_pln": next_item.price_pln,
+                "price_pln_final": next_item.price_pln_final,
+                "variants": variants,
+                # Duplicates
+                "duplicate_of_scan_id": next_item.duplicate_of_scan_id,
+                "duplicate_distance": next_item.duplicate_distance,
+                # Attributes
+                "attr_language": next_item.attr_language,
+                "attr_condition": next_item.attr_condition,
+                "attr_finish": next_item.attr_finish,
+                "attr_rarity": next_item.attr_rarity,
+                "attr_energy": next_item.attr_energy,
+                # Warehouse
+                "warehouse_code": next_item.warehouse_code,
+                # Candidates
+                "candidates": candidates_response,
+                # Completeness
+                "fields_complete": next_item.fields_complete,
+                "fields_total": next_item.fields_total,
+                "error_message": next_item.error_message,
+            },
+            "progress": {
+                "processed": batch.processed_items,
+                "total": batch.total_items,
+                "percent": round((batch.processed_items / max(1, batch.total_items)) * 100, 1),
+            },
+        }
+    finally:
+        db.close()
+
+
+@app.get("/batch/{batch_id}/items")
+async def batch_items(batch_id: int):
+    """
+    Get all items in a batch with their current status.
+    """
+    from .db import BatchScan, BatchScanItem
+    import json as json_module
+    
+    db = SessionLocal()
+    try:
+        batch = db.get(BatchScan, batch_id)
+        if not batch:
+            return JSONResponse({"error": "Batch not found"}, status_code=404)
+        
+        items = db.query(BatchScanItem).filter(BatchScanItem.batch_id == batch_id).all()
+        
+        result = []
+        for item in items:
+            result.append({
+                "id": item.id,
+                "filename": item.filename,
+                "status": item.status,
+                "stored_path": item.stored_path,
+                "image_url": f"/uploads/{Path(item.stored_path).name}" if item.stored_path else None,
+                "detected_name": item.detected_name,
+                "detected_set": item.detected_set,
+                "detected_number": item.detected_number,
+                "detected_variant": item.detected_variant,
+                "detected_condition": item.detected_condition,
+                "matched_provider_id": item.matched_provider_id,
+                "matched_name": item.matched_name,
+                "matched_set": item.matched_set,
+                "matched_number": item.matched_number,
+                "matched_image": item.matched_image,
+                "match_score": item.match_score,
+                "price_eur": item.price_eur,
+                "price_pln": item.price_pln,
+                "fields_complete": item.fields_complete,
+                "fields_total": item.fields_total,
+                "fields_status": json_module.loads(item.fields_status) if item.fields_status else None,
+                "error_message": item.error_message,
+                "publish_status": item.publish_status,
+                "warehouse_code": item.warehouse_code,
+            })
+        
+        return {
+            "batch_id": batch_id,
+            "status": batch.status,
+            "total_items": batch.total_items,
+            "processed_items": batch.processed_items,
+            "items": result,
+        }
+    finally:
+        db.close()
+
+
+@app.patch("/batch/{batch_id}/items/{item_id}")
+async def batch_update_item(batch_id: int, item_id: int, request: Request):
+    """
+    Update a single item in the batch (for manual corrections).
+    """
+    from .db import BatchScan, BatchScanItem
+    import json as json_module
+    
+    db = SessionLocal()
+    try:
+        item = db.query(BatchScanItem).filter(
+            BatchScanItem.batch_id == batch_id,
+            BatchScanItem.id == item_id
+        ).first()
+        
+        if not item:
+            return JSONResponse({"error": "Item not found"}, status_code=404)
+        
+        data = await request.json()
+        
+        # Update allowed fields
+        updatable = [
+            "detected_name", "detected_set", "detected_number",
+            "detected_variant", "detected_condition", "detected_language",
+            "matched_provider_id", "matched_name", "matched_set", "matched_number", "matched_image",
+            "price_eur", "price_pln", "warehouse_code"
+        ]
+        
+        for field in updatable:
+            if field in data:
+                setattr(item, field, data[field])
+        
+        # Recalculate completeness
+        fields = {
+            "name": bool(item.matched_name or item.detected_name),
+            "set": bool(item.matched_set or item.detected_set),
+            "number": bool(item.matched_number or item.detected_number),
+            "image": bool(item.matched_image),
+            "price": bool(item.price_eur or item.price_pln),
+            "variant": bool(item.detected_variant),
+            "condition": bool(item.detected_condition),
+        }
+        item.fields_status = json_module.dumps(fields)
+        item.fields_complete = sum(1 for v in fields.values() if v)
+        
+        db.commit()
+        db.refresh(item)
+        
+        return {
+            "status": "updated",
+            "item": {
+                "id": item.id,
+                "filename": item.filename,
+                "fields_complete": item.fields_complete,
+                "fields_total": item.fields_total,
+            }
+        }
+    finally:
+        db.close()
+
+
+@app.post("/batch/{batch_id}/publish")
+async def batch_publish(batch_id: int, request: Request):
+    """
+    Publish all successful items in the batch to Shoper.
+    Can optionally specify item_ids to publish only selected items.
+    """
+    from .db import BatchScan, BatchScanItem
+    
+    db = SessionLocal()
+    try:
+        batch = db.get(BatchScan, batch_id)
+        if not batch:
+            return JSONResponse({"error": "Batch not found"}, status_code=404)
+        
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+        
+        item_ids = data.get("item_ids")  # Optional: publish only selected
+        
+        # Get items to publish
+        query = db.query(BatchScanItem).filter(
+            BatchScanItem.batch_id == batch_id,
+            BatchScanItem.status == "success",
+            BatchScanItem.publish_status.is_(None)
+        )
+        if item_ids:
+            query = query.filter(BatchScanItem.id.in_(item_ids))
+        
+        items = query.all()
+        
+        if not items:
+            return {"status": "no_items", "message": "No items to publish"}
+        
+        # Check Shoper credentials
+        if not settings.shoper_base_url or not settings.shoper_access_token:
+            return JSONResponse({"error": "Shoper not configured"}, status_code=400)
+        
+        published = []
+        failed = []
+        
+        client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+        
+        # Prepare headers for direct API calls
+        headers = {
+            "Authorization": f"Bearer {client.token}",
+            "Accept": "application/json",
+        }
+        products_url = f"{client.base_url}{settings.shoper_products_path}"
+        
+        async with httpx.AsyncClient(timeout=30) as http:
+            for item in items:
+                try:
+                    # Build product data
+                    name = item.matched_name or item.detected_name or item.filename
+                    
+                    # Calculate price
+                    price_pln = item.price_pln
+                    if not price_pln and item.price_eur:
+                        price_pln = round(item.price_eur * settings.eur_pln_rate * settings.price_multiplier, 2)
+                    if not price_pln:
+                        price_pln = 9.99  # Default price
+                    
+                    product_data = {
+                        "translations": {
+                            settings.default_language_code: {
+                                "name": name,
+                                "active": "1",
+                            }
+                        },
+                        "stock": {
+                            "stock": 1,
+                            "price": f"{price_pln:.2f}",
+                        },
+                        "producer_id": 1,
+                    }
+                    
+                    if item.warehouse_code:
+                        product_data["code"] = item.warehouse_code
+                    
+                    # Try to determine category from matched_set
+                    if item.matched_set:
+                        # Try to find category by set name
+                        for cat in _CATEGORIES_FALLBACK:
+                            if cat["name"].lower() == item.matched_set.lower():
+                                product_data["category_id"] = cat["category_id"]
+                                break
+                    
+                    # Create product in Shoper via direct POST
+                    if settings.publish_dry_run:
+                        # Dry run - simulate success
+                        item.publish_status = "published"
+                        item.published_shoper_id = 0
+                        published.append({"id": item.id, "filename": item.filename, "shoper_id": 0, "dry_run": True})
+                        continue
+                    
+                    r = await http.post(products_url, json=product_data, headers=headers)
+                    
+                    if r.status_code in (200, 201):
+                        response_json = r.json()
+                        product_id = None
+                        if isinstance(response_json, dict):
+                            product_id = response_json.get("product_id") or response_json.get("id")
+                        elif isinstance(response_json, (int, str)):
+                            try:
+                                product_id = int(response_json)
+                            except (ValueError, TypeError):
+                                pass
+                        
+                        if product_id:
+                            item.publish_status = "published"
+                            item.published_shoper_id = product_id
+                            published.append({"id": item.id, "filename": item.filename, "shoper_id": product_id})
+                            
+                            # Upload image if available
+                            if item.matched_image:
+                                try:
+                                    img_result = await client.upload_product_image(product_id, item.matched_image, main=True)
+                                    if img_result.get("error"):
+                                        print(f"WARNING: Image upload failed for item {item.id}: {img_result.get('message')}")
+                                except Exception as img_e:
+                                    print(f"WARNING: Image upload exception for item {item.id}: {img_e}")
+                        else:
+                            raise Exception("No product_id in response")
+                    else:
+                        error_text = r.text[:200] if r.text else "Unknown error"
+                        raise Exception(f"HTTP {r.status_code}: {error_text}")
+                        
+                except Exception as e:
+                    item.publish_status = "failed"
+                    item.error_message = str(e)
+                    failed.append({"id": item.id, "filename": item.filename, "error": str(e)})
+        
+        db.commit()
+        
+        return {
+            "status": "completed",
+            "published_count": len(published),
+            "failed_count": len(failed),
+            "published": published,
+            "failed": failed,
+        }
+    finally:
+        db.close()
+
+
 _CATEGORIES_FALLBACK = [
     {"category_id": 38, "name": "Karty Pokémon"},
     {"category_id": 39, "name": "151"},

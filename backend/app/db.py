@@ -229,6 +229,107 @@ class PushSubscription(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class BatchScan(Base):
+    """
+    Batch scan session for processing multiple card images at once.
+    """
+    __tablename__ = "batch_scans"
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    status = Column(String(32), default="pending", nullable=False)  # pending, processing, completed, failed
+    total_items = Column(Integer, default=0, nullable=False)
+    processed_items = Column(Integer, default=0, nullable=False)
+    successful_items = Column(Integer, default=0, nullable=False)
+    failed_items = Column(Integer, default=0, nullable=False)
+    current_filename = Column(String(255), nullable=True)
+    error_message = Column(Text, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    
+    # Session integration for warehouse codes
+    session_id = Column(Integer, ForeignKey("sessions.id"), nullable=True, index=True)
+    starting_warehouse_code = Column(String(64), nullable=True)
+    
+    items = relationship("BatchScanItem", back_populates="batch", cascade="all, delete-orphan")
+
+
+class BatchScanItem(Base):
+    """
+    Individual item in a batch scan - represents one card image.
+    Contains all fields needed for full card analysis like single scan.
+    """
+    __tablename__ = "batch_scan_items"
+    id = Column(Integer, primary_key=True, index=True)
+    batch_id = Column(Integer, ForeignKey("batch_scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # Original file info
+    filename = Column(String(255), nullable=False)
+    stored_path = Column(Text, nullable=True)
+    
+    # Processing status
+    status = Column(String(32), default="pending", nullable=False)  # pending, processing, success, failed, skipped
+    error_message = Column(Text, nullable=True)
+    processed_at = Column(DateTime, nullable=True)
+    
+    # Detected card info (from Vision/OCR)
+    detected_name = Column(String(255), nullable=True)
+    detected_set = Column(String(255), nullable=True)
+    detected_set_code = Column(String(64), nullable=True)
+    detected_number = Column(String(64), nullable=True)
+    detected_language = Column(String(64), nullable=True)
+    detected_variant = Column(String(64), nullable=True)
+    detected_condition = Column(String(64), nullable=True)
+    detected_rarity = Column(String(128), nullable=True)
+    detected_energy = Column(String(64), nullable=True)
+    
+    # Matched card from TCGGO/provider
+    matched_provider_id = Column(String(128), nullable=True)
+    matched_name = Column(String(255), nullable=True)
+    matched_set = Column(String(255), nullable=True)
+    matched_set_code = Column(String(64), nullable=True)
+    matched_number = Column(String(64), nullable=True)
+    matched_rarity = Column(String(128), nullable=True)
+    matched_image = Column(Text, nullable=True)
+    match_score = Column(Float, nullable=True)
+    
+    # All candidates from search (JSON array)
+    candidates_json = Column(Text, nullable=True)
+    
+    # Pricing (full pricing data)
+    price_eur = Column(Float, nullable=True)
+    price_pln = Column(Float, nullable=True)
+    price_pln_final = Column(Float, nullable=True)
+    # Variant prices (JSON: {"normal": {"eur": 1.5, "pln": 7.5}, "holo": {...}, "reverse": {...}})
+    variants_json = Column(Text, nullable=True)
+    
+    # Duplicate detection
+    duplicate_of_scan_id = Column(Integer, nullable=True)
+    duplicate_distance = Column(Integer, nullable=True)
+    catalog_id = Column(Integer, nullable=True)
+    
+    # Shoper attributes (mapped option IDs)
+    attr_language = Column(String(16), nullable=True)  # option_id for language
+    attr_condition = Column(String(16), nullable=True)  # option_id for condition
+    attr_finish = Column(String(16), nullable=True)  # option_id for finish/variant
+    attr_rarity = Column(String(16), nullable=True)  # option_id for rarity
+    attr_energy = Column(String(16), nullable=True)  # option_id for energy
+    attr_card_type = Column(String(16), nullable=True)  # option_id for card type
+    
+    # Image selection
+    use_tcggo_image = Column(Boolean, default=True, nullable=True)
+    
+    # Completeness tracking (JSON with field status)
+    fields_status = Column(Text, nullable=True)  # JSON: {"name": true, "set": true, "number": false, ...}
+    fields_complete = Column(Integer, default=0, nullable=True)
+    fields_total = Column(Integer, default=7, nullable=True)
+    
+    # Publishing
+    publish_status = Column(String(32), nullable=True)  # pending, published, failed
+    published_shoper_id = Column(Integer, nullable=True)
+    warehouse_code = Column(String(64), nullable=True)
+    
+    batch = relationship("BatchScan", back_populates="items")
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     # Best-effort lightweight migration for SQLite
@@ -281,6 +382,21 @@ def init_db():
         ],
         "fingerprints": [
             ("catalog_id", "INTEGER"),
+        ],
+        "batch_scans": [
+            ("successful_items", "INTEGER DEFAULT 0"),
+            ("failed_items", "INTEGER DEFAULT 0"),
+            ("current_filename", "VARCHAR(255)"),
+            ("error_message", "TEXT"),
+            ("completed_at", "DATETIME"),
+        ],
+        "batch_scan_items": [
+            ("fields_status", "TEXT"),
+            ("fields_complete", "INTEGER DEFAULT 0"),
+            ("fields_total", "INTEGER DEFAULT 7"),
+            ("publish_status", "VARCHAR(32)"),
+            ("published_shoper_id", "INTEGER"),
+            ("warehouse_code", "VARCHAR(64)"),
         ],
     }
 

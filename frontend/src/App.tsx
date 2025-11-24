@@ -10,6 +10,7 @@ import PricingView from './views/Pricing'
 import ScanView from './views/Scan'
 import StartSessionView from './views/StartSessionView'
 import StorageView from './views/StorageView'
+import BatchScanView from './views/BatchScanView'
 
 export default function App() {
   const [stats, setStats] = useState<any | null>(null)
@@ -35,6 +36,7 @@ export default function App() {
   const [folderFiles, setFolderFiles] = useState<File[]>([])
   const [currentFileIndex, setCurrentFileIndex] = useState<number>(0)
   const [showSessionStart, setShowSessionStart] = useState(true);
+  const [showBatchScan, setShowBatchScan] = useState(false);
 
   const isAndroid = useMemo(()=>/Android/i.test(navigator.userAgent||''), [])
 
@@ -336,6 +338,12 @@ export default function App() {
 
   const renderContent = () => {
     if (tab === 'scan') {
+      if (showBatchScan) {
+        return <BatchScanView apiBase={apiBase} onBack={() => {
+          setShowBatchScan(false);
+          setShowSessionStart(false);
+        }} />;
+      }
       if (showSessionStart) {
         return <StartSessionView apiBase={apiBase} onSessionStarted={(sessionData) => {
           setScanSession(sessionData);
@@ -354,6 +362,7 @@ export default function App() {
           onFolderChange={handleFolderChange}
           onCsvUpload={handleCsvUpload}
           onStartSession={() => {}} // This button is now in StartSessionView
+          onBatchScan={() => setShowBatchScan(true)}
           onPick={(id) => {
             if (scanResult) {
               const updatedResult = { ...scanResult, candidates: scanResult.candidates.map(c => ({...c, chosen: c.id === id})) };
@@ -406,7 +415,7 @@ export default function App() {
   return (
     <div className="font-display">
       <div className="flex">
-        <Sidebar active={tab} onChange={(k)=>{ setTab(k as any); if (k === 'scan') setShowSessionStart(true); }} />
+        <Sidebar active={tab} onChange={(k)=>{ setTab(k as any); if (k === 'scan') { setShowSessionStart(true); setShowBatchScan(false); } }} />
         <main className="relative flex-1 p-4 md:p-8 global-app-background">
           {isAndroid && (
             <img 
@@ -448,7 +457,7 @@ export default function App() {
             { key: 'storage', icon: 'warehouse', label: 'Lokalizacje'},
           ]}
           active={tab}
-          onChange={(k)=>{ setTab(k as any); if(k==='dashboard') loadStats(); if(k==='inventory') loadProducts(); if(k==='pricing' && !pricingItems) loadPricing(); if(k === 'scan') setShowSessionStart(true); }}
+          onChange={(k)=>{ setTab(k as any); if(k==='dashboard') loadStats(); if(k==='inventory') loadProducts(); if(k==='pricing' && !pricingItems) loadPricing(); if(k === 'scan') { setShowSessionStart(true); setShowBatchScan(false); } }}
         />
       </div>
     </div>
