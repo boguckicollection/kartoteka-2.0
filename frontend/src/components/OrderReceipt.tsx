@@ -31,22 +31,15 @@ export const OrderReceipt = React.forwardRef<HTMLDivElement, OrderReceiptProps>(
         <p className="text-xs">Data: {new Date(order.date).toLocaleDateString()}</p>
         <p className="text-xs">Klient: {order.delivery_fullname}</p>
       </div>
-      <table className="w-full text-xs">
-        <thead>
-          <tr>
-            <th className="text-left">Produkt</th>
-            <th className="text-right">Cena</th>
-          </tr>
-        </thead>
-        <tbody>
-          {order.products.map((p: any) => (
-            <tr key={p.product_id}>
-              <td>{p.name}</td>
-              <td className="text-right">{parseFloat(p.price).toFixed(2)} zł</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="border-t border-black my-2"></div>
+      <ol className="list-decimal list-inside text-xs space-y-1">
+        {order.products.map((p: any) => (
+          <li key={p.product_id} className="flex justify-between">
+            <span>{p.name}</span>
+            <span>{parseFloat(p.price).toFixed(2)} zł</span>
+          </li>
+        ))}
+      </ol>
       <div className="border-t border-black my-2"></div>
       <div className="text-right">
         <p className="text-sm font-bold">Suma: {sum.toFixed(2)} zł</p>
