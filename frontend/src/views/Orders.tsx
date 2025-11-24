@@ -12,27 +12,47 @@ export default function OrdersView({ items }: Props){
     const receiptElement = receiptRef.current;
     if (!receiptElement) return;
 
-    // Create a new, invisible iframe
-    const iframe = document.createElement('iframe');
-    iframe.style.position = 'absolute';
-    iframe.style.width = '0';
-    iframe.style.height = '0';
-    iframe.style.border = 'none';
-    document.body.appendChild(iframe);
-
-    // Get the content window of the iframe
-    const printWindow = iframe.contentWindow;
+    // Create a new window for printing
+    const printWindow = window.open('', '_blank', 'width=227,height=302');
     if (!printWindow) {
-      document.body.removeChild(iframe);
+      alert('Proszę zezwolić na wyskakujące okienka dla tej strony');
       return;
     }
 
-    // Write the HTML of the receipt to the iframe
-    printWindow.document.open();
+    // Write complete HTML document with print styles
     printWindow.document.write(`
+      <!DOCTYPE html>
       <html>
         <head>
-          <title>Paragon</title>
+          <title>Paragon #${selected?.id || ''}</title>
+          <style>
+            @page {
+              size: 60mm 80mm;
+              margin: 0;
+            }
+            @media print {
+              html, body {
+                width: 60mm;
+                height: 80mm;
+                margin: 0;
+                padding: 0;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+              }
+            }
+            * {
+              box-sizing: border-box;
+            }
+            body {
+              margin: 0;
+              padding: 0;
+              font-family: Consolas, Monaco, "Courier New", monospace;
+              font-size: 9pt;
+              line-height: 1.3;
+              background: white;
+              color: black;
+            }
+          </style>
         </head>
         <body>
           ${receiptElement.innerHTML}
@@ -41,11 +61,13 @@ export default function OrdersView({ items }: Props){
     `);
     printWindow.document.close();
 
-    // Wait for the iframe to load, then print and remove it
-    iframe.onload = function() {
-      printWindow.focus();
-      printWindow.print();
-      document.body.removeChild(iframe);
+    // Wait for content to load, then print
+    printWindow.onload = function() {
+      setTimeout(() => {
+        printWindow.focus();
+        printWindow.print();
+        printWindow.close();
+      }, 100);
     };
   };
 

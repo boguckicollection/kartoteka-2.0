@@ -1,60 +1,191 @@
 import React from 'react';
 
+interface OrderItem {
+  name?: string;
+  code?: string;
+  quantity?: number;
+  price?: number;
+}
+
+interface Order {
+  id?: number | string;
+  date?: string;
+  total?: number | string;
+  items?: OrderItem[];
+  buyer?: {
+    firstname?: string;
+    lastname?: string;
+    email?: string;
+    phone?: string;
+    city?: string;
+    postcode?: string;
+    street1?: string;
+  };
+  delivery_fullname?: string;
+}
+
 interface ThermalReceiptProps {
-  order: any;
+  order: Order | null;
 }
 
 export const ThermalReceipt = React.forwardRef<HTMLDivElement, ThermalReceiptProps>((props, ref) => {
   const { order } = props;
 
-  if (!order || !order.products) {
+  if (!order) {
     return <div ref={ref} />;
   }
 
-  const sum = order.products.reduce((acc: number, p: any) => acc + (parseFloat(p.price || 0) * (p.quantity || 1)), 0);
+  const items = order.items || [];
+  const itemsTotal = items.reduce((acc, p) => acc + (Number(p.price || 0) * Number(p.quantity || 1)), 0);
+  const orderTotal = order.total != null 
+    ? Number(String(order.total).replace(',', '.')) 
+    : itemsTotal;
+  const shippingCost = Math.max(0, orderTotal - itemsTotal);
+
+  // Get buyer name
+  const buyerName = order.delivery_fullname 
+    || (order.buyer ? `${order.buyer.firstname || ''} ${order.buyer.lastname || ''}`.trim() : '')
+    || 'Klient';
+
+  // Format date
+  const orderDate = order.date 
+    ? new Date(order.date).toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit', year: 'numeric' })
+    : '';
 
   return (
-    <div ref={ref} style={{ width: '60mm', padding: '8px', boxSizing: 'border-box', backgroundColor: 'white', color: 'black', fontFamily: 'monospace' }}>
-      <style type="text/css" media="print">
-        {`
-          @page { size: 60mm 90mm; margin: 0; }
-          body { margin: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-        `}
-      </style>
-      <div style={{ textAlign: 'center' }}>
-        <h1 style={{ fontSize: '1.125rem', fontWeight: '700' }}>KARTOTEKA.SHOP</h1>
-        <p style={{ fontSize: '0.75rem' }}>Dziękujemy za zakup!</p>
-      </div>
-      
-      <div style={{ borderTop: '1px dashed black', margin: '8px 0' }}></div>
-
-      <div style={{ fontSize: '0.75rem' }}>
-        <p><strong>Kupujący:</strong> {order.delivery_fullname}</p>
-      </div>
-
-      <div style={{ borderTop: '1px dashed black', margin: '8px 0' }}></div>
-
-      <ol style={{ listStyleType: 'decimal', listStylePosition: 'inside', paddingLeft: 0, margin: 0, fontSize: '0.75rem' }}>
-        {order.products.map((p: any, index: number) => (
-          <li key={p.product_id || index} style={{ marginBottom: '4px' }}>
-            <div>{p.name}</div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', paddingLeft: '1.5rem' }}>
-              <span>{p.quantity} szt.</span>
-              <span>{(parseFloat(p.price) * p.quantity).toFixed(2)} zł</span>
-            </div>
-          </li>
-        ))}
-      </ol>
-
-      <div style={{ borderTop: '1px dashed black', margin: '8px 0' }}></div>
-
-      <div style={{ textAlign: 'right' }}>
-        <p style={{ fontSize: '0.875rem', fontWeight: '700' }}>Suma: {sum.toFixed(2)} zł</p>
+    <div 
+      ref={ref} 
+      style={{ 
+        width: '60mm', 
+        minHeight: '80mm',
+        padding: '4mm', 
+        boxSizing: 'border-box', 
+        backgroundColor: 'white', 
+        color: 'black', 
+        fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+        fontSize: '9pt',
+        lineHeight: '1.3',
+      }}
+    >
+      {/* Header */}
+      <div style={{ textAlign: 'center', marginBottom: '3mm' }}>
+        <div style={{ 
+          fontSize: '14pt', 
+          fontWeight: 'bold', 
+          letterSpacing: '1px',
+          marginBottom: '1mm'
+        }}>
+          KARTOTEKA.SHOP
+        </div>
+        <div style={{ fontSize: '8pt', color: '#333' }}>
+          Dziękujemy za zakup!
+        </div>
       </div>
 
-      <div style={{ textAlign: 'center', marginTop: '16px', fontSize: '0.75rem' }}>
-        <p>Zapraszamy ponownie!</p>
+      {/* Separator */}
+      <div style={{ 
+        borderTop: '1px dashed #000', 
+        margin: '2mm 0' 
+      }} />
+
+      {/* Order info */}
+      <div style={{ marginBottom: '2mm' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '8pt' }}>
+          <span>Zamówienie #{order.id}</span>
+          <span>{orderDate}</span>
+        </div>
+        <div style={{ marginTop: '1mm', fontWeight: 'bold' }}>
+          {buyerName}
+        </div>
+      </div>
+
+      {/* Separator */}
+      <div style={{ 
+        borderTop: '1px dashed #000', 
+        margin: '2mm 0' 
+      }} />
+
+      {/* Items list */}
+      <div style={{ marginBottom: '2mm' }}>
+        {items.length === 0 ? (
+          <div style={{ fontSize: '8pt', color: '#666' }}>Brak pozycji</div>
+        ) : (
+          <ol style={{ 
+            margin: 0, 
+            paddingLeft: '4mm',
+            listStyleType: 'decimal'
+          }}>
+            {items.map((item, index) => (
+              <li key={index} style={{ marginBottom: '2mm', pageBreakInside: 'avoid' }}>
+                <div style={{ 
+                  fontSize: '8pt',
+                  wordBreak: 'break-word'
+                }}>
+                  {item.name || 'Produkt'}
+                </div>
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between',
+                  fontSize: '8pt',
+                  color: '#333'
+                }}>
+                  <span>{item.quantity || 1} szt. × {Number(item.price || 0).toFixed(2)} zł</span>
+                  <span style={{ fontWeight: 'bold' }}>
+                    {(Number(item.price || 0) * Number(item.quantity || 1)).toFixed(2)} zł
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+
+      {/* Separator */}
+      <div style={{ 
+        borderTop: '1px dashed #000', 
+        margin: '2mm 0' 
+      }} />
+
+      {/* Totals */}
+      <div style={{ fontSize: '8pt' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1mm' }}>
+          <span>Produkty:</span>
+          <span>{itemsTotal.toFixed(2)} zł</span>
+        </div>
+        {shippingCost > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1mm' }}>
+            <span>Wysyłka:</span>
+            <span>{shippingCost.toFixed(2)} zł</span>
+          </div>
+        )}
+        <div style={{ 
+          display: 'flex', 
+          justifyContent: 'space-between',
+          fontSize: '11pt',
+          fontWeight: 'bold',
+          marginTop: '2mm',
+          paddingTop: '1mm',
+          borderTop: '1px solid #000'
+        }}>
+          <span>SUMA:</span>
+          <span>{orderTotal.toFixed(2)} zł</span>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div style={{ 
+        textAlign: 'center', 
+        marginTop: '4mm',
+        paddingTop: '2mm',
+        borderTop: '1px dashed #000',
+        fontSize: '7pt',
+        color: '#666'
+      }}>
+        <div>Zapraszamy ponownie!</div>
+        <div style={{ marginTop: '1mm' }}>kartoteka.shop</div>
       </div>
     </div>
   );
 });
+
+ThermalReceipt.displayName = 'ThermalReceipt';

@@ -92,7 +92,7 @@ class ScanDetailResponse(BaseModel):
     message: Optional[str]
     detected: DetectedData
     candidates: List[Candidate]
-    selected_candidate_id: Optional[str] = None
+    selected_candidate_id: Optional[int] = None
     pricing: Optional[dict] = None
     image_url: Optional[str] = None
     back_image_url: Optional[str] = None

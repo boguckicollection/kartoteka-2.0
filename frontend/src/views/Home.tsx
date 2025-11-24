@@ -103,8 +103,8 @@ export default function Home({ stats, onNav, onRefresh }: Props){
         <div className="mt-8">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-              <span className="material-symbols-outlined text-cyan-400">history</span>
-              Ostatnie skany
+              <span className="material-symbols-outlined text-green-400">cloud_done</span>
+              Ostatnio opublikowane
             </h2>
             <button 
               onClick={onRefresh}
@@ -155,8 +155,18 @@ export default function Home({ stats, onNav, onRefresh }: Props){
                         <span className="text-xs text-gray-500">Brak ceny</span>
                       )}
                       
-                      {r.priced && (
-                        <span className="material-symbols-outlined text-xs text-green-400">check_circle</span>
+                      {r.permalink ? (
+                        <a 
+                          href={r.permalink} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-0.5 text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <span className="material-symbols-outlined text-xs">storefront</span>
+                        </a>
+                      ) : (
+                        <span className="material-symbols-outlined text-xs text-green-400">cloud_done</span>
                       )}
                     </div>
                   </div>
@@ -167,9 +177,9 @@ export default function Home({ stats, onNav, onRefresh }: Props){
         </div>
       ): (
         <div className="mt-8 p-8 bg-[#0f172a] border border-gray-700/50 rounded-xl text-center">
-          <span className="material-symbols-outlined text-4xl text-gray-600 mb-2">qr_code_scanner</span>
-          <p className="text-gray-400">Brak ostatnich skanów</p>
-          <p className="text-gray-500 text-sm mt-1">Rozpocznij skanowanie, aby zobaczyć tutaj swoje karty</p>
+          <span className="material-symbols-outlined text-4xl text-gray-600 mb-2">cloud_upload</span>
+          <p className="text-gray-400">Brak opublikowanych kart</p>
+          <p className="text-gray-500 text-sm mt-1">Opublikuj karty, aby zobaczyć je tutaj</p>
         </div>
       )}
     </div>
