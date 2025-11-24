@@ -3395,19 +3395,34 @@ async def stats():
         scans_ready = db.query(func.count(Scan.id)).filter(Scan.selected_candidate_id.isnot(None)).scalar() or 0
         scans_published = db.query(func.count(Scan.id)).filter(Scan.publish_status == "published").scalar() or 0
         total_products = db.query(func.count(Product.id)).scalar() or 0
-        # last 5 scans
+        # last 5 scans with images
         rows = db.query(Scan).order_by(Scan.id.desc()).limit(5).all()
-        recent = [
-            {
+        recent = []
+        for s in rows:
+            # Get image from selected candidate or first candidate
+            image_url = None
+            if s.selected_candidate_id:
+                cand = db.get(ScanCandidate, s.selected_candidate_id)
+                if cand:
+                    image_url = cand.image
+            if not image_url:
+                first_cand = db.query(ScanCandidate).filter(ScanCandidate.scan_id == s.id).first()
+                if first_cand:
+                    image_url = first_cand.image
+            # Fallback to stored scan image
+            if not image_url and s.stored_path:
+                image_url = f"/uploads/{Path(s.stored_path).name}"
+            
+            recent.append({
                 "id": s.id,
                 "created_at": s.created_at.isoformat(),
                 "name": s.detected_name,
                 "set": s.detected_set,
                 "number": s.detected_number,
                 "priced": bool(s.price_pln_final is not None),
-            }
-            for s in rows
-        ]
+                "image": image_url,
+                "price_pln_final": s.price_pln_final,
+            })
         # Augment with external API metrics if configured
         metrics = await _get_sales_metrics()
         sold_value_pln = metrics.get("sold_value_pln", 0.0)
