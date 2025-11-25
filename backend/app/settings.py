@@ -76,9 +76,30 @@ class Settings(BaseSettings):
     # Price auto-update settings
     price_auto_update_enabled: bool = Field(default=False, alias="PRICE_AUTO_UPDATE_ENABLED")
     price_update_interval_hours: int = Field(default=24, alias="PRICE_UPDATE_INTERVAL_HOURS")
-    min_price_pln: float = Field(default=5.0, alias="MIN_PRICE_PLN")
+    min_price_pln: float = Field(default=0.10, alias="MIN_PRICE_PLN") # Deprecated default, used as fallback absolute minimum
     max_price_change_percent: float = Field(default=50.0, alias="MAX_PRICE_CHANGE_PERCENT")
     
+    # Purchase Cost & Dynamic Minimum Pricing Logic
+    min_price_common: float = Field(default=0.10, alias="MIN_PRICE_COMMON")
+    min_price_uncommon: float = Field(default=0.10, alias="MIN_PRICE_UNCOMMON")
+    min_price_rare: float = Field(default=0.10, alias="MIN_PRICE_RARE")
+    min_price_premium_percent: float = Field(default=0.80, alias="MIN_PRICE_PREMIUM_PERCENT")
+    
+    premium_rarities: list[str] = Field(
+        default=[
+            "Double Rare", 
+            "Illustration Rare", 
+            "Special Illustration Rare", 
+            "Hyper Rare", 
+            "Ultra Rare", 
+            "Secret Rare", 
+            "SIR", 
+            "HR", 
+            "UR"
+        ],
+        alias="PREMIUM_RARITIES"
+    )
+
     # Price estimation multipliers (when variant price is not available)
     holo_price_multiplier: float = Field(default=3.0, alias="HOLO_PRICE_MULTIPLIER")
     reverse_holo_price_multiplier: float = Field(default=2.0, alias="REVERSE_HOLO_PRICE_MULTIPLIER")

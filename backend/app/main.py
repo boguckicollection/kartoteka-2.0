@@ -137,10 +137,40 @@ def _extract_prices_for_catalog(details: dict) -> dict:
     }
 
 
+def _calculate_purchase_cost(rarity: str | None, price_pln: float | None) -> float:
+    """
+    Calculate the purchase cost based on rarity and current market price.
+    Common/Uncommon/Rare -> Fixed cost (e.g. 0.10 PLN)
+    Premium -> Percentage of market price (e.g. 80%)
+    """
+    if not rarity:
+        return settings.min_price_common
+    
+    # Check for premium rarities
+    is_premium = False
+    for p in settings.premium_rarities:
+        if p.lower() in rarity.lower():
+            is_premium = True
+            break
+            
+    if is_premium and price_pln is not None:
+        return round(price_pln * settings.min_price_premium_percent, 2)
+    
+    # Standard rarities
+    r = rarity.lower()
+    if "uncommon" in r:
+        return settings.min_price_uncommon
+    if "rare" in r and not is_premium:
+        return settings.min_price_rare
+        
+    # Default fallback (Common)
+    return settings.min_price_common
+
+
 def _calculate_price_from_catalog(catalog: CardCatalog, finish: str = "normal") -> dict:
     """
     Calculate PLN price based on finish type and CardCatalog prices.
-    Falls back to estimation if specific price not available.
+    Applies dynamic minimum price logic based on rarity/cost.
     """
     finish_lower = (finish or "normal").lower()
     base_eur = None
@@ -160,22 +190,36 @@ def _calculate_price_from_catalog(catalog: CardCatalog, finish: str = "normal") 
         base_eur = catalog.price_normal_eur
     
     if base_eur is None:
-        return {"base_eur": None, "price_pln": None, "price_pln_final": None, "estimated": False}
+        return {"base_eur": None, "price_pln": None, "price_pln_final": None, "estimated": False, "purchase_price": None}
     
-    # Apply minimum price
+    # 1. Calculate Market Price in PLN
     price_pln = base_eur * settings.eur_pln_rate
-    price_pln_final = price_pln * settings.price_multiplier
     
-    # Apply minimum price constraint
-    min_price = getattr(settings, 'min_price_pln', 5.0)
-    if price_pln_final < min_price:
-        price_pln_final = min_price
+    # 2. Calculate Purchase Cost (what we paid/would pay)
+    purchase_price = _calculate_purchase_cost(catalog.rarity, price_pln)
+    
+    # 3. Calculate Sell Price based on Multiplier
+    calculated_sell_price = price_pln * settings.price_multiplier
+    
+    # 4. Determine Minimum Sell Price logic
+    # Logic: Sell Price cannot be lower than Purchase Cost
+    # For premium cards, purchase cost is 80% of market, so min sell price is 80% of market
+    min_sell_price = purchase_price
+    
+    # 5. Final Price
+    price_pln_final = max(calculated_sell_price, min_sell_price)
+    
+    # Ensure absolute minimum fallback (e.g. 0.10)
+    if price_pln_final < settings.min_price_common:
+        price_pln_final = settings.min_price_common
     
     return {
         "base_eur": round(base_eur, 2),
         "price_pln": round(price_pln, 2),
         "price_pln_final": round(price_pln_final, 2),
+        "purchase_price": round(purchase_price, 2),
         "estimated": estimated,
+        "min_applied": price_pln_final == min_sell_price,
     }
 
 
@@ -3694,6 +3738,16 @@ async def stats():
         sold_count = metrics.get("sold_count", 0)
         users_count = metrics.get("users_count")
 
+        # Inventory stats (from published scans)
+        inventory_stats = db.query(
+            func.sum(Scan.purchase_price),
+            func.sum(Scan.price_pln_final)
+        ).filter(Scan.publish_status == "published").first()
+        
+        total_inventory_cost = inventory_stats[0] or 0.0
+        total_inventory_value = inventory_stats[1] or 0.0
+        potential_profit = total_inventory_value - total_inventory_cost
+
         return {
             "total_scans": total_scans,
             "scans_ready": scans_ready,
@@ -3703,6 +3757,9 @@ async def stats():
             "sold_value_pln": sold_value_pln,
             "sold_count": sold_count,
             "users_count": users_count,
+            "total_inventory_cost": round(total_inventory_cost, 2),
+            "total_inventory_value": round(total_inventory_value, 2),
+            "potential_profit": round(potential_profit, 2),
         }
     finally:
         db.close()
@@ -4666,3 +4723,87 @@ _CATEGORIES_FALLBACK = [
     {"category_id": 110, "name": "Ancient Origins"},
     {"category_id": 111, "name": "Steam Siege"},
 ]
+
+@app.post("/admin/recalc_purchase_costs")
+async def recalc_purchase_costs():
+    """
+    One-time migration to calculate purchase costs for all existing scans based on current logic.
+    """
+    db = SessionLocal()
+    try:
+        scans = db.query(Scan).all()
+        count = 0
+        updated = 0
+        
+        for s in scans:
+            count += 1
+            
+            # 1. Get rarity
+            rarity = s.detected_rarity
+            
+            # Try to fallback to catalog if linked
+            if not rarity and s.catalog_id:
+                cat = db.get(CardCatalog, s.catalog_id)
+                if cat:
+                    rarity = cat.rarity
+            
+            # 2. Get price_pln (market value without multiplier)
+            price_pln = s.price_pln
+            
+            # If price_pln missing but catalog exists, recalculate
+            if not price_pln and s.catalog_id:
+                cat = db.get(CardCatalog, s.catalog_id)
+                if cat and cat.price_normal_eur:
+                    price_pln = cat.price_normal_eur * settings.eur_pln_rate
+            
+            # Calculate
+            cost = _calculate_purchase_cost(rarity, price_pln)
+            s.purchase_price = cost
+            updated += 1
+            
+        db.commit()
+        return {"status": "ok", "total_scans": count, "updated_scans": updated}
+    finally:
+        db.close()
+
+@app.post("/admin/recalc_purchase_costs")
+async def recalc_purchase_costs():
+    """
+    One-time migration to calculate purchase costs for all existing scans based on current logic.
+    """
+    db = SessionLocal()
+    try:
+        scans = db.query(Scan).all()
+        count = 0
+        updated = 0
+        
+        for s in scans:
+            count += 1
+            
+            # 1. Get rarity
+            rarity = s.detected_rarity
+            
+            # Try to fallback to catalog if linked
+            if not rarity and s.catalog_id:
+                cat = db.get(CardCatalog, s.catalog_id)
+                if cat:
+                    rarity = cat.rarity
+            
+            # 2. Get price_pln (market value without multiplier)
+            price_pln = s.price_pln
+            
+            # If price_pln missing but catalog exists, recalculate
+            if not price_pln and s.catalog_id:
+                cat = db.get(CardCatalog, s.catalog_id)
+                if cat and cat.price_normal_eur:
+                    price_pln = cat.price_normal_eur * settings.eur_pln_rate
+            
+            # Calculate
+            cost = _calculate_purchase_cost(rarity, price_pln)
+            s.purchase_price = cost
+            updated += 1
+            
+        db.commit()
+        return {"status": "ok", "total_scans": count, "updated_scans": updated}
+    finally:
+        db.close()

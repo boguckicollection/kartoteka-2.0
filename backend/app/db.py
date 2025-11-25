@@ -74,6 +74,7 @@ class Scan(Base):
     cardmarket_7d_average = Column(Float, nullable=True)
     price_pln = Column(Float, nullable=True)
     price_pln_final = Column(Float, nullable=True)
+    purchase_price = Column(Float, nullable=True)
     graded_psa10 = Column(Float, nullable=True)
     graded_currency = Column(String(8), nullable=True)
 
@@ -298,6 +299,7 @@ class BatchScanItem(Base):
     price_eur = Column(Float, nullable=True)
     price_pln = Column(Float, nullable=True)
     price_pln_final = Column(Float, nullable=True)
+    purchase_price = Column(Float, nullable=True)
     # Variant prices (JSON: {"normal": {"eur": 1.5, "pln": 7.5}, "holo": {...}, "reverse": {...}})
     variants_json = Column(Text, nullable=True)
     
@@ -343,6 +345,7 @@ def init_db():
             ("cardmarket_7d_average", "FLOAT"),
             ("price_pln", "FLOAT"),
             ("price_pln_final", "FLOAT"),
+            ("purchase_price", "FLOAT"),
             ("graded_psa10", "FLOAT"),
             ("graded_currency", "VARCHAR(8)"),
             ("session_id", "INTEGER"),
@@ -420,6 +423,7 @@ def init_db():
             ("price_eur", "FLOAT"),
             ("price_pln", "FLOAT"),
             ("price_pln_final", "FLOAT"),
+            ("purchase_price", "FLOAT"),
             ("variants_json", "TEXT"),
             ("duplicate_of_scan_id", "INTEGER"),
             ("duplicate_distance", "INTEGER"),

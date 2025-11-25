@@ -22,6 +22,9 @@ const statConfig: Record<string, { icon: string; color: string; glowColor: strin
   sold_value: { icon: 'account_balance_wallet', color: 'from-emerald-500/20 to-teal-600/20', glowColor: 'emerald-500' },
   sold_count: { icon: 'shopping_cart', color: 'from-blue-500/20 to-indigo-600/20', glowColor: 'blue-500' },
   users: { icon: 'group', color: 'from-rose-500/20 to-pink-600/20', glowColor: 'rose-500' },
+  total_inventory_value: { icon: 'savings', color: 'from-emerald-500/20 to-green-600/20', glowColor: 'emerald-500' },
+  total_inventory_cost: { icon: 'payments', color: 'from-red-500/20 to-orange-600/20', glowColor: 'red-500' },
+  potential_profit: { icon: 'trending_up', color: 'from-green-400/20 to-emerald-500/20', glowColor: 'green-400' },
 };
 
 export default function Home({ stats, onNav, onRefresh }: Props){
@@ -39,10 +42,11 @@ export default function Home({ stats, onNav, onRefresh }: Props){
     { key: 'total_scans', label: 'Skanów łącznie', value: stats?.total_scans },
     { key: 'scans_ready', label: 'Gotowe do publikacji', value: stats?.scans_ready },
     { key: 'scans_published', label: 'Opublikowane', value: stats?.scans_published },
-    { key: 'total_products', label: 'Produkty w sklepie', value: stats?.total_products },
+    { key: 'total_inventory_value', label: 'Wartość zapasów', value: stats?.total_inventory_value != null ? `${Math.round(stats.total_inventory_value).toLocaleString('pl-PL')} zł` : '-' },
+    { key: 'total_inventory_cost', label: 'Koszt zakupu', value: stats?.total_inventory_cost != null ? `${Math.round(stats.total_inventory_cost).toLocaleString('pl-PL')} zł` : '-' },
+    { key: 'potential_profit', label: 'Potencjalny zysk', value: stats?.potential_profit != null ? `${Math.round(stats.potential_profit).toLocaleString('pl-PL')} zł` : '-' },
     { key: 'sold_value', label: 'Sprzedane (wartość)', value: stats?.sold_value_pln != null ? `${Math.round(stats.sold_value_pln).toLocaleString('pl-PL')} zł` : '-', nav: 'reports' },
     { key: 'sold_count', label: 'Sprzedane (sztuki)', value: stats?.sold_count, nav: 'reports' },
-    { key: 'users', label: 'Użytkownicy', value: stats?.users_count, nav: 'reports' },
   ], [stats]);
 
   return (
