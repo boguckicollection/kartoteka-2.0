@@ -42,10 +42,10 @@ export default function Home({ stats, onNav, onRefresh }: Props){
     { key: 'total_scans', label: 'Skanów łącznie', value: stats?.total_scans },
     { key: 'scans_ready', label: 'Gotowe do publikacji', value: stats?.scans_ready },
     { key: 'scans_published', label: 'Opublikowane', value: stats?.scans_published },
-    { key: 'total_inventory_value', label: 'Wartość zapasów', value: stats?.total_inventory_value != null ? `${Math.round(stats.total_inventory_value).toLocaleString('pl-PL')} zł` : '-' },
-    { key: 'total_inventory_cost', label: 'Koszt zakupu', value: stats?.total_inventory_cost != null ? `${Math.round(stats.total_inventory_cost).toLocaleString('pl-PL')} zł` : '-' },
-    { key: 'potential_profit', label: 'Potencjalny zysk', value: stats?.potential_profit != null ? `${Math.round(stats.potential_profit).toLocaleString('pl-PL')} zł` : '-' },
-    { key: 'sold_value', label: 'Sprzedane (wartość)', value: stats?.sold_value_pln != null ? `${Math.round(stats.sold_value_pln).toLocaleString('pl-PL')} zł` : '-', nav: 'reports' },
+    { key: 'total_inventory_value', label: 'Wartość zapasów', value: stats?.total_inventory_value != null ? stats.total_inventory_value.toLocaleString('pl-PL', {style: 'currency', currency: 'PLN', minimumFractionDigits: 2}) : '-' },
+    { key: 'total_inventory_cost', label: 'Koszt zakupu', value: stats?.total_inventory_cost != null ? stats.total_inventory_cost.toLocaleString('pl-PL', {style: 'currency', currency: 'PLN', minimumFractionDigits: 2}) : '-' },
+    { key: 'potential_profit', label: 'Potencjalny zysk', value: stats?.potential_profit != null ? stats.potential_profit.toLocaleString('pl-PL', {style: 'currency', currency: 'PLN', minimumFractionDigits: 2}) : '-' },
+    { key: 'sold_value', label: 'Sprzedane (wartość)', value: stats?.sold_value_pln != null ? stats.sold_value_pln.toLocaleString('pl-PL', {style: 'currency', currency: 'PLN', minimumFractionDigits: 2}) : '-', nav: 'reports' },
     { key: 'sold_count', label: 'Sprzedane (sztuki)', value: stats?.sold_count, nav: 'reports' },
   ], [stats]);
 

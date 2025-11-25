@@ -209,10 +209,26 @@ def get_next_free_location(db: Session, starting_code: str | None = None) -> str
 
 def get_storage_summary(db: Session) -> dict:
     """Provides a summary of warehouse occupancy."""
+    from . import db as models
+    
     used_indices = get_used_indices(db)
     total_capacity = max_capacity()
     used_count = len(used_indices)
-    free_count = total_capacity - used_count
+    
+    # Count products from shop without scans (for Premium Row 1)
+    products_without_scans_count = 0
+    try:
+        products_count = db.query(models.Product).filter(models.Product.stock > 0).count()
+        scans_with_products = db.query(models.Scan.published_shoper_id).filter(
+            models.Scan.published_shoper_id.isnot(None)
+        ).distinct().count()
+        products_without_scans_count = max(0, products_count - scans_with_products)
+    except:
+        pass
+    
+    # Add virtual products to used count
+    total_used_with_virtual = used_count + products_without_scans_count
+    free_count = total_capacity - total_used_with_virtual
     
     occupancy_by_box = {}
     for box_num, structure in BOX_STRUCTURE.items():
@@ -226,25 +242,37 @@ def get_storage_summary(db: Session) -> dict:
             row_capacity = structure["row_capacity"]
             row_offset = offset + (r - 1) * row_capacity
             row_indices = {i for i in box_indices if row_offset <= i < row_offset + row_capacity}
+            
+            row_used = len(row_indices)
+            
+            # SPECIAL: For Premium Box (KP), Row 1 includes shop products without scans
+            if box_num == PREMIUM_BOX_NUMBER and r == 1:
+                row_used += products_without_scans_count
+            
             rows[r] = {
-                "used": len(row_indices),
+                "used": row_used,
                 "capacity": row_capacity,
-                "free": row_capacity - len(row_indices),
-                "occupancy": len(row_indices) / row_capacity if row_capacity > 0 else 0,
+                "free": row_capacity - row_used,
+                "occupancy": row_used / row_capacity if row_capacity > 0 else 0,
             }
         
+        # Calculate box totals
+        box_used = len(box_indices)
+        if box_num == PREMIUM_BOX_NUMBER:
+            box_used += products_without_scans_count
+        
         occupancy_by_box[f"K{box_str}"] = {
-            "used": len(box_indices),
+            "used": box_used,
             "capacity": capacity,
-            "free": capacity - len(box_indices),
-            "occupancy": len(box_indices) / capacity if capacity > 0 else 0,
+            "free": capacity - box_used,
+            "occupancy": box_used / capacity if capacity > 0 else 0,
             "rows": rows,
         }
         
     return {
-        "total_used": used_count,
+        "total_used": total_used_with_virtual,
         "total_capacity": total_capacity,
         "total_free": free_count,
-        "total_occupancy": used_count / total_capacity if total_capacity > 0 else 0,
+        "total_occupancy": total_used_with_virtual / total_capacity if total_capacity > 0 else 0,
         "boxes": occupancy_by_box,
     }

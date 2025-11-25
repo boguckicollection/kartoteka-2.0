@@ -10,6 +10,7 @@ import PricingView from './views/Pricing'
 import ScanView from './views/Scan'
 import StartSessionView from './views/StartSessionView'
 import StorageView from './views/StorageView'
+import WarehouseVisualView from './views/WarehouseVisualView'
 import BatchScanView from './views/BatchScanView'
 
 export default function App() {
@@ -24,7 +25,7 @@ export default function App() {
   const [invCategoryId, setInvCategoryId] = useState<number | undefined>(undefined)
   const [orders, setOrders] = useState<any[] | null>(null)
   const [pricingItems, setPricingItems] = useState<any[] | null>(null)
-  const [tab, setTab] = useState<'dashboard'|'reports'|'inventory'|'orders'|'pricing'|'scan'|'storage'>('dashboard')
+  const [tab, setTab] = useState<'dashboard'|'reports'|'inventory'|'orders'|'pricing'|'scan'|'storage'|'warehouse'>('dashboard')
   const [toast, setToast] = useState<string | null>(null)
   const [scanResult, setScanResult] = useState<any | null>(null)
   const [scanPreview, setScanPreview] = useState<string | null>(null)
@@ -377,6 +378,7 @@ export default function App() {
     }
     if (tab==='dashboard') return <Home stats={stats} onNav={(k)=> setTab(k as any)} onRefresh={loadStats} />;
     if (tab==='reports') return <ReportsView />;
+    if (tab==='warehouse') return <WarehouseVisualView apiBase={apiBase} />;
     if (tab==='inventory') return <InventoryView
       items={(products||[])}
       page={invPage}

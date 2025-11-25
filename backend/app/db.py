@@ -194,6 +194,7 @@ class Product(Base):
     code = Column(String(128), nullable=True)
     name = Column(String(255), nullable=True)
     price = Column(Float, nullable=True)
+    purchase_price = Column(Float, nullable=True)
     stock = Column(Integer, nullable=True)
     image = Column(Text, nullable=True)
     updated_at = Column(DateTime, nullable=True)
@@ -379,6 +380,7 @@ def init_db():
             ("catalog_id", "INTEGER"),
             ("finish", "VARCHAR(32)"),
             ("price_locked", "INTEGER DEFAULT 0"),
+            ("purchase_price", "FLOAT"),
         ],
         "scan_candidates": [
             ("rarity", "VARCHAR(128)"),

@@ -21,7 +21,7 @@ from .analysis.fingerprint import compute_fingerprint, pack_ndarray, unpack_ndar
 from .providers import get_provider, PokemonTCGProvider
 import httpx
 from .pricing import extract_prices_from_payload, compute_price_pln, list_variant_prices
-from .db import init_db, SessionLocal, Scan, ScanCandidate, Product, Fingerprint, Session, CardCatalog
+from .db import init_db, SessionLocal, Scan, ScanCandidate, Product, Fingerprint, Session, CardCatalog, InventoryItem, BatchScanItem
 from sqlalchemy import func
 from .db import Session as ScanSession
 from .shoper import ShoperClient, upsert_products, publish_scan_to_shoper, build_shoper_payload, _category_name_from_id, get_shoper_categories, _get_related_products_from_category
@@ -308,6 +308,114 @@ async def get_storage_summary_endpoint():
     try:
         summary = get_storage_summary(db)
         return summary
+    finally:
+        db.close()
+
+
+@app.get("/inventory/box_details/{box_key}")
+async def get_box_details(box_key: str):
+    """Returns detailed information about a specific box: cards count, value, sets breakdown, row details."""
+    db = SessionLocal()
+    try:
+        from collections import defaultdict
+        
+        # Parse box_key (e.g., "K1", "KP")
+        box_num = 100 if box_key == 'KP' else int(box_key.replace('K', ''))
+        
+        # Get all warehouse codes for this box
+        # Query scans + inventory items + batch items
+        all_codes = []
+        
+        # From Scans (published only)
+        scan_codes = db.query(Scan.warehouse_code, Scan.detected_name, Scan.detected_set, Scan.price_pln_final).filter(
+            Scan.warehouse_code.isnot(None),
+            Scan.publish_status == 'published'
+        ).all()
+        
+        # From InventoryItems
+        inv_codes = db.query(InventoryItem.warehouse_code, InventoryItem.name, InventoryItem.set, InventoryItem.price).filter(
+            InventoryItem.warehouse_code.isnot(None)
+        ).all()
+        
+        # From BatchScanItems (published only)
+        batch_codes = db.query(BatchScanItem.warehouse_code, BatchScanItem.matched_name, BatchScanItem.matched_set, BatchScanItem.price_pln_final).filter(
+            BatchScanItem.warehouse_code.isnot(None),
+            BatchScanItem.publish_status == 'published'
+        ).all()
+        
+        # Combine all codes
+        from .warehouse import parse_warehouse_code, PREMIUM_BOX_NUMBER
+        
+        cards_data = []
+        for code, name, set_name, price in scan_codes + inv_codes + batch_codes:
+            parsed = parse_warehouse_code(code)
+            if not parsed:
+                continue
+            
+            # Check if this code belongs to the requested box
+            karton = parsed['karton']
+            if (box_key == 'KP' and karton == 'PREMIUM') or (box_key != 'KP' and karton == int(box_key.replace('K', ''))):
+                cards_data.append({
+                    'code': code,
+                    'name': name or 'Unknown',
+                    'set': set_name or 'Unknown',
+                    'price': price or 0.0,
+                    'row': parsed['row']
+                })
+        
+        # SPECIAL: For Premium box (KP), add products from shop without warehouse codes
+        # These are cards added outside the scanning system (legacy/manual entries)
+        if box_key == 'KP':
+            # Get all Products that don't have a warehouse_code assigned via scans
+            # We'll treat these as being in Premium Row 1
+            products_without_location = db.query(Product.shoper_id, Product.name, Product.price, Product.stock).filter(
+                Product.stock > 0  # Only in-stock products
+            ).all()
+            
+            # Filter out products that already have a scan/location
+            scan_product_ids = {s.published_shoper_id for s in db.query(Scan.published_shoper_id).filter(Scan.published_shoper_id.isnot(None)).all()}
+            
+            premium_row1_products = []
+            for prod in products_without_location:
+                if prod.shoper_id not in scan_product_ids:
+                    premium_row1_products.append({
+                        'code': f'KP-R1-VIRT{prod.shoper_id:04d}',  # Virtual code
+                        'name': prod.name or 'Unknown',
+                        'set': 'Legacy/Shop',
+                        'price': prod.price or 0.0,
+                        'row': 1  # Always Row 1 for Premium
+                    })
+            
+            # Add virtual products to cards_data
+            cards_data.extend(premium_row1_products)
+        
+        # Aggregate data
+        total_cards = len(cards_data)
+        total_value = sum(c['price'] for c in cards_data)
+        
+        # Sets breakdown
+        sets_count = defaultdict(int)
+        for card in cards_data:
+            sets_count[card['set']] += 1
+        
+        # Rows breakdown
+        rows_data = defaultdict(lambda: {'cards': 0, 'value': 0.0, 'codes': []})
+        for card in cards_data:
+            row = str(card['row'])
+            rows_data[row]['cards'] += 1
+            rows_data[row]['value'] += card['price']
+            rows_data[row]['codes'].append(card['code'])
+        
+        # Convert defaultdict to regular dict
+        rows_data = {k: dict(v) for k, v in rows_data.items()}
+        
+        return {
+            "box_key": box_key,
+            "total_cards": total_cards,
+            "total_value": round(total_value, 2),
+            "sets": dict(sets_count),
+            "rows": rows_data
+        }
     finally:
         db.close()
 
@@ -3136,6 +3244,27 @@ async def publish_single_scan(
                 if shoper_id:
                     scan.published_shoper_id = shoper_id
                     print(f"SUCCESS: Product published to Shoper with ID: {shoper_id}")
+                    
+                    # Update local Product with purchase_price from scan
+                    if scan.purchase_price is not None and scan.purchase_price > 0:
+                        product = db.query(Product).filter(Product.shoper_id == shoper_id).first()
+                        if product:
+                            product.purchase_price = scan.purchase_price
+                            print(f"INFO: Updated Product {shoper_id} with purchase_price={scan.purchase_price}")
+                        else:
+                            # Create local Product record if not exists
+                            new_product = Product(
+                                shoper_id=shoper_id,
+                                purchase_price=scan.purchase_price,
+                                code=scan.warehouse_code,
+                                name=scan.detected_name,
+                                price=scan.price_pln_final,
+                                stock=1,
+                                updated_at=datetime.utcnow()
+                            )
+                            db.add(new_product)
+                            db.flush()
+                            print(f"INFO: Created local Product {shoper_id} with purchase_price={scan.purchase_price}")
             except Exception as e:
                 print(f"WARNING: Could not extract product ID from response: {e}")
             # Attribute mapping logic can remain here or be moved if needed
@@ -3209,8 +3338,29 @@ async def publish_session(session_id: int):
                     resp = r.get("json") or {}
                     sid = int(resp.get("product_id") or resp.get("id") or 0)
                     s.published_shoper_id = sid or None
-                except Exception:
-                    pass
+                    
+                    # Update local Product with purchase_price from scan
+                    if sid and s.purchase_price is not None and s.purchase_price > 0:
+                        product = db.query(Product).filter(Product.shoper_id == sid).first()
+                        if product:
+                            product.purchase_price = s.purchase_price
+                            print(f"INFO: Updated Product {sid} with purchase_price={s.purchase_price}")
+                        else:
+                            # Create local Product record if not exists
+                            new_product = Product(
+                                shoper_id=sid,
+                                purchase_price=s.purchase_price,
+                                code=s.warehouse_code,
+                                name=s.detected_name,
+                                price=s.price_pln_final,
+                                stock=1,
+                                updated_at=datetime.utcnow()
+                            )
+                            db.add(new_product)
+                            db.flush()
+                            print(f"INFO: Created local Product {sid} with purchase_price={s.purchase_price}")
+                except Exception as e:
+                    print(f"WARNING: Could not update product purchase_price: {e}")
                 published += 1
             else:
                 s.publish_status = "failed"
@@ -3738,11 +3888,11 @@ async def stats():
         sold_count = metrics.get("sold_count", 0)
         users_count = metrics.get("users_count")
 
-        # Inventory stats (from published scans)
+        # Inventory stats (from all products in shop)
         inventory_stats = db.query(
-            func.sum(Scan.purchase_price),
-            func.sum(Scan.price_pln_final)
-        ).filter(Scan.publish_status == "published").first()
+            func.sum(Product.purchase_price),
+            func.sum(Product.price)
+        ).filter(Product.stock > 0).first()
         
         total_inventory_cost = inventory_stats[0] or 0.0
         total_inventory_value = inventory_stats[1] or 0.0
@@ -4766,44 +4916,31 @@ async def recalc_purchase_costs():
     finally:
         db.close()
 
-@app.post("/admin/recalc_purchase_costs")
-async def recalc_purchase_costs():
+@app.post("/admin/recalc_product_costs")
+async def recalc_product_costs():
     """
-    One-time migration to calculate purchase costs for all existing scans based on current logic.
+    One-time migration to calculate purchase costs for all existing products.
+    For old products (premium cards): purchase_price = 80% of current price.
     """
     db = SessionLocal()
     try:
-        scans = db.query(Scan).all()
+        products = db.query(Product).all()
         count = 0
         updated = 0
         
-        for s in scans:
+        for p in products:
             count += 1
             
-            # 1. Get rarity
-            rarity = s.detected_rarity
+            # Skip if already has purchase_price
+            if p.purchase_price is not None and p.purchase_price > 0:
+                continue
             
-            # Try to fallback to catalog if linked
-            if not rarity and s.catalog_id:
-                cat = db.get(CardCatalog, s.catalog_id)
-                if cat:
-                    rarity = cat.rarity
-            
-            # 2. Get price_pln (market value without multiplier)
-            price_pln = s.price_pln
-            
-            # If price_pln missing but catalog exists, recalculate
-            if not price_pln and s.catalog_id:
-                cat = db.get(CardCatalog, s.catalog_id)
-                if cat and cat.price_normal_eur:
-                    price_pln = cat.price_normal_eur * settings.eur_pln_rate
-            
-            # Calculate
-            cost = _calculate_purchase_cost(rarity, price_pln)
-            s.purchase_price = cost
-            updated += 1
+            # Calculate: 80% of current price (old cards are premium)
+            if p.price and p.price > 0:
+                p.purchase_price = round(p.price * 0.80, 2)
+                updated += 1
             
         db.commit()
-        return {"status": "ok", "total_scans": count, "updated_scans": updated}
+        return {"status": "ok", "total_products": count, "updated_products": updated}
     finally:
         db.close()

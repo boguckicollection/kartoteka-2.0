@@ -25,15 +25,21 @@ export default function InventoryView({ items, page, limit, hasNext, sort, order
   const [localLimit, setLocalLimit] = useState<number>(limit)
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
   const [isSliderOpen, setIsSliderOpen] = useState(false)
-  const [hoveredImage, setHoveredImage] = useState<{ src: string; x: number; y: number } | null>(null)
+  const [hoveredImage, setHoveredImage] = useState<{ src: string; x: number; y: number; showBelow?: boolean } | null>(null)
 
   const handleMouseEnter = (e: React.MouseEvent<HTMLTableCellElement>, image: string | null | undefined) => {
     if (!image) return
     const rect = e.currentTarget.getBoundingClientRect()
+    const viewportHeight = window.innerHeight
+    
+    // Sprawdź czy element jest w górnej połowie ekranu
+    const isInTopHalf = rect.top < viewportHeight / 2
+    
     setHoveredImage({
       src: image,
       x: rect.left + rect.width / 2,
-      y: rect.top,
+      y: isInTopHalf ? rect.bottom : rect.top, // Użyj bottom jeśli góra, top jeśli dół
+      showBelow: isInTopHalf, // Flaga dla CSS
     })
   }
 
@@ -55,17 +61,40 @@ export default function InventoryView({ items, page, limit, hasNext, sort, order
     <div className="font-display">
       {hoveredImage && (
         <div
-          className="fixed z-50 p-2 bg-gray-900 border border-cyan-500 rounded-lg shadow-2xl pointer-events-none"
+          className="fixed z-50 p-2 bg-gray-900/95 backdrop-blur-sm border border-cyan-500 rounded-lg shadow-2xl pointer-events-none transition-all duration-300 ease-out animate-fade-in"
           style={{
             left: hoveredImage.x,
             top: hoveredImage.y,
-            transform: 'translate(-50%, -100%)',
-            marginTop: '-10px',
+            transform: hoveredImage.showBelow 
+              ? 'translate(-50%, 10px)'  // Pokaż poniżej z marginesem
+              : 'translate(-50%, calc(-100% - 10px))', // Pokaż powyżej z marginesem
+            maxHeight: '80vh', // Ogranicz wysokość do 80% viewportu
+            overflow: 'hidden',
+            animation: 'fadeInScale 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
           }}
         >
-          <img src={hoveredImage.src} alt="Podgląd" className="w-64 h-auto rounded" />
+          <img 
+            src={hoveredImage.src} 
+            alt="Podgląd" 
+            className="w-64 h-auto rounded"
+            style={{ maxHeight: '75vh', objectFit: 'contain' }}
+          />
         </div>
       )}
+      
+      {/* Keyframes for fade-in animation */}
+      <style>{`
+        @keyframes fadeInScale {
+          from {
+            opacity: 0;
+            transform: translate(-50%, ${hoveredImage?.showBelow ? '20px' : 'calc(-100% - 20px)'}) scale(0.95);
+          }
+          to {
+            opacity: 1;
+            transform: translate(-50%, ${hoveredImage?.showBelow ? '10px' : 'calc(-100% - 10px)'}) scale(1);
+          }
+        }
+      `}</style>
       <header className="flex items-center justify-between whitespace-nowrap border-b border-gray-800 px-2 md:px-6 py-3">
         <div className="flex items-center gap-3 text-white">
           <span className="material-symbols-outlined text-primary">visibility</span>
