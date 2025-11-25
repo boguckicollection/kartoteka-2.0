@@ -28,7 +28,7 @@ from .shoper import ShoperClient, upsert_products, publish_scan_to_shoper, build
 from rapidfuzz import fuzz
 from .attributes import map_detected_to_shoper_attributes, simplify_attributes, simplify_categories
 from .db import PushSubscription
-from .warehouse import get_storage_summary, get_next_free_location, NoFreeLocationError, location_to_index, parse_warehouse_code
+from .warehouse import get_storage_summary, get_next_free_location, NoFreeLocationError, location_to_index, parse_warehouse_code, get_used_indices
 from pywebpush import webpush, WebPushException
 import asyncio
 import re
@@ -228,12 +228,13 @@ async def check_warehouse_code(body: dict = Body(default={})):
     db = SessionLocal()
     try:
         # 1. Validate format
-        if location_to_index(code) is None:
+        code_index = location_to_index(code)
+        if code_index is None:
             return JSONResponse({"status": "invalid_format", "message": "Nieprawidłowy format kodu. Użyj K<numer>-R<rząd>-P<pozycja>."}, status_code=422)
 
-        # 2. Check if taken
-        existing = db.query(Scan).filter(func.upper(Scan.warehouse_code) == code.upper()).first()
-        if existing:
+        # 2. Check if taken (only published scans count)
+        used_indices = get_used_indices(db, only_published=True)
+        if code_index in used_indices:
             try:
                 next_code = get_next_free_location(db, starting_code=code)
                 return JSONResponse({"status": "taken", "next_available": next_code}, status_code=409)
