@@ -383,11 +383,14 @@ async def scan_commit(payload: FrameScanRequest):
             if session and session.starting_warehouse_code:
                 starting_code = session.starting_warehouse_code
 
-        # Find warehouse code BEFORE creating the scan
+        # Calculate suggested warehouse code (NOT saved to database yet)
+        # Will be assigned only upon successful publication
+        suggested_warehouse_code = None
         try:
-            warehouse_code = get_next_free_location(db, starting_code=starting_code)
+            suggested_warehouse_code = get_next_free_location(db, starting_code=starting_code)
         except NoFreeLocationError:
-            return JSONResponse({"error": "No free storage locations available"}, status_code=503)
+            # Non-fatal: user can still scan and publish will assign a code
+            print("WARNING: No free storage locations available, will assign at publish time")
 
         fused: dict[str, Any] = {}
         for k in ("name","number","total"):
@@ -419,7 +422,7 @@ async def scan_commit(payload: FrameScanRequest):
             stored_path_back=None,
             message="roi+ocr + provider",
             session_id=payload.session_id,
-            warehouse_code=warehouse_code,  # Assign the code here
+            warehouse_code=None,  # NOT assigned yet - will be set at publish time
         )
         db.add(scan)
         db.flush()
@@ -471,7 +474,7 @@ async def scan_commit(payload: FrameScanRequest):
             quality=quality,
             confidence=confidence,
             confidence_label=label,
-            warehouse_code=warehouse_code,
+            warehouse_code=suggested_warehouse_code,  # Return as suggested, not saved to DB
         )
     finally:
         db.close()
@@ -1367,11 +1370,14 @@ async def scan_image(
             if session and session.starting_warehouse_code:
                 starting_code = session.starting_warehouse_code
 
-        # Find warehouse code BEFORE creating the scan
+        # Calculate suggested warehouse code (NOT saved to database yet)
+        # Will be assigned only upon successful publication
+        suggested_warehouse_code = None
         try:
-            warehouse_code = get_next_free_location(db, starting_code=starting_code)
+            suggested_warehouse_code = get_next_free_location(db, starting_code=starting_code)
         except NoFreeLocationError:
-            return JSONResponse({"error": "No free storage locations available"}, status_code=503)
+            # Non-fatal: user can still scan and publish will assign a code
+            print("WARNING: No free storage locations available, will assign at publish time")
 
         scan = Scan(
             filename=file.filename,
@@ -1379,7 +1385,7 @@ async def scan_image(
             stored_path_back=(str(target_back) if target_back is not None else None),
             message="pending",
             session_id=session_id,
-            warehouse_code=warehouse_code, # Assign the code here
+            warehouse_code=None,  # NOT assigned yet - will be set at publish time
         )
         db.add(scan)
         db.flush()
@@ -1476,17 +1482,75 @@ async def scan_image(
             
             if catalog_entry:
                 # Use data from CardCatalog (preferred)
-                detected = DetectedData(
-                    name=catalog_entry.name,
-                    set=catalog_entry.set_name,
-                    set_code=catalog_entry.set_code,
-                    number=catalog_entry.number,
-                    rarity=catalog_entry.rarity,
-                    energy=catalog_entry.energy,
-                )
+                # Build full detected data with all variants
+                detected_data = {
+                    "name": catalog_entry.name,
+                    "set": catalog_entry.set_name,
+                    "set_code": catalog_entry.set_code,
+                    "number": catalog_entry.number,
+                    "rarity": catalog_entry.rarity,
+                    "energy": catalog_entry.energy,
+                    "suggested_warehouse_code": suggested_warehouse_code,
+                }
                 
-                # Calculate price from catalog (default to normal finish)
-                price_info = _calculate_price_from_catalog(catalog_entry, "normal")
+                # Calculate all price variants from catalog
+                variants = []
+                for finish_type in ["normal", "holo", "reverse"]:
+                    price_info = _calculate_price_from_catalog(catalog_entry, finish_type)
+                    if price_info.get("price_pln_final"):
+                        variants.append({
+                            "label": finish_type.replace("normal", "Normal").replace("holo", "Holo").replace("reverse", "Reverse Holo"),
+                            "finish": finish_type,
+                            "base_eur": price_info.get("base_eur"),
+                            "price_pln": price_info.get("price_pln"),
+                            "price_pln_final": price_info.get("price_pln_final"),
+                            "estimated": price_info.get("estimated", False),
+                        })
+                
+                detected_data["variants"] = variants
+                
+                # Set default price (normal finish)
+                default_price_info = _calculate_price_from_catalog(catalog_entry, "normal")
+                detected_data["price_pln_final"] = default_price_info.get("price_pln_final")
+                
+                # Try to match set to Shoper category
+                try:
+                    matched_category = await _match_shoper_category(catalog_entry.set_name)
+                    if matched_category:
+                        detected_data["set_id"] = matched_category.get("set_id")
+                except Exception:
+                    pass
+                
+                # Map attributes to Shoper option IDs
+                try:
+                    if settings.shoper_base_url and settings.shoper_access_token:
+                        from .attributes import map_detected_to_form_ids
+                        client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+                        tax = await client.fetch_attributes()
+                        items = tax.get("items") if isinstance(tax, dict) else []
+                        if items:
+                            # Get original scan data for language/condition/variant if available
+                            detected_attrs = {
+                                "rarity": catalog_entry.rarity,
+                                "energy": catalog_entry.energy,
+                                "language": orig.detected_language if orig else None,
+                                "variant": orig.detected_variant if orig else None,
+                                "condition": orig.detected_condition if orig else None,
+                            }
+                            mapped_attributes = map_detected_to_form_ids(detected_attrs, items)
+                            detected_data.update(mapped_attributes)
+                            
+                            # Set defaults if not mapped
+                            if not detected_data.get('64'):  # Language
+                                detected_data['64'] = '142'  # English
+                            if not detected_data.get('66'):  # Quality/Condition
+                                detected_data['66'] = '176'  # Near Mint
+                            if not detected_data.get('65'):  # Finish
+                                detected_data['65'] = '184'  # Normal
+                except Exception as e:
+                    print(f"WARNING: Failed to map attributes for duplicate: {e}")
+                
+                detected = DetectedData(**detected_data)
                 
                 # Link scan to catalog
                 scan.catalog_id = catalog_entry.id
@@ -1496,8 +1560,11 @@ async def scan_image(
                 scan.detected_number = catalog_entry.number
                 scan.detected_rarity = catalog_entry.rarity
                 scan.detected_energy = catalog_entry.energy
-                scan.price_pln = price_info.get("price_pln")
-                scan.price_pln_final = price_info.get("price_pln_final")
+                scan.price_pln = default_price_info.get("price_pln")
+                scan.price_pln_final = default_price_info.get("price_pln_final")
+                
+                # Save full detected_data (including Shoper attributes) to detected_payload
+                scan.detected_payload = json.dumps(detected_data)
                 
                 # Update fingerprint with catalog_id
                 if fprow:
@@ -1542,24 +1609,85 @@ async def scan_image(
                     image_url=image_url,
                     duplicate_of=duplicate_hit_id,
                     duplicate_distance=duplicate_distance,
-                    warehouse_code=warehouse_code,
+                    warehouse_code=suggested_warehouse_code,
                 )
             elif orig:
                 # Fallback: use original scan data (legacy behavior)
-                detected = DetectedData(
-                    name=orig.detected_name,
-                    set=orig.detected_set,
-                    set_code=orig.detected_set_code,
-                    number=orig.detected_number,
-                    language=orig.detected_language,
-                    variant=orig.detected_variant,
-                    condition=orig.detected_condition,
-                    rarity=orig.detected_rarity,
-                    energy=orig.detected_energy,
-                )
+                # Try to get provider details to calculate variants
+                detected_data = {
+                    "name": orig.detected_name,
+                    "set": orig.detected_set,
+                    "set_code": orig.detected_set_code,
+                    "number": orig.detected_number,
+                    "language": orig.detected_language,
+                    "variant": orig.detected_variant,
+                    "condition": orig.detected_condition,
+                    "rarity": orig.detected_rarity,
+                    "energy": orig.detected_energy,
+                    "warehouse_code": suggested_warehouse_code,
+                }
+                
+                # Try to enrich with pricing from provider if we have candidates
+                orig_candidates_db = db.query(ScanCandidate).filter(ScanCandidate.scan_id == orig.id).all()
+                if orig_candidates_db:
+                    try:
+                        provider = get_provider()
+                        # Get details from best candidate
+                        best_candidate = orig_candidates_db[0]
+                        details = await provider.details(best_candidate.provider_id)
+                        
+                        # Calculate price variants
+                        variants = list_variant_prices(details)
+                        detected_data["variants"] = variants
+                        
+                        # Set default price
+                        if variants:
+                            detected_data["price_pln_final"] = variants[0].get("price_pln_final")
+                        
+                        # Try to match set to Shoper category
+                        try:
+                            matched_category = await _match_shoper_category(orig.detected_set)
+                            if matched_category:
+                                detected_data["set_id"] = matched_category.get("set_id")
+                        except Exception:
+                            pass
+                        
+                        # Map attributes to Shoper option IDs
+                        try:
+                            if settings.shoper_base_url and settings.shoper_access_token:
+                                from .attributes import map_detected_to_form_ids
+                                client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+                                tax = await client.fetch_attributes()
+                                items = tax.get("items") if isinstance(tax, dict) else []
+                                if items:
+                                    detected_attrs = {
+                                        "rarity": orig.detected_rarity,
+                                        "energy": orig.detected_energy,
+                                        "language": orig.detected_language,
+                                        "variant": orig.detected_variant,
+                                        "condition": orig.detected_condition,
+                                    }
+                                    mapped_attributes = map_detected_to_form_ids(detected_attrs, items)
+                                    detected_data.update(mapped_attributes)
+                                    
+                                    # Set defaults if not mapped
+                                    if not detected_data.get('64'):  # Language
+                                        detected_data['64'] = '142'  # English
+                                    if not detected_data.get('66'):  # Quality/Condition
+                                        detected_data['66'] = '176'  # Near Mint
+                                    if not detected_data.get('65'):  # Finish
+                                        detected_data['65'] = '184'  # Normal
+                        except Exception as e:
+                            print(f"WARNING: Failed to map attributes for legacy duplicate: {e}")
+                    except Exception as e:
+                        print(f"WARNING: Failed to enrich legacy duplicate with provider data: {e}")
+                
+                detected = DetectedData(**detected_data)
+                
+                # Save full detected_data (including Shoper attributes) to detected_payload
+                scan.detected_payload = json.dumps(detected_data)
                 
                 # Copy candidates from original scan
-                orig_candidates_db = db.query(ScanCandidate).filter(ScanCandidate.scan_id == orig.id).all()
                 response_candidates = []
                 for c_orig in orig_candidates_db:
                     new_cand = ScanCandidate(
@@ -1596,7 +1724,7 @@ async def scan_image(
                     image_url=image_url,
                     duplicate_of=duplicate_hit_id,
                     duplicate_distance=duplicate_distance,
-                    warehouse_code=warehouse_code,
+                    warehouse_code=suggested_warehouse_code,
                 )
             else:
                 scan.message = f"duplicate_detected distance:{duplicate_distance}"
@@ -1610,7 +1738,7 @@ async def scan_image(
                     image_url=image_url,
                     duplicate_of=None,
                     duplicate_distance=duplicate_distance,
-                    warehouse_code=warehouse_code,
+                    warehouse_code=suggested_warehouse_code,
                 )
 
         # No duplicate: proceed with Vision + provider
@@ -1648,7 +1776,7 @@ async def scan_image(
             if key in fused:
                 fused[key] = _scalarize(fused.get(key))
         
-        fused['warehouse_code'] = warehouse_code
+        fused['warehouse_code'] = suggested_warehouse_code
         detected = DetectedData(**fused)
 
         provider = get_provider()
@@ -1796,7 +1924,7 @@ async def scan_image(
             image_url=image_url,
             duplicate_of=None,
             duplicate_distance=None,
-            warehouse_code=warehouse_code,
+            warehouse_code=suggested_warehouse_code,
             overlay=(
                 None if roi is None else {
                     "x": float(roi[0]),
@@ -2606,7 +2734,7 @@ async def map_attributes_endpoint(scan_id: int | None = None, detected: dict | N
 
 
 @app.get("/scans/{scan_id}", response_model=ScanDetailResponse)
-def scan_detail(scan_id: int):
+async def scan_detail(scan_id: int):
     db = SessionLocal()
     try:
         s = db.get(Scan, scan_id)
@@ -2628,23 +2756,103 @@ def scan_detail(scan_id: int):
                     score=c.score,
                 )
             )
-        # Add warehouse_code to the response
+        
+        # Build detected data with enriched information
+        # First try to load from detected_payload (includes Shoper attributes)
+        detected_data = {}
+        if s.detected_payload:
+            try:
+                detected_data = json.loads(s.detected_payload)
+            except Exception:
+                pass
+        
+        # Fallback to individual fields if payload is not available
+        if not detected_data:
+            detected_data = {
+                "name": s.detected_name,
+                "set": s.detected_set,
+                "set_code": s.detected_set_code,
+                "number": s.detected_number,
+                "language": s.detected_language,
+                "variant": s.detected_variant,
+                "condition": s.detected_condition,
+                "rarity": s.detected_rarity,
+                "energy": s.detected_energy,
+                "warehouse_code": s.warehouse_code,
+            }
+        
+        # If scan has catalog_id, enrich with variants and mapped attributes
+        if s.catalog_id:
+            try:
+                catalog_entry = db.get(CardCatalog, s.catalog_id)
+                if catalog_entry:
+                    # Calculate all price variants
+                    variants = []
+                    for finish_type in ["normal", "holo", "reverse"]:
+                        price_info = _calculate_price_from_catalog(catalog_entry, finish_type)
+                        if price_info.get("price_pln_final"):
+                            variants.append({
+                                "label": finish_type.replace("normal", "Normal").replace("holo", "Holo").replace("reverse", "Reverse Holo"),
+                                "finish": finish_type,
+                                "base_eur": price_info.get("base_eur"),
+                                "price_pln": price_info.get("price_pln"),
+                                "price_pln_final": price_info.get("price_pln_final"),
+                                "estimated": price_info.get("estimated", False),
+                            })
+                    detected_data["variants"] = variants
+                    
+                    # Set default price if not already set
+                    if not s.price_pln_final and variants:
+                        detected_data["price_pln_final"] = variants[0]["price_pln_final"]
+                    else:
+                        detected_data["price_pln_final"] = s.price_pln_final
+                    
+                    # Try to match set to Shoper category
+                    try:
+                        matched_category = await _match_shoper_category(catalog_entry.set_name)
+                        if matched_category:
+                            detected_data["set_id"] = matched_category.get("set_id")
+                    except Exception:
+                        pass
+                    
+                    # Map attributes to Shoper option IDs
+                    try:
+                        if settings.shoper_base_url and settings.shoper_access_token:
+                            from .attributes import map_detected_to_form_ids
+                            client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+                            tax = await client.fetch_attributes()
+                            items = tax.get("items") if isinstance(tax, dict) else []
+                            if items:
+                                detected_attrs = {
+                                    "rarity": s.detected_rarity or catalog_entry.rarity,
+                                    "energy": s.detected_energy or catalog_entry.energy,
+                                    "language": s.detected_language,
+                                    "variant": s.detected_variant,
+                                    "condition": s.detected_condition,
+                                }
+                                mapped_attributes = map_detected_to_form_ids(detected_attrs, items)
+                                detected_data.update(mapped_attributes)
+                                
+                                # Set defaults if not mapped
+                                if not detected_data.get('64'):  # Language
+                                    detected_data['64'] = '142'  # English
+                                if not detected_data.get('66'):  # Quality/Condition
+                                    detected_data['66'] = '176'  # Near Mint
+                                if not detected_data.get('65'):  # Finish
+                                    detected_data['65'] = '184'  # Normal
+                    except Exception as e:
+                        print(f"WARNING: Failed to map attributes in scan_detail: {e}")
+            except Exception as e:
+                print(f"WARNING: Failed to enrich scan with catalog data: {e}")
+        else:
+            # No catalog, use basic price from scan
+            detected_data["price_pln_final"] = s.price_pln_final
+        
         return ScanDetailResponse(
             id=s.id,
             created_at=s.created_at.isoformat(),
             message=s.message,
-            detected=DetectedData(
-                name=s.detected_name,
-                set=s.detected_set,
-                set_code=s.detected_set_code,
-                number=s.detected_number,
-                language=s.detected_language,
-                variant=s.detected_variant,
-                condition=s.detected_condition,
-                rarity=s.detected_rarity,
-                energy=s.detected_energy,
-                warehouse_code=s.warehouse_code, # <--- ADDED THIS LINE
-            ),
+            detected=DetectedData(**detected_data),
             candidates=candidates,
             selected_candidate_id=s.selected_candidate_id,
             pricing={
@@ -2657,7 +2865,7 @@ def scan_detail(scan_id: int):
             } if s.cardmarket_currency else None,
             image_url=f"/uploads/{s.filename}" if s.filename else None,
             back_image_url=f"/uploads/{Path(s.stored_path_back).name}" if s.stored_path_back else None,
-            warehouse_code=s.warehouse_code, # <--- ADDED THIS LINE
+            warehouse_code=s.warehouse_code,
         )
     finally:
         db.close()
@@ -2768,6 +2976,32 @@ async def publish_single_scan(
         cand = db.get(ScanCandidate, scan.selected_candidate_id)
         if not cand:
             return JSONResponse({"error": "Candidate not found"}, status_code=404)
+
+        # 2.5. Assign warehouse code if not already assigned
+        # This is the definitive moment when the warehouse code is committed
+        if not scan.warehouse_code:
+            # Try to get code from form data (user might have edited it)
+            proposed_code = form_data.get('warehouse_code')
+            starting_code = None
+            
+            if proposed_code:
+                # Validate proposed code
+                parsed = parse_warehouse_code(proposed_code)
+                if parsed:
+                    starting_code = proposed_code
+            
+            # If no valid code from form, try to get from session
+            if not starting_code and scan.session_id:
+                session = db.get(Session, scan.session_id)
+                if session and session.starting_warehouse_code:
+                    starting_code = session.starting_warehouse_code
+            
+            # Assign the next available code
+            try:
+                scan.warehouse_code = get_next_free_location(db, starting_code=starting_code)
+                print(f"INFO: Assigned warehouse code {scan.warehouse_code} to scan {scan_id}")
+            except NoFreeLocationError:
+                return JSONResponse({"error": "No free storage locations available"}, status_code=503)
 
         # 3. Handle image uploads
         form = await request.form()

@@ -143,8 +143,12 @@ def parse_warehouse_code(code: str) -> dict | None:
     }
 
 
-def get_used_indices(db: Session) -> set[int]:
-    """Queries the database for all used warehouse codes and returns them as a set of indices."""
+def get_used_indices(db: Session, only_published: bool = True) -> set[int]:
+    """Queries the database for all used warehouse codes and returns them as a set of indices.
+    
+    Args:
+        only_published: If True, only count published scans to avoid reserving codes for unpublished items.
+    """
     used_indices = set()
     
     def _process_query(query):
@@ -158,14 +162,20 @@ def get_used_indices(db: Session) -> set[int]:
                 if index is not None:
                     used_indices.add(index)
 
-    # Check Scans
-    _process_query(db.query(models.Scan.warehouse_code).filter(models.Scan.warehouse_code.isnot(None)).all())
+    # Check Scans - only published ones to avoid reserving codes for abandoned scans
+    scan_query = db.query(models.Scan.warehouse_code).filter(models.Scan.warehouse_code.isnot(None))
+    if only_published:
+        scan_query = scan_query.filter(models.Scan.publish_status == 'published')
+    _process_query(scan_query.all())
     
-    # Check Inventory Items
+    # Check Inventory Items - always count these as they represent actual stock
     _process_query(db.query(models.InventoryItem.warehouse_code).filter(models.InventoryItem.warehouse_code.isnot(None)).all())
     
-    # Check Batch Scan Items
-    _process_query(db.query(models.BatchScanItem.warehouse_code).filter(models.BatchScanItem.warehouse_code.isnot(None)).all())
+    # Check Batch Scan Items - only published ones
+    batch_query = db.query(models.BatchScanItem.warehouse_code).filter(models.BatchScanItem.warehouse_code.isnot(None))
+    if only_published:
+        batch_query = batch_query.filter(models.BatchScanItem.publish_status == 'published')
+    _process_query(batch_query.all())
     
     return used_indices
 
