@@ -1283,6 +1283,54 @@ async def manual_search(body: dict = Body(default={})):
     except Exception as e:
         return JSONResponse({"error": f"details failed: {e}"}, status_code=500)
 
+
+class PricingImageRequest(BaseModel):
+    image: str
+
+@app.post("/pricing/estimate_from_image")
+async def estimate_from_image(body: PricingImageRequest):
+    """
+    Analyzes an image of a card, extracts name/number, and returns pricing information
+    without saving any data to the database. A lightweight version for live pricing.
+    """
+    db = SessionLocal()
+    try:
+        import base64
+        from .analysis.pipeline import detect_card_roi_bytes, warp_card_from_bytes, extract_name_number_from_bytes
+
+        # 1. Decode image from base64
+        try:
+            image_bytes = base64.b64decode(body.image.split(',')[1])
+        except (IndexError, base64.binascii.Error):
+            return JSONResponse({"error": "Nieprawidłowy format obrazu (base64)"}, status_code=400)
+
+        # 2. Find card in the image
+        roi = detect_card_roi_bytes(image_bytes)
+        if not roi:
+            return JSONResponse({"error": "Nie wykryto karty na obrazie"}, status_code=404)
+
+        # 3. Warp and extract text
+        warped_image_bytes = warp_card_from_bytes(image_bytes, roi)
+        if not warped_image_bytes:
+            return JSONResponse({"error": "Błąd podczas przetwarzania obrazu"}, status_code=500)
+
+        detected = extract_name_number_from_bytes(warped_image_bytes)
+        name = detected.get("name")
+        number = detected.get("number")
+
+        if not name and not number:
+            return JSONResponse({"error": "Nie udało się odczytać nazwy ani numeru z karty"}, status_code=404)
+
+        # 4. Call the existing manual_search logic to get pricing
+        return await manual_search(body={"name": name, "number": number})
+
+    except Exception as e:
+        print(f"Error in estimate_from_image: {e}")
+        return JSONResponse({"error": "Wewnętrzny błąd serwera"}, status_code=500)
+    finally:
+        db.close()
+
+
 @app.get("/shoper/attributes")
 async def shoper_attributes():
     if not settings.shoper_base_url or not settings.shoper_access_token:

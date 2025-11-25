@@ -158,46 +158,27 @@ export function useLivePricingScan({ enabled, apiBase, onResult, onScan, onSound
 
                 if (isStable(newHistory)) {
                     setAnalyzing(true);
-                    setStatus('Karta stabilna, rozpoznaję...');
+                     setStatus('Karta stabilna, rozpoznaję...');
                     
-                    const commitRes = await fetch(`${apiBase}/scan/commit`, {
+                    // NEW: Use the lightweight estimate_from_image endpoint
+                    const priceRes = await fetch(`${apiBase}/pricing/estimate_from_image`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ image: dataUrl }),
                     });
 
-                    setDetectionHistory([]); // Reset after commit
+                    setDetectionHistory([]); // Reset after attempt
 
-                    if (!commitRes.ok) {
-                        setStatus('Błąd serwera (commit)');
-                        onSound('fail');
+                    if (priceRes.ok) {
+                        const priceData = await priceRes.json();
+                        onResultRef.current(priceData);
+                        onSound('success');
+                        setStatus('Znaleziono cenę!');
                         shouldPause = true;
-                        return;
-                    }
-
-                    const commitData = await commitRes.json();
-                    const { name, number } = commitData.detected;
-
-                    if (name || number) {
-                        setStatus('Pobieram cenę...');
-                        const priceRes = await fetch(`${apiBase}/pricing/manual_search`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ name, number }),
-                        });
-
-                        if (priceRes.ok) {
-                            const priceData = await priceRes.json();
-                            onResultRef.current(priceData);
-                            onSound('success');
-                            await new Promise(r => setTimeout(r, 3000)); // Pause after success
-                        } else {
-                            setStatus('Nie znaleziono ceny dla tej karty.');
-                            onSound('fail');
-                            shouldPause = true;
-                        }
+                        await new Promise(r => setTimeout(r, 3000)); // Pause after success
                     } else {
-                        setStatus('Nie udało się odczytać nazwy/numeru.');
+                        const errData = await priceRes.json();
+                        setStatus(errData.error || 'Nie znaleziono ceny.');
                         onSound('fail');
                         shouldPause = true;
                     }

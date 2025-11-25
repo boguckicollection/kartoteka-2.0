@@ -31,7 +31,7 @@ const ManualEntryView = ({ onBack }: { onBack: () => void }) => {
     setSelectedVariant(null);
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || ''}/api/pricing/manual_search`, {
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || ''}/pricing/manual_search`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -309,6 +309,7 @@ const ManualEntryView = ({ onBack }: { onBack: () => void }) => {
     </div>
   );
 };
+
 const LiveScanView = ({ onBack }: { onBack: () => void }) => {
   const [result, setResult] = useState<any>(null);
   const [selectedVariant, setSelectedVariant] = useState<any>(null);
