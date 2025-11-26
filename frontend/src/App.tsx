@@ -38,6 +38,7 @@ export default function App() {
   const [currentFileIndex, setCurrentFileIndex] = useState<number>(0)
   const [showSessionStart, setShowSessionStart] = useState(true);
   const [showBatchScan, setShowBatchScan] = useState(false);
+  const [lastOrderId, setLastOrderId] = useState<number | null>(null);
 
   const isAndroid = useMemo(()=>/Android/i.test(navigator.userAgent||''), [])
 
@@ -98,13 +99,38 @@ export default function App() {
     }
   }, [isAndroid, apiBase]);
 
-  const loadStats = async () => { 
+  const loadStats = async (silent: boolean = false) => { 
     try { 
       const r = await fetch(`${apiBase}/stats`); 
       setStats(await r.json());
-      // Load recent orders for dashboard
-      const ordersRes = await fetch(`${apiBase}/orders?limit=5&detailed=0`);
+      // Load recent orders for dashboard - need detailed=1 for items
+      const ordersRes = await fetch(`${apiBase}/orders?limit=20&detailed=1`);
       const ordersData = await ordersRes.json();
+      
+      // Check for new orders (only if we have previous data and not silent initial load)
+      if (!silent && lastOrderId !== null && Array.isArray(ordersData) && ordersData.length > 0) {
+        const latestOrderId = Math.max(...ordersData.map((o: any) => Number(o.id) || 0));
+        if (latestOrderId > lastOrderId) {
+          // Find new orders with status 1 or 2
+          const newOrders = ordersData.filter((o: any) => {
+            const orderId = Number(o.id) || 0;
+            const statusId = o?.status?.id;
+            const isNew = statusId === '1' || statusId === 1 || statusId === '2' || statusId === 2;
+            return orderId > lastOrderId && isNew;
+          });
+          
+          if (newOrders.length > 0) {
+            const orderText = newOrders.length === 1 ? 'zamówienie' : newOrders.length < 5 ? 'zamówienia' : 'zamówień';
+            setToast(`🔔 Nowe ${orderText}! (${newOrders.length})`);
+          }
+          setLastOrderId(latestOrderId);
+        }
+      } else if (lastOrderId === null && Array.isArray(ordersData) && ordersData.length > 0) {
+        // Initial load - just set the latest ID without notification
+        const latestOrderId = Math.max(...ordersData.map((o: any) => Number(o.id) || 0));
+        setLastOrderId(latestOrderId);
+      }
+      
       setOrders(ordersData);
     } catch {} 
   }
@@ -332,7 +358,7 @@ export default function App() {
 
       } else if (tab === 'dashboard') {
 
-        loadStats();
+        loadStats(true); // Silent initial load
 
       } else if (tab === 'pricing' && !pricingItems) {
 
@@ -345,6 +371,17 @@ export default function App() {
       }
 
     }, [tab, invPage, invLimit, invSort, invOrder, invQ, invCategoryId, apiBase]);
+
+  // Periodic check for new orders on dashboard (every 2 minutes)
+  useEffect(() => {
+    if (tab !== 'dashboard') return;
+    
+    const interval = setInterval(() => {
+      loadStats(false); // Not silent - will show notifications
+    }, 120000); // 2 minutes
+    
+    return () => clearInterval(interval);
+  }, [tab]);
 
   const renderContent = () => {
     if (tab === 'scan') {
@@ -385,7 +422,7 @@ export default function App() {
         />
       );
     }
-    if (tab==='dashboard') return <Home stats={stats} orders={(orders||[]).slice(0,5)} onNav={(k)=> setTab(k as any)} onRefresh={loadStats} onOpenOrder={(o)=>{ setSelected(o); setTab('orders'); setIsSliderOpen(true); }} />;
+    if (tab==='dashboard') return <Home stats={stats} orders={orders||[]} onNav={(k)=> setTab(k as any)} onRefresh={loadStats} onOpenOrder={(o)=>{ setSelected(o); setTab('orders'); setIsSliderOpen(true); }} />;
     if (tab==='reports') return <ReportsView />;
     if (tab==='warehouse') return <WarehouseVisualView apiBase={apiBase} />;
     if (tab==='inventory') return <InventoryView
@@ -468,7 +505,7 @@ export default function App() {
             { key: 'storage', icon: 'warehouse', label: 'Lokalizacje'},
           ]}
           active={tab}
-          onChange={(k)=>{ setTab(k as any); if(k==='dashboard') loadStats(); if(k==='inventory') loadProducts(); if(k==='pricing' && !pricingItems) loadPricing(); if(k === 'scan') { setShowSessionStart(true); setShowBatchScan(false); } }}
+          onChange={(k)=>{ setTab(k as any); if(k==='dashboard') loadStats(true); if(k==='inventory') loadProducts(); if(k==='pricing' && !pricingItems) loadPricing(); if(k === 'scan') { setShowSessionStart(true); setShowBatchScan(false); } }}
         />
       </div>
     </div>

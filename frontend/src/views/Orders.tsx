@@ -239,9 +239,24 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
     };
   }, [loadOrders, hasMore, loading, page, initialLoading]);
 
-  const onOpen = (o: any) => {
+  const onOpen = async (o: any) => {
     setSelected(o);
     setOpen(true);
+    
+    // Fetch detailed order data if we don't have items yet
+    if (apiBase && (!o.items || o.items.length === 0)) {
+      try {
+        const res = await fetch(`${apiBase}/orders/${o.id}`);
+        if (res.ok) {
+          const detailed = await res.json();
+          setSelected(detailed);
+          // Update in the orders list too
+          setOrders(prev => prev.map(ord => ord.id === detailed.id ? detailed : ord));
+        }
+      } catch (err) {
+        console.error('Failed to fetch order details:', err);
+      }
+    }
   };
 
   const onClose = () => {

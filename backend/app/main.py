@@ -3898,6 +3898,217 @@ async def list_orders(limit: int = 20, page: int | None = None, detailed: bool =
     return out
 
 
+@app.get("/orders/{order_id}")
+async def get_order_details(order_id: int):
+    """Fetch detailed information for a specific order."""
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return JSONResponse({"error": "Shoper configuration missing"}, status_code=400)
+    
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    try:
+        # Fetch single order with all details
+        order_data = await client.fetch_order_detail(order_id)
+        if not order_data:
+            return JSONResponse({"error": "Order not found"}, status_code=404)
+        
+        # Normalize using the same logic as list_orders
+        # Process as a list with one item to reuse normalization
+        db = SessionLocal()
+        prod_cache_by_code: dict[str, tuple[str|None, str|None]] = {}
+        prod_cache_by_id: dict[int, tuple[str|None, str|None]] = {}
+        
+        try:
+            o = order_data
+            oid = o.get("order_id") or o.get("id") or o.get("orderId")
+            ts = o.get("date") or o.get("created_at") or o.get("add_date") or o.get("createdAt")
+            total = (o.get("sum") or o.get("total_gross") or o.get("total") or o.get("amount") or 0)
+            
+            # Extract items count
+            items_count = o.get("total_products")
+            if items_count is None:
+                products = o.get("products") or o.get("items") or o.get("orders_products") or []
+                if isinstance(products, dict):
+                    products = products.get("items") or products.get("list") or []
+                try:
+                    items_count = sum(int(p.get("quantity") or p.get("qty") or p.get("count") or 0) for p in (products or []) if isinstance(p, dict))
+                except Exception:
+                    items_count = None
+            
+            # Status info
+            st = o.get("status") or {}
+            st_name = None
+            try:
+                tr = st.get("translations")
+                if isinstance(tr, dict):
+                    lang = getattr(settings, "default_language_code", None) or "pl_PL"
+                    tr_lang = tr.get(lang)
+                    if isinstance(tr_lang, dict):
+                        st_name = tr_lang.get("name")
+                    if not st_name:
+                        for _k, _v in tr.items():
+                            if isinstance(_v, dict) and _v.get("name"):
+                                st_name = _v.get("name")
+                                break
+            except Exception:
+                pass
+            st_type = (st.get("type") if isinstance(st, dict) else None) or o.get("status_type")
+            st_id = (st.get("status_id") if isinstance(st, dict) else None) or o.get("status_id")
+            st_color = (st.get("color") if isinstance(st, dict) else None)
+            
+            # Extract user info
+            user_info = {}
+            try:
+                user = o.get("user")
+                if isinstance(user, dict):
+                    user_info = {
+                        "firstname": user.get("firstname"),
+                        "lastname": user.get("lastname"),
+                        "email": user.get("email") or o.get("email"),
+                    }
+                elif o.get("email"):
+                    user_info = {"email": o.get("email")}
+            except Exception:
+                pass
+            
+            # Build basic row
+            row = {
+                "id": oid,
+                "date": ts,
+                "total": total,
+                "items_count": items_count,
+                "delivery_date": o.get("delivery_date"),
+                "status": {"type": st_type, "id": st_id, "color": st_color, "name": st_name},
+                "user": user_info,
+            }
+            
+            # Attach detailed items
+            prods = (
+                o.get("products")
+                or o.get("orders_products")
+                or o.get("order_products")
+                or o.get("items")
+                or []
+            )
+            if isinstance(prods, dict):
+                prods = prods.get("items") or prods.get("list") or []
+            
+            # Fallback: fetch per-order products if empty
+            if (not prods) and oid is not None:
+                try:
+                    prods = await client.fetch_order_products(oid)
+                except Exception:
+                    prods = []
+            
+            simp: list[dict] = []
+            if isinstance(prods, list):
+                def _emit(pobj: dict):
+                    if not isinstance(pobj, dict):
+                        return
+                    name = pobj.get("name") or pobj.get("product_name") or pobj.get("title")
+                    code = pobj.get("code") or pobj.get("sku") or pobj.get("product_code")
+                    pid = pobj.get("product_id") or pobj.get("id")
+                    qty = pobj.get("quantity") or pobj.get("qty") or pobj.get("count") or 0
+                    price = pobj.get("price") or pobj.get("price_gross") or pobj.get("sum") or pobj.get("amount")
+                    
+                    # Concatenate options to name if present
+                    try:
+                        topts = pobj.get("text_options")
+                        if isinstance(topts, list) and topts:
+                            optstr = ", ".join([str(x.get("value")) for x in topts if isinstance(x, dict) and x.get("value")])
+                            if optstr:
+                                name = f"{name} ({optstr})"
+                    except Exception:
+                        pass
+                    
+                    try:
+                        qty = int(qty)
+                    except Exception:
+                        try:
+                            qty = int(float(str(qty).replace(",", ".")))
+                        except Exception:
+                            qty = 0
+                    try:
+                        price = float(str(price).replace(",", ".")) if price is not None else None
+                    except Exception:
+                        price = None
+                    
+                    # Enrich with image/permalink via local products when possible
+                    image_url = None
+                    permalink = None
+                    try:
+                        if code and code in prod_cache_by_code:
+                            image_url, permalink = prod_cache_by_code.get(code) or (None, None)
+                        elif isinstance(pid, int) and pid in prod_cache_by_id:
+                            image_url, permalink = prod_cache_by_id.get(pid) or (None, None)
+                        elif db is not None:
+                            if code:
+                                pr = db.query(Product).filter(Product.code == code).first()
+                                if pr:
+                                    image_url = _product_image_url(pr)
+                                    permalink = pr.permalink
+                                    prod_cache_by_code[code] = (image_url, permalink)
+                            if (image_url is None) and isinstance(pid, int):
+                                pr2 = db.query(Product).filter(Product.shoper_id == pid).first()
+                                if pr2:
+                                    image_url = _product_image_url(pr2)
+                                    permalink = pr2.permalink
+                                    prod_cache_by_id[pid] = (image_url, permalink)
+                    except Exception:
+                        pass
+                    
+                    simp.append({
+                        "name": name,
+                        "code": code,
+                        "product_id": pid,
+                        "quantity": qty,
+                        "price": price,
+                        "image": image_url,
+                        "permalink": permalink,
+                    })
+                
+                for p in prods:
+                    _emit(p)
+                    # flatten children if any
+                    try:
+                        ch = p.get("children")
+                        if isinstance(ch, list):
+                            for c in ch:
+                                _emit(c)
+                    except Exception:
+                        pass
+            
+            # Buyer basic info
+            buyer = {"email": o.get("email")}
+            try:
+                b = o.get("billing_address") or {}
+                d = o.get("delivery_address") or {}
+                src = b or d or {}
+                buyer.update({
+                    "firstname": src.get("firstname"),
+                    "lastname": src.get("lastname"),
+                    "phone": src.get("phone"),
+                    "city": src.get("city"),
+                    "postcode": src.get("postcode"),
+                    "street1": src.get("street1"),
+                    "country": src.get("country") or src.get("country_code"),
+                })
+            except Exception:
+                pass
+            
+            row["items"] = simp
+            row["buyer"] = buyer
+            
+            return row
+        finally:
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/orders/statuses")
 async def get_order_statuses():
     """Fetch all available order statuses from Shoper API."""
