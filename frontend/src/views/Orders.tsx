@@ -46,6 +46,8 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
   const [hasMore, setHasMore] = useState(true);
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<any | null>(null);
+  const [statuses, setStatuses] = useState<any[]>([]);
+  const [changingStatus, setChangingStatus] = useState(false);
   const receiptRef = useRef<HTMLDivElement>(null);
   const observerTarget = useRef<HTMLDivElement>(null);
   const hasInitialized = useRef(false);
@@ -110,6 +112,18 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
     };
   };
 
+  // Load statuses from API
+  const loadStatuses = useCallback(async () => {
+    if (!apiBase) return;
+    try {
+      const res = await fetch(`${apiBase}/orders/statuses`);
+      const data = await res.json();
+      setStatuses(data || []);
+    } catch (err) {
+      console.error('Failed to load statuses', err);
+    }
+  }, [apiBase]);
+
   // Load orders from API
   const loadOrders = useCallback(async (pageNum: number = 1, append: boolean = false) => {
     if (!apiBase || loading) return;
@@ -141,6 +155,47 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
     }
   }, [apiBase, loading]);
 
+  // Change order status
+  const handleStatusChange = async (newStatusId: number) => {
+    if (!apiBase || !selected) return;
+    
+    setChangingStatus(true);
+    try {
+      const res = await fetch(`${apiBase}/orders/${selected.id}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status_id: newStatusId })
+      });
+      
+      if (res.ok) {
+        // Update local state
+        const newStatus = statuses.find(s => s.id === newStatusId);
+        const updatedOrder = {
+          ...selected,
+          status: {
+            id: newStatusId,
+            type: newStatus?.type,
+            name: newStatus?.name,
+            color: newStatus?.color
+          }
+        };
+        setSelected(updatedOrder);
+        
+        // Update in orders list
+        setOrders(prev => prev.map(o => 
+          o.id === selected.id ? updatedOrder : o
+        ));
+      } else {
+        alert('Nie udało się zmienić statusu');
+      }
+    } catch (err) {
+      console.error('Failed to update status', err);
+      alert('Błąd podczas zmiany statusu');
+    } finally {
+      setChangingStatus(false);
+    }
+  };
+
   // Initial load - use initialItems if provided, otherwise fetch from API
   useEffect(() => {
     if (hasInitialized.current) return;
@@ -154,6 +209,11 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
       setHasMore(initialItems.length >= 20);
     } else if (apiBase) {
       loadOrders(1, false);
+    }
+    
+    // Load statuses
+    if (apiBase) {
+      loadStatuses();
     }
   }, []);
 
@@ -192,8 +252,8 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
   };
 
   const statusLabel = (o: any) => {
-    const t = o?.status?.type;
     if (o?.status?.name) return o.status.name;
+    const t = o?.status?.type;
     if (t === 1) return 'Nowe';
     if (t === 2) return 'W realizacji';
     if (t === 3) return 'Zakończone';
@@ -210,6 +270,32 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
     if (t === 3) return '#2ECC71';
     if (t === 4) return '#E74C3C';
     return '#6B7280';
+  };
+
+  const statusIcon = (o: any) => {
+    const t = o?.status?.type;
+    if (t === 1) return 'new_releases';
+    if (t === 2) return 'schedule';
+    if (t === 3) return 'check_circle';
+    if (t === 4) return 'cancel';
+    return 'label';
+  };
+
+  const getUserName = (o: any) => {
+    const user = o?.user;
+    if (!user) return null;
+    
+    const firstname = user.firstname || '';
+    const lastname = user.lastname || '';
+    const email = user.email || '';
+    
+    if (firstname || lastname) {
+      return `${firstname} ${lastname}`.trim();
+    }
+    if (email) {
+      return email.split('@')[0];
+    }
+    return null;
   };
 
   return (
@@ -237,47 +323,60 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
         ) : (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-              {orders.map((o: any, i: number) => (
-                <div 
-                  key={`${o.id}-${i}`} 
-                  className="rounded-lg p-3 bg-[#1f2937] border border-white/10 text-white cursor-pointer transition-all duration-200 hover:bg-white/5 hover:shadow-md hover:scale-[1.02] hover:border-primary/40"
-                  onClick={() => onOpen(o)}
-                >
-                  <div className="flex justify-between items-start mb-2">
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
-                        <span className="material-symbols-outlined text-primary text-xs">receipt</span>
-                      </div>
-                      <div>
-                        <div className="font-semibold text-sm">#{o.id}</div>
-                        <div className="text-gray-400 text-xs">
-                          {o.date ? new Date(o.date).toLocaleDateString('pl-PL', { 
-                            day: '2-digit', 
-                            month: 'short'
-                          }) : '-'}
+              {orders.map((o: any, i: number) => {
+                const userName = getUserName(o);
+                return (
+                  <div 
+                    key={`${o.id}-${i}`} 
+                    className="rounded-lg p-3 bg-[#1f2937] border border-white/10 text-white cursor-pointer transition-all duration-200 hover:bg-white/5 hover:shadow-md hover:scale-[1.02] hover:border-primary/40"
+                    onClick={() => onOpen(o)}
+                  >
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <div 
+                          className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+                          style={{ background: statusColor(o) + '22' }}
+                        >
+                          <span className="material-symbols-outlined text-xs" style={{ color: statusColor(o) }}>
+                            {statusIcon(o)}
+                          </span>
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <div className="font-semibold text-sm">#{o.id}</div>
+                            {userName && (
+                              <div className="text-gray-400 text-xs truncate">· {userName}</div>
+                            )}
+                          </div>
+                          <div className="text-gray-400 text-xs">
+                            {o.date ? new Date(o.date).toLocaleDateString('pl-PL', { 
+                              day: '2-digit', 
+                              month: 'short'
+                            }) : '-'}
+                          </div>
                         </div>
                       </div>
+                      
+                      <span 
+                        className="px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap flex-shrink-0" 
+                        style={{ background: statusColor(o) + '22', color: statusColor(o) }}
+                      >
+                        {statusLabel(o)}
+                      </span>
                     </div>
                     
-                    <span 
-                      className="px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap" 
-                      style={{ background: statusColor(o) + '22', color: statusColor(o) }}
-                    >
-                      {statusLabel(o)}
-                    </span>
-                  </div>
-                  
-                  <div className="flex justify-between items-center pt-2 border-t border-white/5">
-                    <div className="text-gray-400 text-xs flex items-center gap-1">
-                      <span className="material-symbols-outlined text-xs">shopping_cart</span>
-                      {o.items_count ?? 0} szt.
-                    </div>
-                    <div className="text-primary font-bold text-sm">
-                      {o.total != null ? `${Number(String(o.total).replace(',', '.')).toFixed(2)} zł` : '-'}
+                    <div className="flex justify-between items-center pt-2 border-t border-white/5">
+                      <div className="text-gray-400 text-xs flex items-center gap-1">
+                        <span className="material-symbols-outlined text-xs">shopping_cart</span>
+                        {o.items_count ?? 0} szt.
+                      </div>
+                      <div className="text-primary font-bold text-sm">
+                        {o.total != null ? `${Number(String(o.total).replace(',', '.')).toFixed(2)} zł` : '-'}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Infinite scroll trigger + loading indicator */}
@@ -299,19 +398,16 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
         />
         <div className={`absolute right-0 top-0 h-full w-full md:w-[540px] bg-[#0d1117] border-l border-white/10 shadow-2xl transition-transform duration-300 ${open ? 'translate-x-0' : 'translate-x-full'} flex flex-col`}>
           <div className="flex items-center justify-between p-4 border-b border-white/10 flex-shrink-0 bg-[#161b22]">
-            <div className="flex items-center gap-3">
-              <div className="text-white font-semibold">Zamówienie #{selected?.id || ''}</div>
-              {!!selected && (
-                <span 
-                  className="text-xs font-medium px-2 py-1 rounded" 
-                  style={{ background: statusColor(selected) + '33', color: statusColor(selected) }}
-                >
-                  {statusLabel(selected)}
-                </span>
-              )}
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              <div className="text-white font-semibold flex items-center gap-2">
+                <span>Zamówienie #{selected?.id || ''}</span>
+                {selected && getUserName(selected) && (
+                  <span className="text-gray-400 text-sm font-normal">· {getUserName(selected)}</span>
+                )}
+              </div>
             </div>
             <button 
-              className="text-white/80 hover:text-white transition-colors" 
+              className="text-white/80 hover:text-white transition-colors ml-2" 
               onClick={onClose}
             >
               <span className="material-symbols-outlined">close</span>
@@ -321,6 +417,36 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
           <div className="p-4 overflow-y-auto flex-grow">
             {!selected ? null : (
               <div className="grid gap-4">
+                {/* Status Change */}
+                <div className="rounded-lg p-4 bg-[#161b22] border border-white/10">
+                  <div className="text-white font-semibold mb-3 flex items-center gap-2">
+                    <span className="material-symbols-outlined text-lg text-primary">swap_horiz</span>
+                    Status zamówienia
+                  </div>
+                  <select 
+                    className="w-full px-3 py-2 rounded-lg bg-[#0d1117] border border-white/20 text-white text-sm focus:outline-none focus:border-primary transition-colors disabled:opacity-50"
+                    value={selected.status?.id || ''}
+                    onChange={(e) => handleStatusChange(Number(e.target.value))}
+                    disabled={changingStatus}
+                  >
+                    {statuses.length === 0 ? (
+                      <option>Ładowanie...</option>
+                    ) : (
+                      statuses.map(st => (
+                        <option key={st.id} value={st.id}>
+                          {st.name}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                  {changingStatus && (
+                    <div className="mt-2 text-gray-400 text-xs flex items-center gap-2">
+                      <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                      Zapisywanie...
+                    </div>
+                  )}
+                </div>
+
                 {/* Buyer Info */}
                 {selected.buyer && (
                   <div className="rounded-lg p-4 bg-[#161b22] border border-white/10">

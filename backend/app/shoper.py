@@ -659,6 +659,48 @@ class ShoperClient:
             print(f"WARNING: Failed to validate product IDs: {e}")
             return product_ids
 
+    async def fetch_order_statuses(self) -> List[Dict[str, Any]]:
+        """Fetch all available order statuses from Shoper API."""
+        headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+        url = f"{self.base_url}/order-statuses"
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(url, headers=headers)
+                r.raise_for_status()
+                data = r.json()
+                # Normalize response shape
+                if isinstance(data, dict):
+                    items = data.get("list") or data.get("items") or []
+                elif isinstance(data, list):
+                    items = data
+                else:
+                    items = []
+                return items
+        except Exception as e:
+            print(f"WARNING: Failed to fetch order statuses: {e}")
+            return []
+
+    async def update_order_status(self, order_id: int, status_id: int) -> Dict[str, Any]:
+        """Update order status in Shoper."""
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        url = f"{self.base_url}{settings.shoper_orders_path}/{order_id}"
+        payload = {"status_id": status_id}
+        
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.put(url, json=payload, headers=headers)
+                if r.status_code in (200, 201, 204):
+                    return {"ok": True, "order_id": order_id, "status_id": status_id}
+                else:
+                    error_body = r.text
+                    return {"error": True, "status_code": r.status_code, "message": error_body}
+        except Exception as e:
+            return {"error": True, "exception": str(e)}
+
 
 def _parse_float(v: Any) -> Optional[float]:
     try:

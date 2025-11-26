@@ -3748,6 +3748,21 @@ async def list_orders(limit: int = 20, page: int | None = None, detailed: bool =
         st_id = (st.get("status_id") if isinstance(st, dict) else None) or o.get("status_id")
         st_color = (st.get("color") if isinstance(st, dict) else None)
 
+        # Extract user info
+        user_info = {}
+        try:
+            user = o.get("user")
+            if isinstance(user, dict):
+                user_info = {
+                    "firstname": user.get("firstname"),
+                    "lastname": user.get("lastname"),
+                    "email": user.get("email") or o.get("email"),
+                }
+            elif o.get("email"):
+                user_info = {"email": o.get("email")}
+        except Exception:
+            pass
+        
         row = {
             "id": oid,
             "date": ts,
@@ -3755,6 +3770,7 @@ async def list_orders(limit: int = 20, page: int | None = None, detailed: bool =
             "items_count": items_count,
             "delivery_date": o.get("delivery_date"),
             "status": {"type": st_type, "id": st_id, "color": st_color, "name": st_name},
+            "user": user_info,
         }
         if detailed:
             # Attach simplified items if present
@@ -3880,6 +3896,74 @@ async def list_orders(limit: int = 20, page: int | None = None, detailed: bool =
         _orders_cache_ts = now
     
     return out
+
+
+@app.get("/orders/statuses")
+async def get_order_statuses():
+    """Fetch all available order statuses from Shoper API."""
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return []
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    statuses = await client.fetch_order_statuses()
+    
+    # Normalize and translate statuses
+    result = []
+    for st in statuses:
+        st_id = st.get("status_id") or st.get("id")
+        st_type = st.get("type")
+        st_color = st.get("color")
+        
+        # Extract translated name
+        st_name = None
+        try:
+            tr = st.get("translations")
+            if isinstance(tr, dict):
+                lang = getattr(settings, "default_language_code", None) or "pl_PL"
+                tr_lang = tr.get(lang)
+                if isinstance(tr_lang, dict):
+                    st_name = tr_lang.get("name")
+                if not st_name:
+                    # fallback: first entry
+                    for _k, _v in tr.items():
+                        if isinstance(_v, dict) and _v.get("name"):
+                            st_name = _v.get("name")
+                            break
+        except Exception:
+            pass
+        
+        if st_id is not None:
+            result.append({
+                "id": st_id,
+                "type": st_type,
+                "name": st_name or f"Status {st_id}",
+                "color": st_color
+            })
+    
+    return result
+
+
+@app.put("/orders/{order_id}/status")
+async def update_order_status(order_id: int, payload: dict):
+    """Update order status."""
+    if not settings.shoper_base_url or not settings.shoper_access_token:
+        return JSONResponse({"error": "Shoper not configured"}, status_code=400)
+    
+    status_id = payload.get("status_id")
+    if not status_id:
+        return JSONResponse({"error": "status_id required"}, status_code=400)
+    
+    client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+    result = await client.update_order_status(order_id, status_id)
+    
+    if result.get("error"):
+        return JSONResponse(result, status_code=result.get("status_code", 500))
+    
+    # Invalidate orders cache
+    global _orders_cache, _orders_cache_ts
+    _orders_cache = None
+    _orders_cache_ts = None
+    
+    return result
 
 
 @app.get("/users")
