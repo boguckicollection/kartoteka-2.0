@@ -117,10 +117,16 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
     if (!apiBase) return;
     try {
       const res = await fetch(`${apiBase}/orders/statuses`);
+      if (!res.ok) {
+        console.error('Failed to load statuses:', res.status);
+        setStatuses([]);
+        return;
+      }
       const data = await res.json();
-      setStatuses(data || []);
+      setStatuses(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error('Failed to load statuses', err);
+      setStatuses([]);
     }
   }, [apiBase]);
 
