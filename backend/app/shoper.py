@@ -554,6 +554,12 @@ class ShoperClient:
         return {"items": items, "page": page_meta, "pages": pages_meta}
 
     async def fetch_all_orders(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        DEPRECATED: This method fetches ALL orders across all pages, ignoring the limit parameter.
+        Use fetch_recent_orders() instead for limited results.
+        
+        For backward compatibility, this still works but can be slow.
+        """
         results: List[Dict[str, Any]] = []
         page = 1
         while True:
@@ -571,6 +577,89 @@ class ShoperClient:
                     break
             page += 1
         return results
+
+    async def fetch_recent_orders(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        Fetch only the most recent orders (single page).
+        This is FAST and respects the limit parameter.
+        
+        Args:
+            limit: Maximum number of orders to return (default: 20, max: 250)
+        
+        Returns:
+            List of order dictionaries, sorted by date descending
+        """
+        meta = await self.fetch_orders_page(page=1, limit=min(limit, 250))
+        return meta.get("items") or []
+
+    async def fetch_orders_since(self, since_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Fetch orders with ID greater than since_id.
+        This is VERY FAST - single API call with server-side filtering.
+        
+        Args:
+            since_id: Fetch orders with order_id > this value
+            limit: Maximum number of orders to return
+        
+        Returns:
+            List of new orders, sorted by ID descending
+        """
+        headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+        url = f"{self.base_url}{settings.shoper_orders_path}"
+        
+        # Shoper API supports filtering by order_id
+        params = {
+            "limit": min(limit, 250),
+            "order": "DESC",  # Newest first
+            "sort": "order_id"
+        }
+        
+        # Try to use filters if Shoper API supports it
+        # Format: filters[order_id][from]=123
+        # If not supported, we'll filter client-side
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                # First try with server-side filtering
+                filter_params = {**params, f"filters[order_id][from]": since_id + 1}
+                r = await client.get(url, params=filter_params, headers=headers)
+                
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, dict):
+                        items = data.get("list") or data.get("items") or data.get("data") or []
+                    elif isinstance(data, list):
+                        items = data
+                    else:
+                        items = []
+                    return items
+                
+                # If filtering not supported, fall back to fetching first page and filtering client-side
+                r = await client.get(url, params=params, headers=headers)
+                r.raise_for_status()
+                data = r.json()
+                
+                if isinstance(data, dict):
+                    items = data.get("list") or data.get("items") or data.get("data") or []
+                elif isinstance(data, list):
+                    items = data
+                else:
+                    items = []
+                
+                # Client-side filter: only orders with ID > since_id
+                filtered = []
+                for order in items:
+                    order_id = order.get("order_id") or order.get("id")
+                    try:
+                        if int(order_id) > since_id:
+                            filtered.append(order)
+                    except (ValueError, TypeError):
+                        continue
+                
+                return filtered
+                
+        except Exception as e:
+            print(f"Error fetching orders since {since_id}: {e}")
+            return []
 
     async def fetch_users_page(self, page: int = 1, limit: int = 100) -> Dict[str, Any]:
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}

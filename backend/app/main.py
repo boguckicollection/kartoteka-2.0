@@ -981,50 +981,111 @@ async def _match_shoper_category(set_to_match: str) -> dict | None:
 
 
 async def check_for_new_orders():
-    last_order_id = 0
-    # You might want to persist last_order_id in a file or db
-    # For simplicity, we start from 0 on each startup
+    """
+    Background task that checks for new orders every 60 seconds.
+    Uses persistent file storage to track last processed order ID.
+    Only fetches NEW orders since last check (FAST!).
+    """
+    # Load last processed order ID from file (persistent across restarts)
+    last_order_id = read_last_order_id()
+    print(f"📋 Order monitoring started. Last processed order ID: {last_order_id}")
 
     while True:
-        await asyncio.sleep(60) # Check every 60 seconds
+        await asyncio.sleep(60)  # Check every 60 seconds
         try:
             if not settings.shoper_base_url or not settings.shoper_access_token:
                 continue
 
             client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
-            orders = await client.fetch_all_orders(limit=1) # Fetch only the latest order
+            
+            # OPTIMIZED: Fetch only NEW orders since last check
+            # This is MUCH faster than fetching all orders!
+            new_orders = await client.fetch_orders_since(
+                since_id=last_order_id,
+                limit=50  # Max 50 new orders per check
+            )
 
-            if orders:
-                latest_order = orders[0]
-                latest_order_id = latest_order.get("order_id") or latest_order.get("id")
-
-                # Convert to int for comparison, handling potential errors
-                latest_order_id_int = 0
-                if latest_order_id:
+            if new_orders:
+                # Find the highest order ID
+                max_order_id = last_order_id
+                for order in new_orders:
+                    order_id = order.get("order_id") or order.get("id")
                     try:
-                        latest_order_id_int = int(latest_order_id)
+                        order_id_int = int(order_id)
+                        if order_id_int > max_order_id:
+                            max_order_id = order_id_int
                     except (ValueError, TypeError):
-                        # If conversion fails, keep as 0 to avoid comparison issues
+                        continue
+                
+                # Filter only "new" status orders (1 or 2)
+                truly_new_orders = []
+                for order in new_orders:
+                    status = order.get("status") or {}
+                    status_id = status.get("status_id") or status.get("id")
+                    try:
+                        # Only notify for status 1 (złożone) or 2 (przyjęte do realizacji)
+                        if str(status_id) in ["1", "2"] or int(status_id) in [1, 2]:
+                            truly_new_orders.append(order)
+                    except (ValueError, TypeError):
                         pass
-
-                if latest_order_id_int > last_order_id:
-                    print(f"New order detected: {latest_order_id_int}")
-                    last_order_id = latest_order_id_int
-
+                
+                if truly_new_orders:
+                    count = len(truly_new_orders)
+                    print(f"🔔 {count} new order(s) detected: {[o.get('id') for o in truly_new_orders]}")
+                    
+                    # Send web push notifications
                     db = SessionLocal()
                     try:
                         subscriptions = db.query(PushSubscription).all()
-                        payload = {
-                            "title": "Nowe zamówienie!",
-                            "body": f"Otrzymano nowe zamówienie nr {latest_order_id}"
-                        }
-                        for sub in subscriptions:
-                            await send_web_push(json.loads(sub.subscription_json), payload)
+                        if subscriptions:
+                            for order in truly_new_orders:
+                                order_id = order.get("order_id") or order.get("id")
+                                payload = {
+                                    "title": "🔔 Nowe zamówienie!",
+                                    "body": f"Zamówienie #{order_id} oczekuje"
+                                }
+                                for sub in subscriptions:
+                                    try:
+                                        await send_web_push(json.loads(sub.subscription_json), payload)
+                                    except Exception as push_err:
+                                        print(f"Failed to send push to subscription: {push_err}")
                     finally:
                         db.close()
+                else:
+                    print(f"ℹ️  Found {len(new_orders)} new order(s), but none with status 1 or 2")
+                
+                # Update last processed order ID (persistent)
+                if max_order_id > last_order_id:
+                    last_order_id = max_order_id
+                    write_last_order_id(last_order_id)
+                    print(f"✅ Updated last_order_id to {last_order_id}")
+                    
         except Exception as e:
-            print(f"Error checking for new orders: {e}")
+            print(f"❌ Error checking for new orders: {e}")
+            import traceback
+            traceback.print_exc()
 
+
+# File-based persistence for last order ID
+LAST_ORDER_ID_FILE = Path(settings.upload_dir).parent / "last_order_id.txt"
+
+def read_last_order_id() -> int:
+    """Read last processed order ID from file."""
+    try:
+        if LAST_ORDER_ID_FILE.exists():
+            content = LAST_ORDER_ID_FILE.read_text().strip()
+            return int(content) if content else 0
+    except Exception as e:
+        print(f"Warning: Could not read last_order_id from file: {e}")
+    return 0
+
+def write_last_order_id(order_id: int) -> None:
+    """Write last processed order ID to file."""
+    try:
+        LAST_ORDER_ID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LAST_ORDER_ID_FILE.write_text(str(order_id))
+    except Exception as e:
+        print(f"Error: Could not write last_order_id to file: {e}")
 
 # In-memory timestamp of last product sync
 _last_products_sync_ts: float | None = None
@@ -3692,10 +3753,13 @@ async def list_orders(limit: int = 20, page: int | None = None, detailed: bool =
     # Cache key based on parameters
     cache_key = f"orders_{limit}_{page}_{detailed}"
     now = time.time()
-    ttl = 300  # 5 minutes cache
     
-    # Check cache (only for non-detailed requests to keep it fast)
-    if not detailed and _orders_cache is not None and _orders_cache_ts is not None:
+    # Different TTL for detailed vs simple requests
+    # Detailed requests are slower so cache longer, but refresh more often to get new order details
+    ttl = 120 if detailed else 300  # 2 min for detailed, 5 min for simple
+    
+    # Check cache for both detailed and simple requests
+    if _orders_cache is not None and _orders_cache_ts is not None:
         if now - _orders_cache_ts < ttl and cache_key in _orders_cache:
             return _orders_cache[cache_key]
     
@@ -3704,7 +3768,9 @@ async def list_orders(limit: int = 20, page: int | None = None, detailed: bool =
         meta = await client.fetch_orders_page(page=max(1, int(page or 1)), limit=max(1, min(int(limit or 20), 250)))
         items = meta.get("items") or []
     else:
-        items = await client.fetch_all_orders(limit=max(1, min(int(limit or 20), 250)))
+        # OPTIMIZED: Use fetch_recent_orders instead of fetch_all_orders
+        # This fetches only ONE page, respecting the limit!
+        items = await client.fetch_recent_orders(limit=max(1, min(int(limit or 20), 250)))
     # Normalize a compact shape for UI
     out = []
     # Optional product cache and DB session for enrichment
