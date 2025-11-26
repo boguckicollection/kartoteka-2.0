@@ -1031,6 +1031,8 @@ _last_products_sync_ts: float | None = None
 _products_sync_in_progress: bool = False
 _sales_cache: dict | None = None
 _taxonomy_cache: dict[str, dict] = {}
+_orders_cache: dict | None = None
+_orders_cache_ts: float | None = None
 
 async def _get_sales_metrics():
     global _sales_cache
@@ -3671,15 +3673,38 @@ async def import_inventory_csv(file: UploadFile = File(...)):
 
 
 @app.get("/orders")
-async def list_orders(limit: int = 100, page: int | None = None, detailed: bool = Query(default=False)):
+async def list_orders(limit: int = 20, page: int | None = None, detailed: bool = Query(default=False)):
+    """Fetch orders with caching and pagination support.
+    
+    Args:
+        limit: Number of orders per page (default: 20, max: 250)
+        page: Page number (optional, defaults to fetch all)
+        detailed: Include full order details (items, buyer info)
+    
+    Returns:
+        List of normalized order objects
+    """
+    global _orders_cache, _orders_cache_ts
+    
     if not settings.shoper_base_url or not settings.shoper_access_token:
         return []
+    
+    # Cache key based on parameters
+    cache_key = f"orders_{limit}_{page}_{detailed}"
+    now = time.time()
+    ttl = 300  # 5 minutes cache
+    
+    # Check cache (only for non-detailed requests to keep it fast)
+    if not detailed and _orders_cache is not None and _orders_cache_ts is not None:
+        if now - _orders_cache_ts < ttl and cache_key in _orders_cache:
+            return _orders_cache[cache_key]
+    
     client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
     if page is not None:
-        meta = await client.fetch_orders_page(page=max(1, int(page or 1)), limit=max(1, min(int(limit or 100), 250)))
+        meta = await client.fetch_orders_page(page=max(1, int(page or 1)), limit=max(1, min(int(limit or 20), 250)))
         items = meta.get("items") or []
     else:
-        items = await client.fetch_all_orders(limit=max(1, min(int(limit or 100), 250)))
+        items = await client.fetch_all_orders(limit=max(1, min(int(limit or 20), 250)))
     # Normalize a compact shape for UI
     out = []
     # Optional product cache and DB session for enrichment
@@ -3846,6 +3871,14 @@ async def list_orders(limit: int = 100, page: int | None = None, detailed: bool 
             db.close()
         except Exception:
             pass
+    
+    # Update cache (only for non-detailed to keep it fast)
+    if not detailed:
+        if _orders_cache is None:
+            _orders_cache = {}
+        _orders_cache[cache_key] = out
+        _orders_cache_ts = now
+    
     return out
 
 

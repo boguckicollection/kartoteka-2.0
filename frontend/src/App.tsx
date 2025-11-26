@@ -409,7 +409,7 @@ export default function App() {
       isSyncing={isSyncing}
       onProductClick={handleProductClick}
     />;
-    if (tab==='orders') return <OrdersView items={(orders||[])} />;
+    if (tab==='orders') return <OrdersView items={(orders||[])} apiBase={apiBase} />;
     if (tab==='pricing') return <PricingView items={(pricingItems||[])} onRefresh={loadPricing} />;
     return null;
   }
