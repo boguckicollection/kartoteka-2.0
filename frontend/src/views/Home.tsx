@@ -194,29 +194,34 @@ export default function Home({ stats, orders, onNav, onRefresh, onOpenOrder }: P
       )}
 
       {/* New Orders Panel */}
-      {orders && orders.length > 0 && (
-        <section className="mt-8">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold text-white flex items-center gap-2">
-              <span className="material-symbols-outlined text-purple-400">notification_important</span>
-              Nowe zamówienia
-              <span className="text-sm font-normal text-gray-400">
-                ({orders.filter((o) => {
-                  const statusId = o?.status?.id;
-                  return statusId === '1' || statusId === 1 || statusId === '2' || statusId === 2;
-                }).length})
-              </span>
-            </h2>
-            <button 
-              onClick={() => onNav('orders')}
-              className="text-sm text-cyan-400 hover:text-cyan-300 transition-colors flex items-center gap-1"
-            >
-              Zobacz wszystkie
-              <span className="material-symbols-outlined text-sm">arrow_forward</span>
-            </button>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {orders.slice(0, 6).map((order: any) => {
+      {orders && orders.length > 0 && (() => {
+        const newOrders = orders.filter((o) => {
+          const statusId = o?.status?.id;
+          return statusId === '1' || statusId === 1 || statusId === '2' || statusId === 2;
+        });
+        
+        if (newOrders.length === 0) return null;
+        
+        return (
+          <section className="mt-8">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                <span className="material-symbols-outlined text-purple-400">notification_important</span>
+                Nowe zamówienia
+                <span className="text-sm font-normal text-gray-400">
+                  ({newOrders.length})
+                </span>
+              </h2>
+              <button 
+                onClick={() => onNav('orders')}
+                className="text-sm text-cyan-400 hover:text-cyan-300 transition-colors flex items-center gap-1"
+              >
+                Zobacz wszystkie
+                <span className="material-symbols-outlined text-sm">arrow_forward</span>
+              </button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {newOrders.slice(0, 6).map((order: any) => {
               const statusId = order?.status?.id;
               const isNew = statusId === '1' || statusId === 1 || statusId === '2' || statusId === 2;
               const statusName = order?.status?.name || 'Nieznany status';
@@ -295,10 +300,11 @@ export default function Home({ stats, orders, onNav, onRefresh, onOpenOrder }: P
                   </div>
                 </div>
               );
-            })}
-          </div>
-        </section>
-      )}
+              })}
+            </div>
+          </section>
+        );
+      })()}
     </div>
   )
 }

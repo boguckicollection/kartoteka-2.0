@@ -434,38 +434,46 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
       {/* Right drawer - Szczegóły zamówienia */}
       <div className={`fixed inset-0 z-50 ${open ? 'pointer-events-auto' : 'pointer-events-none'}`}>
         <div 
-          className={`absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300 ${open ? 'opacity-100' : 'opacity-0'}`} 
+          className={`absolute inset-0 bg-black/70 backdrop-blur-sm transition-opacity duration-300 ${open ? 'opacity-100' : 'opacity-0'}`} 
           onClick={onClose} 
         />
-        <div className={`absolute right-0 top-0 h-full w-full md:w-[540px] bg-[#0d1117] border-l border-white/10 shadow-2xl transition-transform duration-300 ${open ? 'translate-x-0' : 'translate-x-full'} flex flex-col`}>
-          <div className="flex items-center justify-between p-4 border-b border-white/10 flex-shrink-0 bg-[#161b22]">
+        <div className={`absolute right-0 top-0 h-full w-full md:w-[600px] bg-[#0f172a] border-l border-gray-700/50 shadow-2xl transition-transform duration-300 ${open ? 'translate-x-0' : 'translate-x-full'} flex flex-col`}>
+          <div className="flex items-center justify-between p-4 border-b border-gray-700/50 flex-shrink-0 bg-gradient-to-r from-gray-900/50 to-gray-800/50">
             <div className="flex items-center gap-3 flex-1 min-w-0">
-              <div className="text-white font-semibold flex items-center gap-2">
-                <span>Zamówienie #{selected?.id || ''}</span>
+              <div 
+                className="w-10 h-10 rounded-full flex items-center justify-center"
+                style={{ background: selected ? statusColor(selected) + '33' : '#6B728033' }}
+              >
+                <span className="material-symbols-outlined text-lg" style={{ color: selected ? statusColor(selected) : '#6B7280' }}>
+                  {selected ? statusIcon(selected) : 'receipt'}
+                </span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-white font-bold text-lg">#{selected?.id || ''}</div>
                 {selected && getUserName(selected) && (
-                  <span className="text-gray-400 text-sm font-normal">· {getUserName(selected)}</span>
+                  <div className="text-gray-400 text-sm">{getUserName(selected)}</div>
                 )}
               </div>
             </div>
             <button 
-              className="text-white/80 hover:text-white transition-colors ml-2" 
+              className="text-gray-400 hover:text-white transition-colors ml-2" 
               onClick={onClose}
             >
               <span className="material-symbols-outlined">close</span>
             </button>
           </div>
           
-          <div className="p-4 overflow-y-auto flex-grow">
+          <div className="p-4 overflow-y-auto flex-grow bg-[#0a0f1a]">
             {!selected ? null : (
-              <div className="grid gap-4">
+              <div className="grid gap-3">
                 {/* Status Change */}
-                <div className="rounded-lg p-4 bg-[#161b22] border border-white/10">
+                <div className="rounded-lg p-4 bg-gradient-to-br from-gray-900/50 to-gray-800/50 border border-gray-700/50">
                   <div className="text-white font-semibold mb-3 flex items-center gap-2">
-                    <span className="material-symbols-outlined text-lg text-primary">swap_horiz</span>
+                    <span className="material-symbols-outlined text-lg text-cyan-400">swap_horiz</span>
                     Status zamówienia
                   </div>
                   <select 
-                    className="w-full px-3 py-2 rounded-lg bg-[#0d1117] border border-white/20 text-white text-sm focus:outline-none focus:border-primary transition-colors disabled:opacity-50"
+                    className="w-full px-3 py-2.5 rounded-lg bg-[#0f172a] border border-gray-600/50 text-white text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/50 transition-all disabled:opacity-50"
                     value={selected.status?.id || ''}
                     onChange={(e) => handleStatusChange(Number(e.target.value))}
                     disabled={changingStatus}
@@ -481,8 +489,8 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
                     )}
                   </select>
                   {changingStatus && (
-                    <div className="mt-2 text-gray-400 text-xs flex items-center gap-2">
-                      <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                    <div className="mt-2 text-cyan-400 text-xs flex items-center gap-2">
+                      <div className="w-3 h-3 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin"></div>
                       Zapisywanie...
                     </div>
                   )}
@@ -490,9 +498,9 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
 
                 {/* Buyer Info */}
                 {selected.buyer && (
-                  <div className="rounded-lg p-4 bg-[#161b22] border border-white/10">
+                  <div className="rounded-lg p-4 bg-gradient-to-br from-gray-900/50 to-gray-800/50 border border-gray-700/50">
                     <div className="text-white font-semibold mb-3 flex items-center gap-2">
-                      <span className="material-symbols-outlined text-lg text-primary">person</span>
+                      <span className="material-symbols-outlined text-lg text-cyan-400">person</span>
                       Kupujący
                     </div>
                     <div className="space-y-1.5 text-sm">
@@ -524,9 +532,9 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
                 )}
 
                 {/* Order Items */}
-                <div className="rounded-lg p-4 bg-[#161b22] border border-white/10">
+                <div className="rounded-lg p-4 bg-gradient-to-br from-gray-900/50 to-gray-800/50 border border-gray-700/50">
                   <div className="text-white font-semibold mb-3 flex items-center gap-2">
-                    <span className="material-symbols-outlined text-lg text-primary">shopping_bag</span>
+                    <span className="material-symbols-outlined text-lg text-cyan-400">shopping_bag</span>
                     Pozycje ({selected.items?.length || 0})
                   </div>
                   <div className="grid gap-2">
@@ -557,9 +565,9 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
                 </div>
 
                 {/* Order Metadata */}
-                <div className="rounded-lg p-4 bg-[#161b22] border border-white/10">
+                <div className="rounded-lg p-4 bg-gradient-to-br from-gray-900/50 to-gray-800/50 border border-gray-700/50">
                   <div className="text-white font-semibold mb-3 flex items-center gap-2">
-                    <span className="material-symbols-outlined text-lg text-primary">info</span>
+                    <span className="material-symbols-outlined text-lg text-cyan-400">info</span>
                     Informacje
                   </div>
                   <div className="grid gap-2 text-sm">
@@ -584,17 +592,17 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
           </div>
           
           {/* Footer total */}
-          <div className="flex items-center justify-between p-4 border-t border-white/10 bg-[#161b22]">
+          <div className="flex items-center justify-between p-4 border-t border-gray-700/50 bg-gradient-to-r from-gray-900/80 to-gray-800/80">
             <button
               onClick={handlePrint}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-300 bg-gray-800/50 rounded-lg border border-gray-700/50 hover:bg-gray-700 hover:text-white transition-colors"
+              className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-cyan-400 bg-cyan-500/10 rounded-lg border border-cyan-500/30 hover:bg-cyan-500/20 hover:border-cyan-400 transition-all hover:shadow-lg hover:shadow-cyan-500/20"
             >
               <span className="material-symbols-outlined text-lg">print</span>
-              Drukuj
+              Drukuj paragon
             </button>
             <div className="text-right">
-              <div className="text-gray-400 text-xs uppercase tracking-wide mb-1">Wartość</div>
-              <div className="text-white font-bold text-xl">
+              <div className="text-gray-400 text-xs uppercase tracking-wide mb-1">Wartość zamówienia</div>
+              <div className="text-cyan-400 font-bold text-2xl">
                 {selected?.total != null ? `${Number(String(selected.total).replace(',', '.')).toFixed(2)} zł` : '-'}
               </div>
             </div>
