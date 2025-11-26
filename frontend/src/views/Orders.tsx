@@ -9,23 +9,20 @@ type Props = {
 // Skeleton Loading Component
 function OrderSkeleton() {
   return (
-    <div className="rounded-xl p-4 bg-[#1f2937] border border-white/10 animate-pulse">
-      <div className="flex justify-between items-center mb-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-gray-700"></div>
+    <div className="rounded-lg p-3 bg-[#1f2937] border border-white/10 animate-pulse">
+      <div className="flex justify-between items-start mb-2">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full bg-gray-700"></div>
           <div>
-            <div className="h-5 w-32 bg-gray-700 rounded mb-2"></div>
-            <div className="h-4 w-24 bg-gray-800 rounded"></div>
+            <div className="h-4 w-20 bg-gray-700 rounded mb-1"></div>
+            <div className="h-3 w-24 bg-gray-800 rounded"></div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="h-6 w-20 bg-gray-700 rounded"></div>
-          <div className="w-6 h-6 bg-gray-800 rounded"></div>
-        </div>
+        <div className="h-5 w-16 bg-gray-700 rounded"></div>
       </div>
-      <div className="flex justify-between items-center pt-3 border-t border-white/5">
-        <div className="h-4 w-24 bg-gray-800 rounded"></div>
-        <div className="h-5 w-20 bg-gray-700 rounded"></div>
+      <div className="flex justify-between items-center pt-2 border-t border-white/5">
+        <div className="h-3 w-16 bg-gray-800 rounded"></div>
+        <div className="h-4 w-20 bg-gray-700 rounded"></div>
       </div>
     </div>
   );
@@ -42,17 +39,16 @@ function LoadingSpinner() {
 }
 
 export default function OrdersView({ items: initialItems, apiBase }: Props) {
-  const [orders, setOrders] = useState<any[]>(initialItems || []);
+  const [orders, setOrders] = useState<any[]>([]);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
-  const [initialLoading, setInitialLoading] = useState(!initialItems);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [hasMore, setHasMore] = useState(true);
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<any | null>(null);
-  const [orderDetails, setOrderDetails] = useState<any | null>(null);
-  const [detailsLoading, setDetailsLoading] = useState(false);
   const receiptRef = useRef<HTMLDivElement>(null);
   const observerTarget = useRef<HTMLDivElement>(null);
+  const hasInitialized = useRef(false);
 
   const handlePrint = () => {
     const receiptElement = receiptRef.current;
@@ -114,35 +110,50 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
     };
   };
 
-  // Load more orders with pagination
-  const loadMoreOrders = useCallback(async () => {
-    if (loading || !hasMore || !apiBase) return;
+  // Load orders from API
+  const loadOrders = useCallback(async (pageNum: number = 1, append: boolean = false) => {
+    if (!apiBase || loading) return;
     
     setLoading(true);
     try {
-      const res = await fetch(`${apiBase}/orders?page=${page}&limit=20&detailed=0`);
+      const res = await fetch(`${apiBase}/orders?page=${pageNum}&limit=20&detailed=1`);
       const newOrders = await res.json();
       
       if (newOrders.length < 20) {
         setHasMore(false);
       }
       
-      setOrders(prev => [...prev, ...newOrders]);
-      setPage(prev => prev + 1);
+      // Sort by ID descending (newest first)
+      const sortedOrders = newOrders.sort((a: any, b: any) => (b.id || 0) - (a.id || 0));
+      
+      if (append) {
+        setOrders(prev => [...prev, ...sortedOrders]);
+      } else {
+        setOrders(sortedOrders);
+      }
+      
+      setPage(pageNum + 1);
     } catch (err) {
       console.error('Failed to load orders', err);
     } finally {
       setLoading(false);
       setInitialLoading(false);
     }
-  }, [page, loading, hasMore, apiBase]);
+  }, [apiBase, loading]);
 
-  // Initial load
+  // Initial load - use initialItems if provided, otherwise fetch from API
   useEffect(() => {
-    if (apiBase && !initialItems && initialLoading) {
-      loadMoreOrders();
-    } else if (initialItems) {
+    if (hasInitialized.current) return;
+    hasInitialized.current = true;
+
+    if (initialItems && initialItems.length > 0) {
+      // Sort initial items by ID descending
+      const sortedItems = [...initialItems].sort((a: any, b: any) => (b.id || 0) - (a.id || 0));
+      setOrders(sortedItems);
       setInitialLoading(false);
+      setHasMore(initialItems.length >= 20);
+    } else if (apiBase) {
+      loadOrders(1, false);
     }
   }, []);
 
@@ -150,8 +161,8 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && hasMore && !loading) {
-          loadMoreOrders();
+        if (entries[0].isIntersecting && hasMore && !loading && !initialLoading) {
+          loadOrders(page, true);
         }
       },
       { threshold: 0.5 }
@@ -166,40 +177,17 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
         observer.unobserve(observerTarget.current);
       }
     };
-  }, [loadMoreOrders, hasMore, loading]);
+  }, [loadOrders, hasMore, loading, page, initialLoading]);
 
-  const onOpen = async (o: any) => {
+  const onOpen = (o: any) => {
     setSelected(o);
     setOpen(true);
-    
-    // Lazy load full details if not already loaded
-    if (!o.items || o.items.length === 0) {
-      setDetailsLoading(true);
-      try {
-        const res = await fetch(`${apiBase}/orders?detailed=1&limit=1&page=1`);
-        const allOrders = await res.json();
-        const fullOrder = allOrders.find((ord: any) => ord.id === o.id);
-        if (fullOrder) {
-          setOrderDetails(fullOrder);
-        } else {
-          setOrderDetails(o);
-        }
-      } catch (err) {
-        console.error('Failed to load order details', err);
-        setOrderDetails(o);
-      } finally {
-        setDetailsLoading(false);
-      }
-    } else {
-      setOrderDetails(o);
-    }
   };
 
   const onClose = () => {
     setOpen(false);
     setTimeout(() => {
       setSelected(null);
-      setOrderDetails(null);
     }, 250);
   };
 
@@ -238,60 +226,54 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
 
       <main className="p-4 md:p-6">
         {initialLoading ? (
-          <div className="grid gap-3">
-            {Array(5).fill(0).map((_, i) => <OrderSkeleton key={i} />)}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {Array(8).fill(0).map((_, i) => <OrderSkeleton key={i} />)}
           </div>
         ) : !orders.length ? (
-          <div className="rounded-xl p-6 bg-[#1f2937] border border-white/10 text-gray-400 text-center">
-            <span className="material-symbols-outlined text-5xl text-gray-600 mb-3">receipt_long</span>
-            <p>Brak zamówień.</p>
+          <div className="rounded-xl p-8 bg-[#1f2937] border border-white/10 text-center max-w-md mx-auto">
+            <span className="material-symbols-outlined text-6xl text-gray-600 mb-3 block">receipt_long</span>
+            <p className="text-gray-400">Brak zamówień.</p>
           </div>
         ) : (
           <>
-            <div className="grid gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
               {orders.map((o: any, i: number) => (
                 <div 
                   key={`${o.id}-${i}`} 
-                  className="rounded-xl p-4 bg-[#1f2937] border border-white/10 text-white cursor-pointer transition-all duration-200 hover:bg-white/5 hover:shadow-lg hover:scale-[1.01] hover:border-primary/30"
+                  className="rounded-lg p-3 bg-[#1f2937] border border-white/10 text-white cursor-pointer transition-all duration-200 hover:bg-white/5 hover:shadow-md hover:scale-[1.02] hover:border-primary/40"
                   onClick={() => onOpen(o)}
                 >
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
-                        <span className="material-symbols-outlined text-primary text-sm">receipt_long</span>
+                  <div className="flex justify-between items-start mb-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
+                        <span className="material-symbols-outlined text-primary text-xs">receipt</span>
                       </div>
                       <div>
-                        <div className="font-semibold text-white">#{o.id}</div>
+                        <div className="font-semibold text-sm">#{o.id}</div>
                         <div className="text-gray-400 text-xs">
-                          {o.date ? new Date(o.date).toLocaleString('pl-PL', { 
+                          {o.date ? new Date(o.date).toLocaleDateString('pl-PL', { 
                             day: '2-digit', 
-                            month: 'short', 
-                            year: 'numeric', 
-                            hour: '2-digit', 
-                            minute: '2-digit' 
+                            month: 'short'
                           }) : '-'}
                         </div>
                       </div>
                     </div>
                     
-                    <div className="flex items-center gap-3">
-                      <span 
-                        className="px-2 py-1 rounded text-xs font-medium whitespace-nowrap" 
-                        style={{ background: statusColor(o) + '33', color: statusColor(o) }}
-                      >
-                        {statusLabel(o)}
-                      </span>
-                      <span className="material-symbols-outlined text-gray-400">chevron_right</span>
-                    </div>
+                    <span 
+                      className="px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap" 
+                      style={{ background: statusColor(o) + '22', color: statusColor(o) }}
+                    >
+                      {statusLabel(o)}
+                    </span>
                   </div>
                   
-                  <div className="flex justify-between items-center pt-3 border-t border-white/5">
-                    <div className="text-gray-300 text-sm flex items-center gap-1">
+                  <div className="flex justify-between items-center pt-2 border-t border-white/5">
+                    <div className="text-gray-400 text-xs flex items-center gap-1">
                       <span className="material-symbols-outlined text-xs">shopping_cart</span>
-                      {o.items_count ?? 0} pozycji
+                      {o.items_count ?? 0} szt.
                     </div>
-                    <div className="text-primary font-bold">
-                      {o.total != null ? `${Number(String(o.total).replace(',', '.')).toFixed(2)} PLN` : '-'}
+                    <div className="text-primary font-bold text-sm">
+                      {o.total != null ? `${Number(String(o.total).replace(',', '.')).toFixed(2)} zł` : '-'}
                     </div>
                   </div>
                 </div>
@@ -299,7 +281,7 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
             </div>
 
             {/* Infinite scroll trigger + loading indicator */}
-            <div ref={observerTarget} className="h-20 flex items-center justify-center mt-4">
+            <div ref={observerTarget} className="h-16 flex items-center justify-center mt-4">
               {loading && <LoadingSpinner />}
               {!hasMore && orders.length > 0 && (
                 <p className="text-gray-500 text-sm">Brak więcej zamówień</p>
@@ -309,22 +291,22 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
         )}
       </main>
 
-      {/* Right drawer - Enhanced with lazy loading */}
+      {/* Right drawer - Szczegóły zamówienia */}
       <div className={`fixed inset-0 z-50 ${open ? 'pointer-events-auto' : 'pointer-events-none'}`}>
         <div 
           className={`absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300 ${open ? 'opacity-100' : 'opacity-0'}`} 
           onClick={onClose} 
         />
-        <div className={`absolute right-0 top-0 h-full w-full md:w-[520px] bg-[#111418] border-l border-white/10 shadow-2xl transition-transform duration-300 ${open ? 'translate-x-0' : 'translate-x-full'} flex flex-col`}>
-          <div className="flex items-center justify-between p-4 border-b border-white/10 flex-shrink-0">
+        <div className={`absolute right-0 top-0 h-full w-full md:w-[540px] bg-[#0d1117] border-l border-white/10 shadow-2xl transition-transform duration-300 ${open ? 'translate-x-0' : 'translate-x-full'} flex flex-col`}>
+          <div className="flex items-center justify-between p-4 border-b border-white/10 flex-shrink-0 bg-[#161b22]">
             <div className="flex items-center gap-3">
-              <div className="text-white font-semibold">Szczegóły zamówienia {selected ? `#${selected.id}` : ''}</div>
+              <div className="text-white font-semibold">Zamówienie #{selected?.id || ''}</div>
               {!!selected && (
                 <span 
-                  className="text-xs font-medium px-2 py-1 rounded-full" 
+                  className="text-xs font-medium px-2 py-1 rounded" 
                   style={{ background: statusColor(selected) + '33', color: statusColor(selected) }}
                 >
-                  {statusLabel(selected)}{selected?.delivery_date ? ' · nadane' : ''}
+                  {statusLabel(selected)}
                 </span>
               )}
             </div>
@@ -337,49 +319,97 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
           </div>
           
           <div className="p-4 overflow-y-auto flex-grow">
-            {detailsLoading ? (
-              <div className="flex flex-col items-center justify-center py-12 gap-3">
-                <LoadingSpinner />
-                <p className="text-gray-400 text-sm">Ładowanie szczegółów...</p>
-              </div>
-            ) : !orderDetails ? null : (
+            {!selected ? null : (
               <div className="grid gap-4">
-                {/* Buyer */}
-                <div className="rounded-xl p-4 bg-[#1f2937] border border-white/10">
-                  <div className="text-white font-semibold mb-2 flex items-center gap-2">
-                    <span className="material-symbols-outlined text-sm">person</span>
-                    Kupujący
+                {/* Buyer Info */}
+                {selected.buyer && (
+                  <div className="rounded-lg p-4 bg-[#161b22] border border-white/10">
+                    <div className="text-white font-semibold mb-3 flex items-center gap-2">
+                      <span className="material-symbols-outlined text-lg text-primary">person</span>
+                      Kupujący
+                    </div>
+                    <div className="space-y-1.5 text-sm">
+                      {(selected.buyer.firstname || selected.buyer.lastname) && (
+                        <div className="text-gray-200">
+                          {selected.buyer.firstname || ''} {selected.buyer.lastname || ''}
+                        </div>
+                      )}
+                      {selected.buyer.email && (
+                        <div className="text-gray-400 flex items-center gap-2">
+                          <span className="material-symbols-outlined text-xs">email</span>
+                          {selected.buyer.email}
+                        </div>
+                      )}
+                      {selected.buyer.phone && (
+                        <div className="text-gray-400 flex items-center gap-2">
+                          <span className="material-symbols-outlined text-xs">phone</span>
+                          {selected.buyer.phone}
+                        </div>
+                      )}
+                      {(selected.buyer.street1 || selected.buyer.city) && (
+                        <div className="text-gray-400 flex items-center gap-2 pt-1">
+                          <span className="material-symbols-outlined text-xs">location_on</span>
+                          <span>{[selected.buyer.street1, selected.buyer.postcode, selected.buyer.city, selected.buyer.country].filter(Boolean).join(', ')}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div className="text-gray-300 text-sm">{orderDetails?.buyer?.firstname || ''} {orderDetails?.buyer?.lastname || ''}</div>
-                  <div className="text-gray-400 text-sm">{orderDetails?.buyer?.email || ''}{orderDetails?.buyer?.phone ? ` · ${orderDetails?.buyer?.phone}` : ''}</div>
-                  <div className="text-gray-400 text-sm">{[orderDetails?.buyer?.street1, orderDetails?.buyer?.postcode, orderDetails?.buyer?.city, orderDetails?.buyer?.country].filter(Boolean).join(', ')}</div>
+                )}
+
+                {/* Order Items */}
+                <div className="rounded-lg p-4 bg-[#161b22] border border-white/10">
+                  <div className="text-white font-semibold mb-3 flex items-center gap-2">
+                    <span className="material-symbols-outlined text-lg text-primary">shopping_bag</span>
+                    Pozycje ({selected.items?.length || 0})
+                  </div>
+                  <div className="grid gap-2">
+                    {(selected.items && selected.items.length > 0) ? (
+                      selected.items.map((it: any, idx: number) => (
+                        <div key={idx} className="flex items-center gap-3 p-2 rounded bg-black/30 hover:bg-black/40 transition-colors">
+                          {it.image ? (
+                            <img src={it.image} alt={it.name || ''} className="w-12 h-12 object-cover rounded border border-white/20" />
+                          ) : (
+                            <div className="w-12 h-12 rounded bg-white/5 flex items-center justify-center border border-white/10">
+                              <span className="material-symbols-outlined text-gray-600 text-sm">image</span>
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="text-white text-sm truncate">{it.name || '-'}</div>
+                            {it.code && <div className="text-gray-500 text-xs">{it.code}</div>}
+                          </div>
+                          <div className="text-gray-400 text-sm whitespace-nowrap">×{it.quantity ?? 1}</div>
+                          <div className="text-white text-sm font-medium whitespace-nowrap min-w-[70px] text-right">
+                            {it.price != null ? `${Number(it.price).toFixed(2)} zł` : '-'}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-gray-500 text-sm text-center py-4">Brak produktów</div>
+                    )}
+                  </div>
                 </div>
 
-                {/* Items */}
-                <div className="rounded-xl p-4 bg-[#1f2937] border border-white/10">
+                {/* Order Metadata */}
+                <div className="rounded-lg p-4 bg-[#161b22] border border-white/10">
                   <div className="text-white font-semibold mb-3 flex items-center gap-2">
-                    <span className="material-symbols-outlined text-sm">shopping_bag</span>
-                    Pozycje
+                    <span className="material-symbols-outlined text-lg text-primary">info</span>
+                    Informacje
                   </div>
-                  <div className="grid gap-3">
-                    {(orderDetails.items || []).map((it: any, idx: number) => (
-                      <div key={idx} className="flex items-center gap-3 p-2 rounded-lg bg-black/20 hover:bg-black/30 transition-colors">
-                        {it.image ? (
-                          <img src={it.image} alt={it.name || ''} className="w-12 h-12 object-cover rounded border border-white/10" />
-                        ) : (
-                          <div className="w-12 h-12 rounded bg-white/10 flex items-center justify-center">
-                            <span className="material-symbols-outlined text-gray-600 text-sm">image</span>
-                          </div>
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <div className="text-white truncate">{it.name || '-'}</div>
-                          <div className="text-gray-400 text-xs">{it.code || ''}</div>
-                        </div>
-                        <div className="text-gray-300 text-sm">x{it.quantity ?? '-'}</div>
-                        <div className="text-white text-sm w-24 text-right">{it.price != null ? `${Number(it.price).toFixed(2)} PLN` : '-'}</div>
-                        <div className="text-gray-300 text-sm w-28 text-right">{(it.price != null && it.quantity != null) ? `${(Number(it.price) * Number(it.quantity)).toFixed(2)} PLN` : ''}</div>
+                  <div className="grid gap-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Data złożenia:</span>
+                      <span className="text-gray-200">
+                        {selected.date ? new Date(selected.date).toLocaleString('pl-PL') : '-'}
+                      </span>
+                    </div>
+                    {selected.delivery_date && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Data wysyłki:</span>
+                        <span className="text-gray-200">
+                          {new Date(selected.delivery_date).toLocaleString('pl-PL')}
+                        </span>
                       </div>
-                    ))}
+                    )}
                   </div>
                 </div>
               </div>
@@ -387,17 +417,19 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
           </div>
           
           {/* Footer total */}
-          <div className="flex items-center justify-between p-4 border-t border-white/10 bg-[#0a0c0e]">
+          <div className="flex items-center justify-between p-4 border-t border-white/10 bg-[#161b22]">
             <button
               onClick={handlePrint}
-              className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-300 bg-gray-800/50 rounded-lg border border-gray-700/50 hover:bg-gray-700 hover:text-white transition-colors"
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-300 bg-gray-800/50 rounded-lg border border-gray-700/50 hover:bg-gray-700 hover:text-white transition-colors"
             >
               <span className="material-symbols-outlined text-lg">print</span>
               Drukuj
             </button>
             <div className="text-right">
-              <div className="text-gray-300 text-sm">Wartość zamówienia:</div>
-              <div className="text-white font-semibold text-lg">{selected?.total != null ? `${Number(String(selected.total).replace(',', '.')).toFixed(2)} PLN` : '-'}</div>
+              <div className="text-gray-400 text-xs uppercase tracking-wide mb-1">Wartość</div>
+              <div className="text-white font-bold text-xl">
+                {selected?.total != null ? `${Number(String(selected.total).replace(',', '.')).toFixed(2)} zł` : '-'}
+              </div>
             </div>
           </div>
         </div>
