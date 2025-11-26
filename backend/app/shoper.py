@@ -660,25 +660,62 @@ class ShoperClient:
             return product_ids
 
     async def fetch_order_statuses(self) -> List[Dict[str, Any]]:
-        """Fetch all available order statuses from Shoper API."""
-        headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
-        url = f"{self.base_url}/order-statuses"
+        """Fetch all available order statuses by extracting unique statuses from orders.
+        
+        Shoper API doesn't have a dedicated /order-statuses endpoint in all versions,
+        so we extract unique statuses from actual orders.
+        """
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                r = await client.get(url, headers=headers)
-                r.raise_for_status()
-                data = r.json()
-                # Normalize response shape
-                if isinstance(data, dict):
-                    items = data.get("list") or data.get("items") or []
-                elif isinstance(data, list):
-                    items = data
-                else:
-                    items = []
-                return items
+            # Fetch a sample of orders with status information
+            orders = await self.fetch_all_orders(limit=100)
+            
+            print(f"DEBUG: Fetched {len(orders)} orders for status extraction")
+            
+            # Extract unique statuses
+            statuses_map: Dict[int, Dict[str, Any]] = {}
+            
+            for order in orders:
+                status = order.get("status")
+                if isinstance(status, dict):
+                    status_id = status.get("status_id")
+                    if status_id is not None and status_id not in statuses_map:
+                        statuses_map[status_id] = {
+                            "status_id": status_id,
+                            "type": status.get("type"),
+                            "color": status.get("color"),
+                            "translations": status.get("translations"),
+                            "default": status.get("default"),
+                            "active": status.get("active"),
+                            "order": status.get("order", 0)
+                        }
+            
+            # Convert to list and sort by order field
+            statuses_list = list(statuses_map.values())
+            statuses_list.sort(key=lambda x: x.get("order", 0))
+            
+            print(f"DEBUG: Extracted {len(statuses_list)} unique statuses from orders")
+            
+            # If no statuses found from orders, return defaults
+            if not statuses_list:
+                print("INFO: No statuses found in orders, returning defaults")
+                return [
+                    {"status_id": 1, "type": 1, "color": "#3498DB", "translations": {"pl_PL": {"name": "Nowe"}}},
+                    {"status_id": 2, "type": 2, "color": "#F39C12", "translations": {"pl_PL": {"name": "W realizacji"}}},
+                    {"status_id": 3, "type": 3, "color": "#2ECC71", "translations": {"pl_PL": {"name": "Zakończone"}}},
+                    {"status_id": 4, "type": 4, "color": "#E74C3C", "translations": {"pl_PL": {"name": "Anulowane"}}}
+                ]
+            
+            return statuses_list
+            
         except Exception as e:
-            print(f"WARNING: Failed to fetch order statuses: {e}")
-            return []
+            print(f"WARNING: Failed to fetch order statuses from orders: {e}")
+            # Fallback: return common default statuses
+            return [
+                {"status_id": 1, "type": 1, "color": "#3498DB", "translations": {"pl_PL": {"name": "Nowe"}}},
+                {"status_id": 2, "type": 2, "color": "#F39C12", "translations": {"pl_PL": {"name": "W realizacji"}}},
+                {"status_id": 3, "type": 3, "color": "#2ECC71", "translations": {"pl_PL": {"name": "Zakończone"}}},
+                {"status_id": 4, "type": 4, "color": "#E74C3C", "translations": {"pl_PL": {"name": "Anulowane"}}}
+            ]
 
     async def update_order_status(self, order_id: int, status_id: int) -> Dict[str, Any]:
         """Update order status in Shoper."""
