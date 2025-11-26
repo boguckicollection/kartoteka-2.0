@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo } from 'react'
 
-type Props = { stats: any, onNav: (key: string)=>void, onRefresh: ()=>void }
+type Props = { 
+  stats: any;
+  orders?: any[];
+  onNav: (key: string)=>void;
+  onRefresh: ()=>void;
+  onOpenOrder?: (order: any)=>void;
+}
 
 const welcomeMessages = [
   "Gotowy na podbój rynku kart? Działaj, Boguś!",
@@ -27,7 +33,7 @@ const statConfig: Record<string, { icon: string; color: string; glowColor: strin
   potential_profit: { icon: 'trending_up', color: 'from-green-400/20 to-emerald-500/20', glowColor: 'green-400' },
 };
 
-export default function Home({ stats, onNav, onRefresh }: Props){
+export default function Home({ stats, orders, onNav, onRefresh, onOpenOrder }: Props){
   const welcomeMessage = useMemo(() => {
     const randomIndex = Math.floor(Math.random() * welcomeMessages.length);
     return welcomeMessages[randomIndex];
@@ -185,6 +191,113 @@ export default function Home({ stats, onNav, onRefresh }: Props){
           <p className="text-gray-400">Brak opublikowanych kart</p>
           <p className="text-gray-500 text-sm mt-1">Opublikuj karty, aby zobaczyć je tutaj</p>
         </div>
+      )}
+
+      {/* New Orders Panel */}
+      {orders && orders.length > 0 && (
+        <section className="mt-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+              <span className="material-symbols-outlined text-purple-400">notification_important</span>
+              Nowe zamówienia
+              <span className="text-sm font-normal text-gray-400">
+                ({orders.filter((o) => {
+                  const statusId = o?.status?.id;
+                  return statusId === '1' || statusId === 1 || statusId === '2' || statusId === 2;
+                }).length})
+              </span>
+            </h2>
+            <button 
+              onClick={() => onNav('orders')}
+              className="text-sm text-cyan-400 hover:text-cyan-300 transition-colors flex items-center gap-1"
+            >
+              Zobacz wszystkie
+              <span className="material-symbols-outlined text-sm">arrow_forward</span>
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {orders.slice(0, 6).map((order: any) => {
+              const statusId = order?.status?.id;
+              const isNew = statusId === '1' || statusId === 1 || statusId === '2' || statusId === 2;
+              const statusName = order?.status?.name || 'Nieznany status';
+              const userName = order?.user?.firstname && order?.user?.lastname 
+                ? `${order.user.firstname} ${order.user.lastname}`
+                : order?.user?.email?.split('@')[0] || 'Gość';
+              
+              let statusColor = '#6B7280';
+              let statusIcon = 'label';
+              
+              if (statusId === '1' || statusId === 1) {
+                statusColor = '#3498DB';
+                statusIcon = 'new_releases';
+              } else if (statusId === '2' || statusId === 2) {
+                statusColor = '#9B59B6';
+                statusIcon = 'notification_important';
+              } else if (statusId === '7' || statusId === 7) {
+                statusColor = '#2ECC71';
+                statusIcon = 'local_shipping';
+              }
+              
+              return (
+                <div
+                  key={order.id}
+                  onClick={() => onOpenOrder && onOpenOrder(order)}
+                  className={`group relative cursor-pointer rounded-lg p-4 transition-all duration-200 hover:scale-[1.02] ${
+                    isNew
+                      ? 'bg-gradient-to-br from-[#1f2937] to-[#2d1f3a] border-2 border-purple-500/60 hover:border-purple-400 hover:shadow-lg hover:shadow-purple-500/20'
+                      : 'bg-[#0f172a] border border-gray-700/50 hover:border-gray-600'
+                  }`}
+                >
+                  {isNew && (
+                    <div className="absolute -top-2 -right-2 w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center animate-pulse">
+                      <span className="material-symbols-outlined text-white text-xs">priority_high</span>
+                    </div>
+                  )}
+                  
+                  <div className="flex items-start gap-3 mb-3">
+                    <div 
+                      className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
+                      style={{ background: statusColor + '33' }}
+                    >
+                      <span className="material-symbols-outlined text-sm" style={{ color: statusColor }}>
+                        {statusIcon}
+                      </span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-white font-semibold text-sm">#{order.id}</span>
+                        <span className="text-gray-400 text-xs">·</span>
+                        <span className="text-gray-400 text-xs truncate">{userName}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span 
+                          className="px-2 py-0.5 rounded text-xs font-medium"
+                          style={{ background: statusColor + '22', color: statusColor }}
+                        >
+                          {statusName}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-gray-400 flex items-center gap-1">
+                      <span className="material-symbols-outlined text-xs">shopping_cart</span>
+                      {order.items_count || 0} szt.
+                    </span>
+                    <span className="text-cyan-400 font-bold">
+                      {order.total ? `${Number(String(order.total).replace(',', '.')).toFixed(2)} zł` : '-'}
+                    </span>
+                  </div>
+                  
+                  <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <span className="material-symbols-outlined text-xs text-gray-400">open_in_new</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
       )}
     </div>
   )

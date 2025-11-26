@@ -257,28 +257,64 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
     if (t === 1) return 'Nowe';
     if (t === 2) return 'W realizacji';
     if (t === 3) return 'Zakończone';
-    if (t === 4) return 'Niekompletne';
+    if (t === 4) return 'Anulowane';
     return '—';
   };
 
   const statusColor = (o: any) => {
-    const c = o?.status?.color;
-    if (c) return c;
+    const statusId = o?.status?.id;
+    
+    // Specific status ID mappings (more precise than type)
+    if (statusId === '1' || statusId === 1) return '#3498DB'; // złożone - niebieski
+    if (statusId === '2' || statusId === 2) return '#9B59B6'; // przyjęte do realizacji - fioletowy
+    if (statusId === '3' || statusId === 3) return '#F39C12'; // oczekiwanie na dostawę - pomarańczowy
+    if (statusId === '4' || statusId === 4) return '#E67E22'; // w trakcie kompletowania - ciemny pomarańczowy
+    if (statusId === '5' || statusId === 5) return '#E74C3C'; // oczekiwanie na płatność - czerwony
+    if (statusId === '6' || statusId === 6) return '#1ABC9C'; // gotowe do wysłania - turkusowy
+    if (statusId === '7' || statusId === 7) return '#2ECC71'; // przesyłka wysłana - zielony
+    if (statusId === '8' || statusId === 8) return '#95A5A6'; // anulowane - szary
+    if (statusId === '9' || statusId === 9) return '#7F8C8D'; // odrzucone - ciemny szary
+    if (statusId === '11' || statusId === 11) return '#34495E'; // zwrócone - grafitowy
+    
+    // Fallback to type-based colors
     const t = o?.status?.type;
-    if (t === 1) return '#3498DB';
-    if (t === 2) return '#F39C12';
-    if (t === 3) return '#2ECC71';
-    if (t === 4) return '#E74C3C';
+    if (t === 1) return '#3498DB'; // nowe
+    if (t === 2) return '#F39C12'; // w realizacji
+    if (t === 3) return '#2ECC71'; // zakończone
+    if (t === 4) return '#95A5A6'; // anulowane
+    
     return '#6B7280';
   };
 
   const statusIcon = (o: any) => {
+    const statusId = o?.status?.id;
+    
+    // Specific icons for key statuses
+    if (statusId === '1' || statusId === 1) return 'new_releases'; // złożone
+    if (statusId === '2' || statusId === 2) return 'notification_important'; // przyjęte do realizacji - ważne!
+    if (statusId === '3' || statusId === 3) return 'local_shipping'; // oczekiwanie na dostawę
+    if (statusId === '4' || statusId === 4) return 'inventory_2'; // w trakcie kompletowania
+    if (statusId === '5' || statusId === 5) return 'payments'; // oczekiwanie na płatność
+    if (statusId === '6' || statusId === 6) return 'outbox'; // gotowe do wysłania
+    if (statusId === '7' || statusId === 7) return 'local_shipping'; // przesyłka wysłana
+    if (statusId === '8' || statusId === 8) return 'cancel'; // anulowane
+    if (statusId === '9' || statusId === 9) return 'block'; // odrzucone
+    if (statusId === '11' || statusId === 11) return 'keyboard_return'; // zwrócone
+    
+    // Fallback to type-based icons
     const t = o?.status?.type;
     if (t === 1) return 'new_releases';
     if (t === 2) return 'schedule';
     if (t === 3) return 'check_circle';
     if (t === 4) return 'cancel';
+    
     return 'label';
+  };
+  
+  const isNewOrder = (o: any) => {
+    const statusId = o?.status?.id;
+    // Status 1 (złożone) i 2 (przyjęte do realizacji) to nowe zamówienia
+    return statusId === '1' || statusId === 1 || statusId === '2' || statusId === 2;
   };
 
   const getUserName = (o: any) => {
@@ -325,10 +361,15 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
               {orders.map((o: any, i: number) => {
                 const userName = getUserName(o);
+                const isNew = isNewOrder(o);
                 return (
                   <div 
                     key={`${o.id}-${i}`} 
-                    className="rounded-lg p-3 bg-[#1f2937] border border-white/10 text-white cursor-pointer transition-all duration-200 hover:bg-white/5 hover:shadow-md hover:scale-[1.02] hover:border-primary/40"
+                    className={`rounded-lg p-3 text-white cursor-pointer transition-all duration-200 hover:shadow-md hover:scale-[1.02] ${
+                      isNew 
+                        ? 'bg-gradient-to-br from-[#1f2937] to-[#2d1f3a] border-2 border-primary/60 hover:border-primary hover:shadow-primary/20' 
+                        : 'bg-[#1f2937] border border-white/10 hover:bg-white/5 hover:border-primary/40'
+                    }`}
                     onClick={() => onOpen(o)}
                   >
                     <div className="flex justify-between items-start mb-2">

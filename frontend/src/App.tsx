@@ -98,7 +98,16 @@ export default function App() {
     }
   }, [isAndroid, apiBase]);
 
-  const loadStats = async () => { try { const r = await fetch(`${apiBase}/stats`); setStats(await r.json()) } catch {} }
+  const loadStats = async () => { 
+    try { 
+      const r = await fetch(`${apiBase}/stats`); 
+      setStats(await r.json());
+      // Load recent orders for dashboard
+      const ordersRes = await fetch(`${apiBase}/orders?limit=5&detailed=0`);
+      const ordersData = await ordersRes.json();
+      setOrders(ordersData);
+    } catch {} 
+  }
   const loadProducts = async (q?: string, page?: number, sort?: string, order?: string, limit?: number, categoryId?: number) => {
     const p = new URLSearchParams()
     if (q) p.set('q', q)
@@ -376,7 +385,7 @@ export default function App() {
         />
       );
     }
-    if (tab==='dashboard') return <Home stats={stats} onNav={(k)=> setTab(k as any)} onRefresh={loadStats} />;
+    if (tab==='dashboard') return <Home stats={stats} orders={(orders||[]).slice(0,5)} onNav={(k)=> setTab(k as any)} onRefresh={loadStats} onOpenOrder={(o)=>{ setSelected(o); setTab('orders'); setIsSliderOpen(true); }} />;
     if (tab==='reports') return <ReportsView />;
     if (tab==='warehouse') return <WarehouseVisualView apiBase={apiBase} />;
     if (tab==='inventory') return <InventoryView
