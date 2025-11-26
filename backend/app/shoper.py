@@ -660,15 +660,47 @@ class ShoperClient:
             return product_ids
 
     async def fetch_order_statuses(self) -> List[Dict[str, Any]]:
-        """Fetch all available order statuses by extracting unique statuses from orders.
+        """Fetch all available order statuses from Shoper API.
         
-        Shoper API doesn't have a dedicated /order-statuses endpoint in all versions,
-        so we extract unique statuses from actual orders.
+        According to Shoper API documentation, statuses are available at /statuses endpoint.
+        Resource structure includes: status_id, active, default, color, type, translations.
         """
+        headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+        
+        # Try multiple possible endpoints for statuses
+        possible_paths = ["/statuses", "/order-statuses", "/orders/statuses"]
+        
+        for path in possible_paths:
+            try:
+                url = f"{self.base_url}{path}"
+                print(f"DEBUG: Trying to fetch statuses from {path}")
+                
+                async with httpx.AsyncClient(timeout=30) as client:
+                    r = await client.get(url, headers=headers)
+                    
+                    if r.status_code == 200:
+                        data = r.json()
+                        
+                        # Normalize response shape
+                        if isinstance(data, dict):
+                            items = data.get("list") or data.get("items") or []
+                        elif isinstance(data, list):
+                            items = data
+                        else:
+                            items = []
+                        
+                        if items:
+                            print(f"SUCCESS: Fetched {len(items)} statuses from {path}")
+                            return items
+                    
+            except Exception as e:
+                print(f"DEBUG: Failed to fetch from {path}: {e}")
+                continue
+        
+        # If all endpoints failed, try extracting from orders
+        print("INFO: All direct endpoints failed, extracting statuses from orders")
         try:
-            # Fetch a sample of orders with status information
-            orders = await self.fetch_all_orders(limit=100)
-            
+            orders = await self.fetch_all_orders(limit=50)
             print(f"DEBUG: Fetched {len(orders)} orders for status extraction")
             
             # Extract unique statuses
@@ -689,33 +721,24 @@ class ShoperClient:
                             "order": status.get("order", 0)
                         }
             
-            # Convert to list and sort by order field
             statuses_list = list(statuses_map.values())
             statuses_list.sort(key=lambda x: x.get("order", 0))
             
-            print(f"DEBUG: Extracted {len(statuses_list)} unique statuses from orders")
-            
-            # If no statuses found from orders, return defaults
-            if not statuses_list:
-                print("INFO: No statuses found in orders, returning defaults")
-                return [
-                    {"status_id": 1, "type": 1, "color": "#3498DB", "translations": {"pl_PL": {"name": "Nowe"}}},
-                    {"status_id": 2, "type": 2, "color": "#F39C12", "translations": {"pl_PL": {"name": "W realizacji"}}},
-                    {"status_id": 3, "type": 3, "color": "#2ECC71", "translations": {"pl_PL": {"name": "Zakończone"}}},
-                    {"status_id": 4, "type": 4, "color": "#E74C3C", "translations": {"pl_PL": {"name": "Anulowane"}}}
-                ]
-            
-            return statuses_list
-            
+            if statuses_list:
+                print(f"SUCCESS: Extracted {len(statuses_list)} unique statuses from orders")
+                return statuses_list
+                
         except Exception as e:
-            print(f"WARNING: Failed to fetch order statuses from orders: {e}")
-            # Fallback: return common default statuses
-            return [
-                {"status_id": 1, "type": 1, "color": "#3498DB", "translations": {"pl_PL": {"name": "Nowe"}}},
-                {"status_id": 2, "type": 2, "color": "#F39C12", "translations": {"pl_PL": {"name": "W realizacji"}}},
-                {"status_id": 3, "type": 3, "color": "#2ECC71", "translations": {"pl_PL": {"name": "Zakończone"}}},
-                {"status_id": 4, "type": 4, "color": "#E74C3C", "translations": {"pl_PL": {"name": "Anulowane"}}}
-            ]
+            print(f"WARNING: Failed to extract statuses from orders: {e}")
+        
+        # Final fallback: return common default statuses
+        print("INFO: Returning default fallback statuses")
+        return [
+            {"status_id": 1, "type": 1, "color": "#3498DB", "translations": {"pl_PL": {"name": "Nowe"}}},
+            {"status_id": 2, "type": 2, "color": "#F39C12", "translations": {"pl_PL": {"name": "W realizacji"}}},
+            {"status_id": 3, "type": 3, "color": "#2ECC71", "translations": {"pl_PL": {"name": "Zakończone"}}},
+            {"status_id": 4, "type": 4, "color": "#E74C3C", "translations": {"pl_PL": {"name": "Anulowane"}}}
+        ]
 
     async def update_order_status(self, order_id: int, status_id: int) -> Dict[str, Any]:
         """Update order status in Shoper."""
