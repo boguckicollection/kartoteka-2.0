@@ -315,6 +315,8 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
   const [result, setResult] = useState<any>(null);
   const [selectedVariant, setSelectedVariant] = useState<any>(null);
   const [showZoom, setShowZoom] = useState(false);
+  const [showCandidates, setShowCandidates] = useState(false);
+  const [flash, setFlash] = useState(false);
   const successAudioRef = useRef<HTMLAudioElement>(null);
   const failAudioRef = useRef<HTMLAudioElement>(null);
   const isMobile = useIsMobile();
@@ -335,7 +337,10 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
     enabled: true,
     apiBase: '/api',
     onResult: (data) => {
+      setFlash(true);
+      setTimeout(() => setFlash(false), 300);
       setResult(data);
+      setShowCandidates(false);
       if (data.pricing.variants && data.pricing.variants.length > 0) {
         const normalVariant = data.pricing.variants.find((v: any) => v.label === 'Normal') || data.pricing.variants[0];
         setSelectedVariant(normalVariant);
@@ -422,6 +427,11 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
           {/* Video feed - fullscreen */}
           <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover"></video>
           <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none"></canvas>
+          
+          {/* Flash Effect */}
+          {flash && (
+            <div className="absolute inset-0 bg-white z-50 animate-out fade-out duration-300 pointer-events-none"></div>
+          )}
           
           {/* Laser Scan Animation */}
           {!result && !analyzing && (
@@ -551,30 +561,43 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
                 {/* Alternative Candidates */}
                 {result.candidates && result.candidates.length > 1 && (
                     <div className="mt-4 pt-4 border-t border-white/10">
-                        <p className="text-xs text-gray-500 uppercase font-bold mb-2">Inne wyniki</p>
-                        <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
-                            {result.candidates.map((cand: any) => {
-                                if (cand.id === result.card.id) return null; // Skip current
-                                return (
-                                    <button 
-                                        key={cand.id}
-                                        onClick={() => selectCandidate(cand)}
-                                        className="flex-shrink-0 w-20 flex flex-col gap-1 text-left group"
-                                    >
-                                        <div className="w-20 h-28 relative rounded-lg overflow-hidden border border-white/10 group-hover:border-primary transition-colors">
-                                            {cand.image ? (
-                                                <img src={cand.image} className="w-full h-full object-cover" />
-                                            ) : (
-                                                <div className="w-full h-full bg-white/5 flex items-center justify-center">
-                                                    <span className="material-symbols-outlined text-gray-600">image</span>
-                                                </div>
-                                            )}
-                                        </div>
-                                        <p className="text-[10px] text-gray-400 truncate w-full">{cand.set}</p>
-                                    </button>
-                                )
-                            })}
-                        </div>
+                        <button 
+                            onClick={() => setShowCandidates(!showCandidates)}
+                            className="flex items-center justify-between w-full text-left py-2 px-1 active:bg-white/5 rounded-lg transition-colors"
+                        >
+                            <span className="text-xs text-primary font-bold uppercase">
+                                Inne wyniki ({result.candidates.length - 1})
+                            </span>
+                            <span className="material-symbols-outlined text-gray-400">
+                                {showCandidates ? 'expand_less' : 'expand_more'}
+                            </span>
+                        </button>
+                        
+                        {showCandidates && (
+                            <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar mt-2 animate-fade-in">
+                                {result.candidates.map((cand: any) => {
+                                    if (cand.id === result.card.id) return null; // Skip current
+                                    return (
+                                        <button 
+                                            key={cand.id}
+                                            onClick={() => selectCandidate(cand)}
+                                            className="flex-shrink-0 w-20 flex flex-col gap-1 text-left group"
+                                        >
+                                            <div className="w-20 h-28 relative rounded-lg overflow-hidden border border-white/10 group-hover:border-primary transition-colors bg-black/40">
+                                                {cand.image ? (
+                                                    <img src={cand.image} className="w-full h-full object-cover" />
+                                                ) : (
+                                                    <div className="w-full h-full flex items-center justify-center">
+                                                        <span className="material-symbols-outlined text-gray-600 text-2xl">image</span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <p className="text-[10px] text-gray-400 truncate w-full pl-1">{cand.set}</p>
+                                        </button>
+                                    )
+                                })}
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
