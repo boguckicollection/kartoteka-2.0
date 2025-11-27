@@ -345,10 +345,19 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
       // Callback triggered on each scan frame (viewfinder loop)
     },
     onSound: (sound) => {
+        const playSafe = async (audio: HTMLAudioElement) => {
+            try {
+                audio.currentTime = 0;
+                await audio.play();
+            } catch (e) {
+                console.warn('Audio play failed', e);
+            }
+        };
+
         if (sound === 'success' && successAudioRef.current) {
-            successAudioRef.current.play();
+            playSafe(successAudioRef.current);
         } else if (sound === 'fail' && failAudioRef.current) {
-            failAudioRef.current.play();
+            playSafe(failAudioRef.current);
         }
     }
   });

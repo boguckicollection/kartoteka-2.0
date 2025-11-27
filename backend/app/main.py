@@ -1487,13 +1487,39 @@ async def estimate_from_image(body: PricingImageRequest):
             return JSONResponse({"error": "Nie wykryto karty na obrazie"}, status_code=404)
 
         # 3. Warp and extract text
-        warped_image_bytes = warp_card_from_bytes(image_bytes, roi)
-        if not warped_image_bytes:
-            return JSONResponse({"error": "Błąd podczas przetwarzania obrazu"}, status_code=500)
-
-        detected = extract_name_number_from_bytes(warped_image_bytes)
-        name = detected.get("name")
-        number = detected.get("number")
+        # warp_card_from_bytes returns (warped_image, roi) - we need just the image bytes?
+        # Actually warp_card_from_bytes returns (warped_image_numpy, roi)
+        # But extract_name_number_from_bytes expects BYTES.
+        # Wait, let's check pipeline.py again.
+        
+        # In pipeline.py:
+        # def warp_card_from_bytes(raw: bytes, ...) -> Optional[Tuple[np.ndarray, Tuple[float,float,float,float]]]:
+        # So it returns numpy array.
+        
+        # def extract_name_number_from_bytes(raw: bytes) -> Tuple[Dict, Optional[Tuple]]:
+        # It expects bytes.
+        
+        # So passing 'warped_image_bytes' (which implies it is bytes) to extract_name_number_from_bytes is correct ONLY IF warp_card_from_bytes returns bytes.
+        # BUT warp_card_from_bytes returns np.ndarray!
+        
+        # Re-reading main.py logic around line 1490:
+        # warped_image_bytes = warp_card_from_bytes(image_bytes, roi)
+        
+        # This implies 'warped_image_bytes' is actually (np.ndarray, roi).
+        
+        # And extract_name_number_from_bytes(warped_image_bytes) would fail because it expects bytes, but gets a tuple!
+        
+        # I need to fix this logic properly.
+        # Option A: Just use extract_name_number_from_bytes directly on raw image_bytes?
+        # extract_name_number_from_bytes does detect_card_roi_bytes internally!
+        
+        # Let's simplify main.py to just use extract_name_number_from_bytes directly on image_bytes.
+        
+        detected_tuple = extract_name_number_from_bytes(image_bytes)
+        detected_data = detected_tuple[0]
+        
+        name = detected_data.get("name")
+        number = detected_data.get("number")
 
         if not name and not number:
             return JSONResponse({"error": "Nie udało się odczytać nazwy ani numeru z karty"}, status_code=404)
