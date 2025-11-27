@@ -702,127 +702,180 @@ return (
                     }
                   }}
                 >
+                  {/* Video feed */}
                   <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover"></video>
+                  
+                  {/* Canvas overlay */}
                   <canvas ref={overlayCanvasRef} className="absolute inset-0 w-full h-full pointer-events-none"></canvas>
-                  {analyzing && 
-                    <>
-                      <div className="scan-line" />
-                      <div className="scan-corners">
-                        <div className="corner tl"></div>
-                        <div className="corner tr"></div>
-                        <div className="corner bl"></div>
-                        <div className="corner br"></div>
+                  
+                  {/* Scanning indicator - modern ripple effect */}
+                  {analyzing && (
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
+                      <div className="relative w-16 h-16">
+                        {/* Pulsing rings */}
+                        <div className="absolute inset-0 rounded-full bg-primary/20 animate-ping"></div>
+                        <div className="absolute inset-2 rounded-full bg-primary/30 animate-pulse"></div>
+                        {/* Center icon */}
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <span className="material-symbols-outlined text-primary text-4xl animate-pulse">qr_code_scanner</span>
+                        </div>
                       </div>
-                    </>
-                  }
-                  {/* Top status bar */}
-                  {status && <div className="absolute top-0 left-0 right-0 bg-black/60 backdrop-blur-sm text-white text-center py-2 px-4 text-sm font-medium">
-                    {status}
-                    {qualityLive && (
-                      <span className="ml-2 text-xs opacity-75">
-                        (Jakość: {(qualityLive * 100).toFixed(0)}%)
-                      </span>
-                    )}
-                  </div>}
+                    </div>
+                  )}
+                  
+                  {/* Top status bar - glassmorphism */}
+                  {status && (
+                    <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/70 via-black/50 to-transparent backdrop-blur-md">
+                      <div className="p-4">
+                        <div className="flex items-center justify-center gap-2">
+                          <span className="material-symbols-outlined text-primary text-sm animate-pulse">visibility</span>
+                          <span className="text-white font-semibold text-sm">{status}</span>
+                        </div>
+                        {qualityLive && (
+                          <div className="mt-2">
+                            {/* Quality progress bar */}
+                            <div className="w-full bg-gray-800/50 rounded-full h-1.5 overflow-hidden">
+                              <div 
+                                className={`h-full rounded-full transition-all duration-300 ${
+                                  qualityLive > 0.7 ? 'bg-green-500' : 
+                                  qualityLive > 0.55 ? 'bg-yellow-500' : 'bg-red-500'
+                                }`}
+                                style={{ width: `${(qualityLive * 100).toFixed(0)}%` }}
+                              ></div>
+                            </div>
+                            <p className="text-center text-xs text-gray-300 mt-1">
+                              Jakość: {(qualityLive * 100).toFixed(0)}%
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   
                   {initStatus && <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-75 text-white text-lg">{initStatus}</div>}
                   
-                  {/* Bottom card preview (when result available) */}
+                  {/* Bottom card preview - Modern card design */}
                   {scanResult && scanResult.candidates && scanResult.candidates.length > 0 && (
-                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/80 to-transparent backdrop-blur-md p-4 animate-slide-up">
-                      <div className="flex items-center gap-3">
-                        {/* Card thumbnail */}
-                        {scanResult.candidates[0]?.image && (
-                          <img 
-                            src={scanResult.candidates[0].image} 
-                            alt={scanResult.detected?.name || 'Card'}
-                            className="w-16 h-auto rounded-lg shadow-lg border-2 border-primary/50"
-                          />
-                        )}
-                        
-                        {/* Card info */}
-                        <div className="flex-grow">
-                          <h3 className="text-white font-bold text-base leading-tight">
-                            {scanResult.detected?.name || scanResult.candidates[0]?.name || 'Unknown'}
-                          </h3>
-                          <p className="text-gray-300 text-xs mt-0.5">
-                            {scanResult.detected?.set || scanResult.candidates[0]?.set || 'Unknown Set'}
-                            {(scanResult.detected?.number || scanResult.candidates[0]?.number) && (
-                              <span className="text-primary font-semibold ml-1">
-                                • #{scanResult.detected?.number || scanResult.candidates[0]?.number}
-                              </span>
+                    <div className="absolute bottom-32 left-4 right-4 animate-slide-up">
+                      <div className="bg-white/10 backdrop-blur-2xl rounded-3xl border border-white/30 shadow-2xl overflow-hidden">
+                        <div className="bg-gradient-to-br from-primary/20 to-blue-600/20 p-4">
+                          <div className="flex items-center gap-4">
+                            {/* Card thumbnail with glow */}
+                            {scanResult.candidates[0]?.image && (
+                              <div className="flex-shrink-0 relative">
+                                <div className="absolute inset-0 bg-primary/30 rounded-xl blur-xl"></div>
+                                <img 
+                                  src={scanResult.candidates[0].image} 
+                                  alt={scanResult.detected?.name || 'Card'}
+                                  className="relative w-20 h-auto rounded-xl shadow-2xl border-2 border-white/40"
+                                />
+                              </div>
                             )}
-                          </p>
-                          {scanResult.detected?.price_pln_final && (
-                            <div className="text-primary text-xl font-bold mt-1">
-                              {scanResult.detected.price_pln_final.toFixed(2)} PLN
+                            
+                            {/* Card info */}
+                            <div className="flex-grow min-w-0">
+                              <div className="flex items-start gap-2 mb-1">
+                                <span className="material-symbols-outlined text-green-400 text-sm">check_circle</span>
+                                <h3 className="text-white font-bold text-base leading-tight flex-grow">
+                                  {scanResult.detected?.name || scanResult.candidates[0]?.name || 'Unknown'}
+                                </h3>
+                              </div>
+                              <p className="text-gray-200 text-xs">
+                                {scanResult.detected?.set || scanResult.candidates[0]?.set || 'Unknown Set'}
+                                {(scanResult.detected?.number || scanResult.candidates[0]?.number) && (
+                                  <span className="text-primary font-bold ml-1">
+                                    • #{scanResult.detected?.number || scanResult.candidates[0]?.number}
+                                  </span>
+                                )}
+                              </p>
+                              {scanResult.detected?.price_pln_final && (
+                                <div className="mt-2 flex items-baseline gap-1">
+                                  <span className="text-white text-2xl font-black">
+                                    {scanResult.detected.price_pln_final.toFixed(2)}
+                                  </span>
+                                  <span className="text-gray-300 text-sm font-medium">PLN</span>
+                                </div>
+                              )}
                             </div>
-                          )}
+                          </div>
                         </div>
-                        
-                        {/* Confirm button */}
-                        <button 
-                          onClick={() => {
-                            // Scroll to form or trigger onConfirm
-                          }}
-                          className="px-4 py-2 bg-primary hover:bg-primary/90 text-white font-bold rounded-lg shadow-lg transition-colors whitespace-nowrap text-sm"
-                        >
-                          Potwierdź
-                        </button>
                       </div>
                     </div>
                   )}
 
-                  {/* Controls bar - bottom left/right */}
-                  <div className="absolute bottom-20 left-0 right-0 flex justify-between items-end px-6 pb-4">
-                    {/* Left controls */}
-                    <div className="flex flex-col gap-3">
-                      {torchSupported && onToggleTorch && (
-                        <button
-                          onClick={onToggleTorch}
-                          className={`p-4 rounded-full ${torchOn ? 'bg-yellow-500' : 'bg-gray-800/80'} backdrop-blur-sm text-white shadow-lg transition-all hover:scale-110`}
-                          title="Latarka"
-                        >
-                          <span className="material-symbols-outlined text-2xl">
-                            {torchOn ? 'flashlight_on' : 'flashlight_off'}
-                          </span>
-                        </button>
-                      )}
+                  {/* Controls bar - modern floating design */}
+                  <div className="absolute bottom-0 left-0 right-0 pb-safe">
+                    {/* Glassmorphic control panel */}
+                    <div className="bg-gradient-to-t from-black/90 via-black/70 to-transparent backdrop-blur-xl pt-8 pb-6">
+                      <div className="flex justify-around items-center px-6">
+                        {/* Left - Torch */}
+                        <div className="flex-shrink-0">
+                          {torchSupported && onToggleTorch ? (
+                            <button
+                              onClick={onToggleTorch}
+                              className={`p-4 rounded-2xl transition-all duration-300 ${
+                                torchOn 
+                                  ? 'bg-yellow-500 shadow-lg shadow-yellow-500/50' 
+                                  : 'bg-white/10 backdrop-blur-md border border-white/20 hover:bg-white/20'
+                              }`}
+                              title="Latarka"
+                            >
+                              <span className="material-symbols-outlined text-2xl text-white">
+                                {torchOn ? 'flashlight_on' : 'flashlight_off'}
+                              </span>
+                            </button>
+                          ) : (
+                            <div className="w-14"></div>
+                          )}
+                        </div>
+                        
+                        {/* Center - Capture button */}
+                        <div className="flex-shrink-0 -mt-12">
+                          {onForceCommit && (
+                            <div className="relative">
+                              {/* Outer glow ring */}
+                              <div className="absolute inset-0 rounded-full bg-primary/30 blur-xl animate-pulse"></div>
+                              {/* Button */}
+                              <button
+                                onClick={onForceCommit}
+                                disabled={analyzing}
+                                className="relative w-20 h-20 rounded-full bg-gradient-to-br from-primary to-blue-600 text-white shadow-2xl transition-all duration-300 hover:scale-110 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed border-4 border-white/40"
+                                title="Zrób zdjęcie"
+                              >
+                                <span className="material-symbols-outlined text-4xl">photo_camera</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Right - Placeholder for symmetry */}
+                        <div className="flex-shrink-0 w-14"></div>
+                      </div>
                     </div>
-                    
-                    {/* Center - Manual capture button */}
-                    <div className="flex flex-col items-center gap-2">
-                      {onForceCommit && (
-                        <button
-                          onClick={onForceCommit}
-                          disabled={analyzing}
-                          className="p-5 rounded-full bg-primary/90 backdrop-blur-sm text-white shadow-2xl transition-all hover:scale-110 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed border-4 border-white/30"
-                          title="Zrób zdjęcie"
-                        >
-                          <span className="material-symbols-outlined text-3xl">photo_camera</span>
-                        </button>
-                      )}
-                      <span className="text-white text-xs font-medium opacity-75">Dotknij aby przechwycić</span>
-                    </div>
-                    
-                    {/* Right controls - placeholder for balance */}
-                    <div className="w-16"></div>
                   </div>
                   
-                  {/* Zoom slider - top */}
+                  {/* Zoom slider - modern glassmorphic design */}
                   {zoomCaps && setZoom && (
-                    <div className="absolute top-16 left-6 right-6 bg-black/50 backdrop-blur-sm rounded-full px-4 py-3 flex items-center gap-3">
-                      <span className="material-symbols-outlined text-white text-sm">zoom_out</span>
-                      <input
-                        type="range"
-                        min={zoomCaps.min}
-                        max={zoomCaps.max}
-                        step={zoomCaps.step}
-                        defaultValue={1}
-                        onChange={(e) => setZoom(parseFloat(e.target.value))}
-                        className="flex-grow h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
-                      />
-                      <span className="material-symbols-outlined text-white text-sm">zoom_in</span>
+                    <div className="absolute top-safe-top left-4 right-4 mt-20">
+                      <div className="bg-white/10 backdrop-blur-xl rounded-2xl px-5 py-4 border border-white/20 shadow-2xl">
+                        <div className="flex items-center gap-4">
+                          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-white/10 flex items-center justify-center">
+                            <span className="material-symbols-outlined text-white text-lg">zoom_out</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={zoomCaps.min}
+                            max={zoomCaps.max}
+                            step={zoomCaps.step}
+                            defaultValue={1}
+                            onChange={(e) => setZoom(parseFloat(e.target.value))}
+                            className="flex-grow h-2 bg-white/20 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-lg [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:h-5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-white [&::-moz-range-thumb]:shadow-lg"
+                          />
+                          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-white/10 flex items-center justify-center">
+                            <span className="material-symbols-outlined text-white text-lg">zoom_in</span>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   )}
 

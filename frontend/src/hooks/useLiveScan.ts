@@ -119,7 +119,16 @@ export function useLiveScan({ enabled, apiBase, sessionId, onResult, intervalMs 
           }
         } catch {}
 
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } as any } as any, audio: false })
+        // Request HD camera quality for better card recognition
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { 
+            facingMode: { ideal: 'environment' } as any,
+            width: { ideal: 1920, min: 1280 },
+            height: { ideal: 1080, min: 720 },
+            aspectRatio: { ideal: 16/9 }
+          } as any, 
+          audio: false 
+        })
         if (aborted) { stream.getTracks().forEach(t => t.stop()); return; }
 
         videoNode.srcObject = stream
@@ -168,7 +177,7 @@ export function useLiveScan({ enabled, apiBase, sessionId, onResult, intervalMs 
             setAnalyzing(true)
             const ctx = canvas.getContext('2d')!
             ctx.drawImage(videoNode, 0, 0, w, h)
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.8)
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.92) // Higher quality for better OCR
             
             // quick brightness estimation on downscaled frame
             try {

@@ -2,7 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Scan overlay animations */
+/* Modern Scan UI Animations */
+
+/* Slide up animation for result cards */
 @keyframes slide-up {
   from {
     transform: translateY(100%);
@@ -15,9 +17,10 @@
 }
 
 .animate-slide-up {
-  animation: slide-up 0.3s ease-out;
+  animation: slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* Pulse glow for scanning indicator */
 @keyframes pulse-glow {
   0%, 100% {
     box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
@@ -29,4 +32,61 @@
 
 .overlay-stable {
   animation: pulse-glow 1s infinite;
+}
+
+/* Ripple effect for scanning */
+@keyframes ripple {
+  0% {
+    transform: scale(0.8);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}
+
+/* Fade in animation */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+/* Shimmer effect for loading states */
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite linear;
+  background: linear-gradient(to right, transparent 0%, rgba(255,255,255,0.1) 50%, transparent 100%);
+  background-size: 1000px 100%;
+}
+
+/* Safe area spacing for mobile notches */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 1rem);
+}
+
+.pt-safe-top {
+  padding-top: env(safe-area-inset-top, 0);
+}
+
+.top-safe-top {
+  top: env(safe-area-inset-top, 0);
 }
