@@ -61,6 +61,20 @@ Na komputerze:
 Zaktualizuj ADB (wymagane platform‑tools ≥ 30): adb --version.
 Zrestartuj ADB: adb kill-server.
 Sparuj z portem: adb pair 192.168.111.114:37099 → wprowadź 6‑cyfrowy kod z telefonu.
-Po sparowaniu: adb connect 192.168.111.114:NNNNN (port debugowania widoczny w “Paired devices”).
+Po sparowaniu: adb connect 192.168.111.114:NNNNN (port debugowania widoczny w "Paired devices").
 Reverse portów: adb reverse tcp:5173 tcp:5173 i adb reverse tcp:8000 tcp:8000.
 Na telefonie otwórz: http://localhost:5173.
+
+---
+
+## Powiadomienia mobilne o zamówieniach (ntfy)
+
+System wspiera **self-hosted powiadomienia push** o nowych zamówieniach z Shoper.
+
+**Szybka konfiguracja:**
+1. Ustaw w `.env`: `NTFY_ENABLED=true`, `NTFY_TOPIC=kartoteka-orders-UNIQUE`
+2. Zainstaluj aplikację ntfy na telefonie (Android/iOS)
+3. Dodaj serwer `http://TWOJE_IP:8080` i subskrybuj temat
+4. Otrzymuj powiadomienia z danymi klienta, wartością zamówienia i klikalnymi akcjami
+
+Szczegóły: patrz `README-LOCAL.md` → sekcja "Powiadomienia mobilne"

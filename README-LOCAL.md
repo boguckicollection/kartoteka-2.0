@@ -45,6 +45,53 @@ Uwaga o zmianach schematu DB: w SQLite działa lekka migracja (ALTER TABLE) doda
 - Publikacja do Shoper (po potwierdzeniu użytkownika).
  - Historia skanów: [ZROBIONE] endpoint `/scans` i prosty widok w UI (lista ostatnich).
 
+## Powiadomienia mobilne (ntfy)
+System może wysyłać **bogate powiadomienia mobilne** o nowych zamówieniach przez self-hosted ntfy.
+
+### Szybki start (w 4 krokach):
+1. **Ustaw w `.env`:**
+   ```bash
+   NTFY_ENABLED=true
+   NTFY_URL=http://ntfy
+   NTFY_TOPIC=kartoteka-orders-TWOJ_UNIKALNY_KLUCZ
+   APP_BASE_URL=https://twoja-domena.com  # lub http://IP:5173
+   ```
+
+2. **Uruchom ponownie:**
+   ```bash
+   docker compose restart api
+   ```
+
+3. **Zainstaluj aplikację ntfy na telefonie:**
+   - Android: [Google Play](https://play.google.com/store/apps/details?id=io.heckel.ntfy)
+   - iOS: [App Store](https://apps.apple.com/us/app/ntfy/id1625396347)
+
+4. **Subskrybuj temat:**
+   - W aplikacji dodaj serwer: `http://TWOJE_IP:8080`
+   - Subskrybuj temat: `kartoteka-orders-TWOJ_UNIKALNY_KLUCZ`
+
+### Co dostajesz w powiadomieniach:
+- **Dane klienta:** imię, email, telefon
+- **Podsumowanie zamówienia:** wartość, liczba pozycji
+- **Top 3 najdroższe karty** w zamówieniu
+- **Klikalne akcje:** „Zobacz szczegóły", „Przyjmij zamówienie"
+- **GDPR-compliant:** wszystkie dane pozostają na Twoim serwerze
+
+### Dostęp przez przeglądarkę:
+Możesz też przeglądać powiadomienia w przeglądarce: `http://TWOJE_IP:8080`
+
+### Zaawansowane (opcjonalne):
+Jeśli chcesz zabezpieczyć ntfy hasłem/tokenem:
+```bash
+# Utwórz użytkownika w kontenerze ntfy:
+docker exec -it kartoteka_ntfy sh -c 'ntfy user add admin'
+# (wprowadź hasło interaktywnie)
+
+# Lub wygeneruj token:
+docker exec kartoteka_ntfy ntfy token add admin
+# Skopiuj token do NTFY_AUTH_TOKEN w .env
+```
+
 ## Zmienne środowiska
 - Backend: zobacz `backend/.env.example`
 - Frontend: opcjonalnie `VITE_API_BASE_URL` (domyślnie sam wykryje `:8000` względem hosta)
