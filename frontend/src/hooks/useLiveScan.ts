@@ -111,7 +111,9 @@ export function useLiveScan({ enabled, apiBase, sessionId, onResult, intervalMs 
       try {
         // fetch dynamic quality thresholds from backend
         try{
-          const rc = await fetch(`${apiBase}/config`).catch(()=>null)
+          const rc = await fetch(`${apiBase}/config`, {
+            headers: { 'ngrok-skip-browser-warning': 'true' }
+          }).catch(()=>null)
           if (rc && rc.ok){
             const jc = await rc.json().catch(()=>null)
             if (jc && typeof jc.min_quality_commit === 'number') setQualityCommitMin(Number(jc.min_quality_commit))
@@ -194,7 +196,10 @@ export function useLiveScan({ enabled, apiBase, sessionId, onResult, intervalMs 
             
             const r = await fetch(`${apiBase}/scan/probe`, {
               method:'POST',
-              headers:{'Content-Type':'application/json'},
+              headers:{
+                'Content-Type':'application/json',
+                'ngrok-skip-browser-warning': 'true'
+              },
               body: JSON.stringify({ image: dataUrl, session_id: sessionId })
             })
             
@@ -285,7 +290,10 @@ export function useLiveScan({ enabled, apiBase, sessionId, onResult, intervalMs 
                           // COMMIT!
                           const r2 = await fetch(`${apiBase}/scan/commit`, {
                             method:'POST', 
-                            headers:{'Content-Type':'application/json'},
+                            headers:{
+                              'Content-Type':'application/json',
+                              'ngrok-skip-browser-warning': 'true'
+                            },
                             body: JSON.stringify({ image: stillDataUrl, session_id: sessionId })
                           })
                           

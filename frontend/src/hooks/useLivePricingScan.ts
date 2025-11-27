@@ -140,7 +140,10 @@ export function useLivePricingScan({ enabled, apiBase, onResult, onScan, onSound
 
             const probeRes = await fetch(`${apiBase}/scan/probe`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'ngrok-skip-browser-warning': 'true'
+                },
                 body: JSON.stringify({ image: dataUrl }),
             });
 
@@ -171,7 +174,10 @@ export function useLivePricingScan({ enabled, apiBase, onResult, onScan, onSound
                     // NEW: Use the lightweight estimate_from_image endpoint
                     const priceRes = await fetch(`${apiBase}/pricing/estimate_from_image`, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'ngrok-skip-browser-warning': 'true'
+                        },
                         body: JSON.stringify({ image: dataUrl }),
                     });
 

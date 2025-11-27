@@ -35,6 +35,7 @@ const ManualEntryView = ({ onBack }: { onBack: () => void }) => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': 'true',
         },
         body: JSON.stringify({ name, number }),
       });
