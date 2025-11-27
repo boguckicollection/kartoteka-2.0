@@ -1446,8 +1446,21 @@ async def manual_search(body: dict = Body(default={})):
                             "pln_final": computed_graded.get("price_pln_final")
                         }
 
+        # Prepare list of alternative candidates
+        candidates_list = []
+        for c in cands:
+            # Skip the current best match if needed, or include all
+            candidates_list.append({
+                "id": c.id,
+                "name": c.name,
+                "set": c.set,
+                "number": c.number,
+                "image": c.image
+            })
+
         return {
             "card": {
+                "id": best_cand.id,
                 "name": best_cand.name,
                 "number": best_cand.number,
                 "set": best_cand.set,
@@ -1455,7 +1468,8 @@ async def manual_search(body: dict = Body(default={})):
                 "rarity": details.get("rarity"),
             },
             "pricing": final_pricing,
-            "raw_details": details,  # Include raw details for reference
+            "candidates": candidates_list,
+            "raw_details": details,
         }
     except Exception as e:
         return JSONResponse({"error": f"details failed: {e}"}, status_code=500)

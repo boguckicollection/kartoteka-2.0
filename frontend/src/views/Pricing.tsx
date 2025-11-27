@@ -385,6 +385,35 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
     return { letter: '?', label: label, color: 'bg-gray-600' };
   };
 
+  const selectCandidate = async (candidate: any) => {
+      // Simple manual fetch to get details for alternative candidate
+      try {
+          // Show quick loading state by keeping result but maybe dimming? 
+          // Or just replace immediately if fast. Let's reset result to trigger loading spinner if we had one.
+          // Better: keep current result but show loading overlay.
+          
+          const res = await fetch('/api/pricing/manual_search', {
+              method: 'POST',
+              headers: { 
+                  'Content-Type': 'application/json',
+                  'ngrok-skip-browser-warning': 'true'
+              },
+              body: JSON.stringify({ name: candidate.name, number: candidate.number })
+          });
+          
+          if (res.ok) {
+              const data = await res.json();
+              setResult(data);
+              if (data.pricing.variants && data.pricing.variants.length > 0) {
+                  const normalVariant = data.pricing.variants.find((v: any) => v.label === 'Normal') || data.pricing.variants[0];
+                  setSelectedVariant(normalVariant);
+              }
+          }
+      } catch (e) {
+          console.error("Failed to select candidate", e);
+      }
+  };
+
   return (
     <div className={isMobile ? "fixed inset-0 z-50 bg-black" : "flex flex-col h-full"}>
       {/* Mobile: Fullscreen view */}
@@ -462,10 +491,10 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
 
           {/* Result card - Modern design */}
           {result && (
-            <div className="absolute bottom-24 left-4 right-4 z-30 animate-slide-up bg-gray-900 rounded-3xl border border-white/20 shadow-2xl p-4 mb-20">
+            <div className="absolute bottom-24 left-4 right-4 z-30 animate-slide-up bg-gray-900 rounded-3xl border border-white/20 shadow-2xl p-4 mb-20 overflow-hidden">
                <button 
                  onClick={() => { setResult(null); setAnalyzing(false); }} 
-                 className="absolute top-2 right-4 p-2 text-gray-400 hover:text-white"
+                 className="absolute top-2 right-4 p-2 text-gray-400 hover:text-white z-10"
                >
                  <span className="material-symbols-outlined">close</span>
                </button>
@@ -481,7 +510,7 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
                       </div>
                     )}
                     
-                    <div className="flex-grow min-w-0">
+                    <div className="flex-grow min-w-0 pt-1">
                       <h3 className="text-white font-bold text-lg leading-tight truncate">
                         {result.card.name}
                       </h3>
@@ -517,6 +546,36 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
                     );
                     })}
                 </div>
+                )}
+
+                {/* Alternative Candidates */}
+                {result.candidates && result.candidates.length > 1 && (
+                    <div className="mt-4 pt-4 border-t border-white/10">
+                        <p className="text-xs text-gray-500 uppercase font-bold mb-2">Inne wyniki</p>
+                        <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
+                            {result.candidates.map((cand: any) => {
+                                if (cand.id === result.card.id) return null; // Skip current
+                                return (
+                                    <button 
+                                        key={cand.id}
+                                        onClick={() => selectCandidate(cand)}
+                                        className="flex-shrink-0 w-20 flex flex-col gap-1 text-left group"
+                                    >
+                                        <div className="w-20 h-28 relative rounded-lg overflow-hidden border border-white/10 group-hover:border-primary transition-colors">
+                                            {cand.image ? (
+                                                <img src={cand.image} className="w-full h-full object-cover" />
+                                            ) : (
+                                                <div className="w-full h-full bg-white/5 flex items-center justify-center">
+                                                    <span className="material-symbols-outlined text-gray-600">image</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                        <p className="text-[10px] text-gray-400 truncate w-full">{cand.set}</p>
+                                    </button>
+                                )
+                            })}
+                        </div>
+                    </div>
                 )}
             </div>
           )}

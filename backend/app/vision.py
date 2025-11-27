@@ -29,6 +29,31 @@ def _call_openai_vision(b64: str) -> dict:
     import json
 
     client = OpenAI(api_key=settings.openai_api_key)
+
+    # Optimization: Resize image if too large before sending to OpenAI
+    try:
+        from PIL import Image
+        import io
+        
+        # Decode
+        img_data = base64.b64decode(b64)
+        img = Image.open(io.BytesIO(img_data))
+        
+        # Resize if needed (max 1000px long edge)
+        max_dim = 1000
+        if max(img.size) > max_dim:
+            ratio = max_dim / max(img.size)
+            new_size = (int(img.width * ratio), int(img.height * ratio))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+            
+            # Re-encode to JPEG
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            b64 = base64.b64encode(buf.getvalue()).decode('ascii')
+    except Exception as e:
+        print(f"Image resize optimization failed: {e}")
+        # Continue with original b64 if resize fails
+
     prompt = (
         "You are an expert at analyzing Pokémon Trading Card Game cards. "
         "Extract the following fields from the card image and return ONLY valid JSON:\n\n"
@@ -38,14 +63,14 @@ def _call_openai_vision(b64: str) -> dict:
         "Older cards (pre-2003) often show the card number and set symbol ONLY in this corner. "
         "The number format is usually 'XX/YYY' or just 'XX'. The set symbol is a small icon next to the number.\n"
         
-        "2. **Set Identification**: If you see a set symbol (icon) in the bottom right:\n"
-        "   - Circle with '1' = Base Set (set_code: 'base1')\n"
-        "   - Jungle leaf symbol = Jungle (set_code: 'jungle')\n"
-        "   - Fossil shell = Fossil (set_code: 'fossil')\n"
-        "   - Team Rocket 'R' = Team Rocket (set_code: 'base5')\n"
-        "   - Other symbols: try to identify the set name from the symbol\n"
+        "2. **Set Identification**: If you see a set symbol (icon) in the bottom right, DESCRIBE IT or map it to a set code:\n"
+        "   - Circle with '1' = Base Set (base1)\n"
+        "   - Jungle leaf = Jungle (jungle)\n"
+        "   - Fossil shell = Fossil (fossil)\n"
+        "   - 'R' = Team Rocket (base5)\n"
+        "   - Look for alphanumeric codes like 'SWSH10', 'SV1', 'XY', 'SM' in the bottom corners.\n"
         
-        "3. **Card Name**: Located at the top of the card, above the image.\n"
+        "3. **Card Name**: Located at the top. Be precise.\n"
         
         "4. **Energy Type**: Visible from the card's type icon or attack costs. "
         "Values: Grass, Fire, Water, Lightning, Psychic, Fighting, Darkness, Metal, Fairy, Dragon, Colorless.\n"
