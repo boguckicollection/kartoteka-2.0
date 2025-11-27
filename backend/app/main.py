@@ -1474,6 +1474,7 @@ async def estimate_from_image(body: PricingImageRequest):
     try:
         import base64
         from .analysis.pipeline import detect_card_roi_bytes, warp_card_from_bytes, extract_name_number_from_bytes
+        from .vision import extract_fields_with_openai_bytes
 
         # 1. Decode image from base64
         try:
@@ -1481,48 +1482,29 @@ async def estimate_from_image(body: PricingImageRequest):
         except (IndexError, base64.binascii.Error):
             return JSONResponse({"error": "Nieprawidłowy format obrazu (base64)"}, status_code=400)
 
-        # 2. Find card in the image
-        roi = detect_card_roi_bytes(image_bytes)
-        if not roi:
-            return JSONResponse({"error": "Nie wykryto karty na obrazie"}, status_code=404)
+        # 2. Try Local OCR Pipeline first
+        name, number = None, None
+        
+        # Try finding ROI and OCR
+        try:
+            detected_tuple = extract_name_number_from_bytes(image_bytes)
+            detected_data = detected_tuple[0]
+            name = detected_data.get("name")
+            number = detected_data.get("number")
+        except Exception as e:
+            print(f"Local OCR failed: {e}")
 
-        # 3. Warp and extract text
-        # warp_card_from_bytes returns (warped_image, roi) - we need just the image bytes?
-        # Actually warp_card_from_bytes returns (warped_image_numpy, roi)
-        # But extract_name_number_from_bytes expects BYTES.
-        # Wait, let's check pipeline.py again.
-        
-        # In pipeline.py:
-        # def warp_card_from_bytes(raw: bytes, ...) -> Optional[Tuple[np.ndarray, Tuple[float,float,float,float]]]:
-        # So it returns numpy array.
-        
-        # def extract_name_number_from_bytes(raw: bytes) -> Tuple[Dict, Optional[Tuple]]:
-        # It expects bytes.
-        
-        # So passing 'warped_image_bytes' (which implies it is bytes) to extract_name_number_from_bytes is correct ONLY IF warp_card_from_bytes returns bytes.
-        # BUT warp_card_from_bytes returns np.ndarray!
-        
-        # Re-reading main.py logic around line 1490:
-        # warped_image_bytes = warp_card_from_bytes(image_bytes, roi)
-        
-        # This implies 'warped_image_bytes' is actually (np.ndarray, roi).
-        
-        # And extract_name_number_from_bytes(warped_image_bytes) would fail because it expects bytes, but gets a tuple!
-        
-        # I need to fix this logic properly.
-        # Option A: Just use extract_name_number_from_bytes directly on raw image_bytes?
-        # extract_name_number_from_bytes does detect_card_roi_bytes internally!
-        
-        # Let's simplify main.py to just use extract_name_number_from_bytes directly on image_bytes.
-        
-        detected_tuple = extract_name_number_from_bytes(image_bytes)
-        detected_data = detected_tuple[0]
-        
-        name = detected_data.get("name")
-        number = detected_data.get("number")
+        # 3. Fallback to OpenAI Vision if local OCR failed
+        if not name or not number:
+            print("Local OCR insufficient, trying OpenAI Vision...")
+            openai_data = extract_fields_with_openai_bytes(image_bytes)
+            if openai_data.get("name"):
+                name = openai_data.get("name")
+            if openai_data.get("number"):
+                number = openai_data.get("number")
 
         if not name and not number:
-            return JSONResponse({"error": "Nie udało się odczytać nazwy ani numeru z karty"}, status_code=404)
+            return JSONResponse({"error": "Nie udało się odczytać nazwy ani numeru z karty (OCR + AI failed)"}, status_code=404)
 
         # 4. Call the existing manual_search logic to get pricing
         return await manual_search(body={"name": name, "number": number})
