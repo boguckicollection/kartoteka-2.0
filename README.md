@@ -21,6 +21,7 @@ Opcja A: Wireless debugging (Android 11+)
 4) Ustaw reverse portów (aby telefon widział usługi hosta pod localhost):
    - `adb reverse tcp:5173 tcp:5173`
    - `adb reverse tcp:8000 tcp:8000`
+   - `adb reverse tcp:8080 tcp:8080` (dla powiadomień ntfy)
 5) Na telefonie otwórz w Chrome: `http://localhost:5173`
    - Pojawi się prośba o dostęp do aparatu, wybierz „Zezwól”.
 
@@ -35,6 +36,7 @@ Opcja B: Klasyczne ADB over Wi‑Fi (uniwersalne)
 5) Reverse portów i uruchomienie jak wyżej:
    - `adb reverse tcp:5173 tcp:5173`
    - `adb reverse tcp:8000 tcp:8000`
+   - `adb reverse tcp:8080 tcp:8080` (dla powiadomień ntfy)
    - Otwórz: `http://localhost:5173` na telefonie.
 
 Dlaczego to działa
@@ -62,7 +64,7 @@ Zaktualizuj ADB (wymagane platform‑tools ≥ 30): adb --version.
 Zrestartuj ADB: adb kill-server.
 Sparuj z portem: adb pair 192.168.111.114:37099 → wprowadź 6‑cyfrowy kod z telefonu.
 Po sparowaniu: adb connect 192.168.111.114:NNNNN (port debugowania widoczny w "Paired devices").
-Reverse portów: adb reverse tcp:5173 tcp:5173 i adb reverse tcp:8000 tcp:8000.
+Reverse portów: adb reverse tcp:5173 tcp:5173 i adb reverse tcp:8000 tcp:8000 i adb reverse tcp:8080 tcp:8080.
 Na telefonie otwórz: http://localhost:5173.
 
 ---
@@ -71,10 +73,16 @@ Na telefonie otwórz: http://localhost:5173.
 
 System wspiera **self-hosted powiadomienia push** o nowych zamówieniach z Shoper.
 
-**Szybka konfiguracja:**
+**Dla środowiska testowego (WSL/Docker Desktop na Windows):**
 1. Ustaw w `.env`: `NTFY_ENABLED=true`, `NTFY_TOPIC=kartoteka-orders-UNIQUE`
-2. Zainstaluj aplikację ntfy na telefonie (Android/iOS)
-3. Dodaj serwer `http://TWOJE_IP:8080` i subskrybuj temat
-4. Otrzymuj powiadomienia z danymi klienta, wartością zamówienia i klikalnymi akcjami
+2. Użyj ADB reverse: `adb reverse tcp:8080 tcp:8080`
+3. Zainstaluj aplikację ntfy na telefonie (Android/iOS)
+4. W aplikacji dodaj serwer: `http://localhost:8080`
+5. Subskrybuj temat: `kartoteka-orders-UNIQUE` (ten sam co w .env)
+6. Otrzymuj powiadomienia z danymi klienta, wartością zamówienia i klikalnymi akcjami
+
+**Dla serwera produkcyjnego (Linux):**
+- Użyj IP serwera: `http://192.168.X.X:8080` (bez ADB reverse)
+- Wszystko działa natywnie przez sieć LAN
 
 Szczegóły: patrz `README-LOCAL.md` → sekcja "Powiadomienia mobilne"
