@@ -453,7 +453,7 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
 
           {/* Result card - Modern design */}
           {result && (
-            <div className="absolute bottom-0 left-0 right-0 z-30 animate-slide-up bg-gray-900 rounded-t-3xl border-t border-white/20 shadow-2xl p-4 pb-safe">
+            <div className="absolute bottom-24 left-4 right-4 z-30 animate-slide-up bg-gray-900 rounded-3xl border border-white/20 shadow-2xl p-4 mb-20">
                <button 
                  onClick={() => { setResult(null); setAnalyzing(false); }} 
                  className="absolute top-2 right-4 p-2 text-gray-400 hover:text-white"
@@ -514,7 +514,7 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
           
           {/* Bottom controls - Camera Style */}
           {!result && (
-            <div className="absolute bottom-0 left-0 right-0 pb-safe pt-8 px-6 bg-gradient-to-t from-black/90 via-black/50 to-transparent z-20 flex justify-between items-center">
+            <div className="absolute bottom-20 left-0 right-0 pb-safe pt-8 px-6 bg-gradient-to-t from-black/90 via-black/50 to-transparent z-20 flex justify-between items-center">
                {/* Zoom Toggle */}
                {zoomCaps ? (
                    <button 
