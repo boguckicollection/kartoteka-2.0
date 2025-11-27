@@ -326,6 +326,9 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
         setSelectedVariant(normalVariant);
       }
     },
+    onScan: () => {
+      // Callback triggered on each scan frame
+    },
     onSound: (sound) => {
         if (sound === 'success' && successAudioRef.current) {
             successAudioRef.current.play();
