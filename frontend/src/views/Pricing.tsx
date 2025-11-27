@@ -314,11 +314,24 @@ const ManualEntryView = ({ onBack }: { onBack: () => void }) => {
 const LiveScanView = ({ onBack }: { onBack: () => void }) => {
   const [result, setResult] = useState<any>(null);
   const [selectedVariant, setSelectedVariant] = useState<any>(null);
+  const [showZoom, setShowZoom] = useState(false);
   const successAudioRef = useRef<HTMLAudioElement>(null);
   const failAudioRef = useRef<HTMLAudioElement>(null);
   const isMobile = useIsMobile();
 
-  const { analyzing, status, initStatus, videoRef, canvasRef, setZoom, zoomCaps } = useLivePricingScan({
+  const { 
+    analyzing, 
+    status, 
+    initStatus, 
+    videoRef, 
+    canvasRef, 
+    setZoom, 
+    zoomCaps, 
+    toggleTorch, 
+    torchSupported, 
+    torchOn, 
+    captureImage 
+  } = useLivePricingScan({
     enabled: true,
     apiBase: '/api',
     onResult: (data) => {
@@ -329,7 +342,7 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
       }
     },
     onScan: () => {
-      // Callback triggered on each scan frame
+      // Callback triggered on each scan frame (viewfinder loop)
     },
     onSound: (sound) => {
         if (sound === 'success' && successAudioRef.current) {
@@ -372,139 +385,159 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
           <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover"></video>
           <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none"></canvas>
           
-          {/* Scanning indicator - modern ripple effect */}
+          {/* Laser Scan Animation */}
+          {!result && !analyzing && (
+             <div className="absolute inset-0 pointer-events-none overflow-hidden">
+               <div className="w-full h-1 bg-gradient-to-r from-transparent via-primary to-transparent opacity-70 animate-[scan-down_2s_ease-in-out_infinite]"></div>
+             </div>
+          )}
+
+          {/* Scanning indicator - modern ripple effect (only when processing) */}
           {analyzing && (
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
-              <div className="relative w-16 h-16">
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-20">
+              <div className="relative w-24 h-24">
                 <div className="absolute inset-0 rounded-full bg-primary/20 animate-ping"></div>
                 <div className="absolute inset-2 rounded-full bg-primary/30 animate-pulse"></div>
                 <div className="absolute inset-0 flex items-center justify-center">
-                  <span className="material-symbols-outlined text-primary text-4xl animate-pulse">qr_code_scanner</span>
+                  <span className="material-symbols-outlined text-white text-5xl animate-spin">autorenew</span>
                 </div>
               </div>
             </div>
           )}
           
           {/* Top status bar - glassmorphism */}
-          {status && (
-            <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/70 via-black/50 to-transparent backdrop-blur-md">
-              <div className="p-4 pt-safe-top">
-                <div className="flex items-center justify-between mb-2">
-                  <button onClick={onBack} className="text-white/80 hover:text-white flex items-center gap-1">
-                    <span className="material-symbols-outlined text-xl">arrow_back</span>
-                  </button>
-                  <div className="flex items-center gap-2">
-                    <span className="material-symbols-outlined text-primary text-sm animate-pulse">visibility</span>
-                    <span className="text-white font-semibold text-sm">{status}</span>
-                  </div>
-                  <div className="w-8"></div>
-                </div>
-                {initStatus && (
-                  <p className="text-center text-xs text-gray-300">{initStatus}</p>
-                )}
-              </div>
-            </div>
-          )}
+          <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/80 via-black/40 to-transparent pt-safe-top pb-6 px-4 flex items-center justify-between z-10">
+             <button onClick={onBack} className="p-2 bg-black/20 backdrop-blur-md rounded-full text-white border border-white/10">
+                <span className="material-symbols-outlined">arrow_back</span>
+             </button>
+             
+             <div className="px-4 py-1 bg-black/40 backdrop-blur-md rounded-full border border-white/10">
+                <span className="text-white text-sm font-medium flex items-center gap-2">
+                   {status === 'Gotowy' ? <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span> : null}
+                   {status}
+                </span>
+             </div>
+
+             <div className="flex gap-2">
+               {torchSupported && (
+                 <button 
+                   onClick={toggleTorch} 
+                   className={`p-2 rounded-full border border-white/10 transition-all ${torchOn ? 'bg-yellow-500 text-white' : 'bg-black/20 backdrop-blur-md text-white'}`}
+                 >
+                    <span className="material-symbols-outlined">{torchOn ? 'flashlight_on' : 'flashlight_off'}</span>
+                 </button>
+               )}
+             </div>
+          </div>
           
-          {/* Zoom slider - modern glassmorphic design */}
-          {zoomCaps && setZoom && !result && (
-            <div className="absolute top-20 left-4 right-4 pt-safe-top">
-              <div className="bg-white/10 backdrop-blur-xl rounded-2xl px-5 py-4 border border-white/20 shadow-2xl">
-                <div className="flex items-center gap-4">
-                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-white/10 flex items-center justify-center">
-                    <span className="material-symbols-outlined text-white text-lg">zoom_out</span>
-                  </div>
+          {/* Zoom Control (Hidden by default) */}
+          {showZoom && zoomCaps && setZoom && (
+            <div className="absolute top-24 right-4 bottom-32 w-12 flex flex-col items-center justify-center z-10 animate-fade-in">
+               <div className="bg-black/40 backdrop-blur-md rounded-full py-4 px-2 border border-white/10 h-64 flex flex-col items-center">
+                  <span className="material-symbols-outlined text-white text-xs mb-2">add</span>
                   <input
                     type="range"
+                    orient="vertical"
                     min={zoomCaps.min}
                     max={zoomCaps.max}
                     step={zoomCaps.step}
                     defaultValue={1}
                     onChange={(e) => setZoom(parseFloat(e.target.value))}
-                    className="flex-grow h-2 bg-white/20 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-lg [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white"
+                    className="h-full w-2 bg-white/20 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-6 [&::-webkit-slider-thumb]:h-6 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-lg"
+                    style={{ writingMode: 'bt-lr', WebkitAppearance: 'slider-vertical' } as any}
                   />
-                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-white/10 flex items-center justify-center">
-                    <span className="material-symbols-outlined text-white text-lg">zoom_in</span>
-                  </div>
-                </div>
-              </div>
+                  <span className="material-symbols-outlined text-white text-xs mt-2">remove</span>
+               </div>
             </div>
           )}
 
           {/* Result card - Modern design */}
           {result && (
-            <div className="absolute bottom-24 left-4 right-4 animate-slide-up">
-              <div className="bg-white/10 backdrop-blur-2xl rounded-3xl border border-white/30 shadow-2xl overflow-hidden">
-                <div className="bg-gradient-to-br from-primary/20 to-blue-600/20 p-4">
-                  <div className="flex items-center gap-4">
+            <div className="absolute bottom-0 left-0 right-0 z-30 animate-slide-up bg-gray-900 rounded-t-3xl border-t border-white/20 shadow-2xl p-4 pb-safe">
+               <button 
+                 onClick={() => { setResult(null); setAnalyzing(false); }} 
+                 className="absolute top-2 right-4 p-2 text-gray-400 hover:text-white"
+               >
+                 <span className="material-symbols-outlined">close</span>
+               </button>
+
+                <div className="flex gap-4">
                     {result.card.image && (
-                      <div className="flex-shrink-0 relative">
-                        <div className="absolute inset-0 bg-primary/30 rounded-xl blur-xl"></div>
+                      <div className="flex-shrink-0 relative w-20 h-28">
                         <img 
                           src={result.card.image} 
                           alt={result.card.name}
-                          className="relative w-20 h-auto rounded-xl shadow-2xl border-2 border-white/40"
+                          className="w-full h-full object-cover rounded-lg shadow-lg border border-white/20"
                         />
                       </div>
                     )}
                     
                     <div className="flex-grow min-w-0">
-                      <div className="flex items-start gap-2 mb-1">
-                        <span className="material-symbols-outlined text-green-400 text-sm">check_circle</span>
-                        <h3 className="text-white font-bold text-base leading-tight flex-grow">
-                          {result.card.name}
-                        </h3>
-                      </div>
-                      <p className="text-gray-200 text-xs">
-                        {result.card.set} <span className="text-primary font-bold">• #{result.card.number}</span>
+                      <h3 className="text-white font-bold text-lg leading-tight truncate">
+                        {result.card.name}
+                      </h3>
+                      <p className="text-gray-400 text-sm mb-2">
+                        {result.card.set} <span className="text-primary">• #{result.card.number}</span>
                       </p>
-                      <div className="mt-2 flex items-baseline gap-1">
-                        <span className="text-white text-2xl font-black">
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-white text-3xl font-black">
                           {(selectedVariant?.price_pln_final || result.pricing.price_pln_final)?.toFixed(2)}
                         </span>
-                        <span className="text-gray-300 text-sm font-medium">PLN</span>
+                        <span className="text-gray-400 text-sm">PLN</span>
                       </div>
                     </div>
-                  </div>
-                  
-                  {/* Variants chips */}
-                  {result.pricing.variants && result.pricing.variants.length > 0 && (
-                    <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-                      {result.pricing.variants.map((variant: any) => {
-                        const badge = getFinishBadge(variant.label);
-                        const isSelected = selectedVariant?.label === variant.label;
-                        return (
-                          <button 
-                            key={variant.label} 
-                            onClick={() => setSelectedVariant(variant)} 
-                            className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-bold transition-all border ${
-                              isSelected 
-                                ? 'bg-white text-primary border-white shadow-lg' 
-                                : 'bg-white/10 text-white border-white/30'
-                            }`}
-                          >
-                            {badge && <span className={`inline-block w-1.5 h-1.5 rounded-full ${badge.color} mr-1.5`}></span>}
-                            {variant.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
                 </div>
-              </div>
+                
+                {/* Variants chips */}
+                {result.pricing.variants && result.pricing.variants.length > 0 && (
+                <div className="mt-4 flex gap-2 overflow-x-auto pb-2 no-scrollbar">
+                    {result.pricing.variants.map((variant: any) => {
+                    const isSelected = selectedVariant?.label === variant.label;
+                    return (
+                        <button 
+                        key={variant.label} 
+                        onClick={() => setSelectedVariant(variant)} 
+                        className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-bold transition-all border ${
+                            isSelected 
+                            ? 'bg-white text-black border-white' 
+                            : 'bg-white/10 text-white border-white/20'
+                        }`}
+                        >
+                        {variant.label}
+                        </button>
+                    );
+                    })}
+                </div>
+                )}
             </div>
           )}
           
-          {/* Bottom controls - glassmorphic panel */}
-          <div className="absolute bottom-0 left-0 right-0 pb-safe">
-            <div className="bg-gradient-to-t from-black/90 via-black/70 to-transparent backdrop-blur-xl pt-8 pb-6">
-              <div className="flex justify-center items-center px-6">
-                <div className="text-center text-white/60 text-xs">
-                  Trzymaj kartę stabilnie przed kamerą
-                </div>
-              </div>
+          {/* Bottom controls - Camera Style */}
+          {!result && (
+            <div className="absolute bottom-0 left-0 right-0 pb-safe pt-8 px-6 bg-gradient-to-t from-black/90 via-black/50 to-transparent z-20 flex justify-between items-center">
+               {/* Zoom Toggle */}
+               {zoomCaps ? (
+                   <button 
+                     onClick={() => setShowZoom(!showZoom)}
+                     className={`w-12 h-12 rounded-full flex items-center justify-center backdrop-blur-md border ${showZoom ? 'bg-white text-black border-white' : 'bg-black/30 text-white border-white/20'}`}
+                   >
+                      <span className="text-xs font-bold">1.0x</span>
+                   </button>
+               ) : <div className="w-12"></div>}
+
+               {/* SHUTTER BUTTON */}
+               <button 
+                 onClick={captureImage}
+                 disabled={analyzing}
+                 className="w-20 h-20 rounded-full border-4 border-white flex items-center justify-center relative group active:scale-95 transition-transform"
+               >
+                  <div className="w-16 h-16 rounded-full bg-white group-active:bg-gray-200 transition-colors"></div>
+               </button>
+
+               {/* Placeholder / Gallery (future) */}
+               <div className="w-12 h-12 rounded-full bg-black/30 backdrop-blur-md border border-white/20"></div>
             </div>
-          </div>
+          )}
         </>
       ) : (
         /* Desktop view - keep original layout */
