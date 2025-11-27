@@ -1392,6 +1392,22 @@ async def manual_search(body: dict = Body(default={})):
     det = DetectedData(name=name, number=str(number) if number is not None else None)
     try:
         cands = await provider.search(det)
+        
+        # Broad search to find alternatives (same name, different sets)
+        if len(cands) < 10 and name:
+            try:
+                broad_det = DetectedData(name=name, number=None)
+                broad_cands = await provider.search(broad_det)
+                
+                # Merge maintaining order but avoiding duplicates
+                seen_ids = {c.id for c in cands}
+                for bc in broad_cands:
+                    if bc.id not in seen_ids:
+                        cands.append(bc)
+                        seen_ids.add(bc.id)
+            except Exception:
+                pass # Ignore broad search errors
+                
     except Exception as e:
         return JSONResponse({"error": f"search failed: {e}"}, status_code=500)
 

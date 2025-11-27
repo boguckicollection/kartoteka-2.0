@@ -321,6 +321,30 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
   const failAudioRef = useRef<HTMLAudioElement>(null);
   const isMobile = useIsMobile();
 
+  // Audio warm-up for mobile
+  useEffect(() => {
+      const unlockAudio = () => {
+          [successAudioRef.current, failAudioRef.current].forEach(audio => {
+              if (audio) {
+                  audio.play().catch(() => {}).then(() => {
+                      audio.pause();
+                      audio.currentTime = 0;
+                  });
+              }
+          });
+          document.removeEventListener('click', unlockAudio);
+          document.removeEventListener('touchstart', unlockAudio);
+      };
+      
+      document.addEventListener('click', unlockAudio);
+      document.addEventListener('touchstart', unlockAudio);
+      
+      return () => {
+          document.removeEventListener('click', unlockAudio);
+          document.removeEventListener('touchstart', unlockAudio);
+      };
+  }, []);
+
   const { 
     analyzing, 
     status, 
@@ -501,12 +525,12 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
 
           {/* Result card - Modern design */}
           {result && (
-            <div className="absolute bottom-24 left-4 right-4 z-30 animate-slide-up bg-gray-900 rounded-3xl border border-white/20 shadow-2xl p-4 mb-20 overflow-hidden">
+            <div className="absolute bottom-24 left-4 right-4 z-30 animate-slide-up bg-gray-900 rounded-3xl border border-white/20 shadow-2xl p-4 mb-20">
                <button 
                  onClick={() => { setResult(null); setAnalyzing(false); }} 
-                 className="absolute top-2 right-4 p-2 text-gray-400 hover:text-white z-10"
+                 className="absolute top-0 right-0 p-4 text-gray-400 hover:text-white z-50"
                >
-                 <span className="material-symbols-outlined">close</span>
+                 <span className="material-symbols-outlined text-2xl bg-black/50 rounded-full p-1">close</span>
                </button>
 
                 <div className="flex gap-4">
@@ -520,7 +544,7 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
                       </div>
                     )}
                     
-                    <div className="flex-grow min-w-0 pt-1">
+                    <div className="flex-grow min-w-0 pt-1 pr-8">
                       <h3 className="text-white font-bold text-lg leading-tight truncate">
                         {result.card.name}
                       </h3>
@@ -528,10 +552,18 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
                         {result.card.set} <span className="text-primary">• #{result.card.number}</span>
                       </p>
                       <div className="flex items-baseline gap-2">
-                        <span className="text-white text-3xl font-black">
-                          {(selectedVariant?.price_pln_final || result.pricing.price_pln_final)?.toFixed(2)}
-                        </span>
-                        <span className="text-gray-400 text-sm">PLN</span>
+                        {(() => {
+                            const p = selectedVariant?.price_pln_final || result.pricing.price_pln_final;
+                            if (p != null) {
+                                return (
+                                    <>
+                                        <span className="text-white text-3xl font-black">{p.toFixed(2)}</span>
+                                        <span className="text-gray-400 text-sm">PLN</span>
+                                    </>
+                                );
+                            }
+                            return <span className="text-gray-500 text-lg italic">Brak wyceny</span>;
+                        })()}
                       </div>
                     </div>
                 </div>
