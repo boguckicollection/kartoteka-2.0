@@ -58,6 +58,7 @@ services:
     - SSL_CRT_FILE=/app/certs/dev.crt
     - SSL_KEY_FILE=/app/certs/dev.key
     - API_PROXY_TARGET=http://api:8000
+    - VITE_API_BASE_URL=/api
     ports:
       - "5173:5173"
     volumes:

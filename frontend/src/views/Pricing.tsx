@@ -31,7 +31,7 @@ const ManualEntryView = ({ onBack }: { onBack: () => void }) => {
     setSelectedVariant(null);
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || ''}/pricing/manual_search`, {
+      const response = await fetch(`/api/pricing/manual_search`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -318,7 +318,7 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
 
   const { analyzing, status, initStatus, videoRef, canvasRef, setZoom, zoomCaps } = useLivePricingScan({
     enabled: true,
-    apiBase: import.meta.env.VITE_API_BASE_URL || '',
+    apiBase: '/api',
     onResult: (data) => {
       setResult(data);
       if (data.pricing.variants && data.pricing.variants.length > 0) {
