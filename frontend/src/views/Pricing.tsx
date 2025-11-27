@@ -759,8 +759,8 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
         </>
       )}
 
-      <audio ref={successAudioRef} src="/beep.mp3" />
-      <audio ref={failAudioRef} src="/beep.mp3" />
+      <audio ref={successAudioRef} src="/done.mp3" preload="auto" />
+      <audio ref={failAudioRef} src="/beep.mp3" preload="auto" />
     </div>
   );
 };
