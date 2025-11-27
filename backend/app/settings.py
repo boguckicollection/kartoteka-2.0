@@ -39,6 +39,15 @@ class Settings(BaseSettings):
     # VAPID keys for push notifications
     vapid_public_key: str = ""
     vapid_private_key: str = ""
+    
+    # ntfy.sh configuration for rich mobile notifications
+    ntfy_enabled: bool = Field(default=False, alias="NTFY_ENABLED")
+    ntfy_url: str = Field(default="http://ntfy", alias="NTFY_URL")
+    ntfy_topic: str = Field(default="kartoteka-orders", alias="NTFY_TOPIC")
+    ntfy_priority: str = Field(default="urgent", alias="NTFY_PRIORITY")
+    ntfy_auth_token: str | None = Field(default=None, alias="NTFY_AUTH_TOKEN")
+    app_base_url: str = Field(default="http://localhost:5173", alias="APP_BASE_URL")
+    
     default_tax_id: int = Field(default=1)
     default_producer_id: int = Field(default=23)
     default_lang_id: int = Field(default=1)

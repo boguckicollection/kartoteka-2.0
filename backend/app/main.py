@@ -1033,24 +1033,39 @@ async def check_for_new_orders():
                     count = len(truly_new_orders)
                     print(f"🔔 {count} new order(s) detected: {[o.get('id') for o in truly_new_orders]}")
                     
-                    # Send web push notifications
-                    db = SessionLocal()
-                    try:
-                        subscriptions = db.query(PushSubscription).all()
-                        if subscriptions:
-                            for order in truly_new_orders:
-                                order_id = order.get("order_id") or order.get("id")
-                                payload = {
-                                    "title": "🔔 Nowe zamówienie!",
-                                    "body": f"Zamówienie #{order_id} oczekuje"
-                                }
-                                for sub in subscriptions:
-                                    try:
-                                        await send_web_push(json.loads(sub.subscription_json), payload)
-                                    except Exception as push_err:
-                                        print(f"Failed to send push to subscription: {push_err}")
-                    finally:
-                        db.close()
+                    # For each new order, fetch FULL details for rich notifications
+                    for order in truly_new_orders:
+                        order_id = order.get("order_id") or order.get("id")
+                        
+                        # Fetch full order details (with items, buyer info)
+                        try:
+                            detailed_order = await client.fetch_order_detail(order_id)
+                            if detailed_order:
+                                # Normalize to same format as list_orders endpoint
+                                # We need buyer info and items for rich notification
+                                normalized = await get_order_details(order_id)
+                                
+                                # Send Web Push (browser)
+                                db = SessionLocal()
+                                try:
+                                    subscriptions = db.query(PushSubscription).all()
+                                    if subscriptions:
+                                        payload = {
+                                            "title": "🔔 Nowe zamówienie!",
+                                            "body": f"Zamówienie #{order_id} - {normalized.get('items_count', 0)} kart za {normalized.get('total', 0)} zł"
+                                        }
+                                        for sub in subscriptions:
+                                            try:
+                                                await send_web_push(json.loads(sub.subscription_json), payload)
+                                            except Exception as push_err:
+                                                print(f"Failed to send web push: {push_err}")
+                                finally:
+                                    db.close()
+                                
+                                # Send ntfy notification with FULL details
+                                await send_rich_order_notification(normalized)
+                        except Exception as detail_err:
+                            print(f"⚠️  Could not fetch details for order #{order_id}: {detail_err}")
                 else:
                     print(f"ℹ️  Found {len(new_orders)} new order(s), but none with status 1 or 2")
                 
@@ -1086,6 +1101,105 @@ def write_last_order_id(order_id: int) -> None:
         LAST_ORDER_ID_FILE.write_text(str(order_id))
     except Exception as e:
         print(f"Error: Could not write last_order_id to file: {e}")
+
+
+async def send_rich_order_notification(order: dict) -> None:
+    """
+    Send detailed order notification via ntfy with full customer data.
+    ONLY use with self-hosted ntfy server (GDPR compliant)!
+    
+    Notification includes:
+    - Customer name, email, phone
+    - Order value and item count
+    - Top 3 most expensive cards
+    - Status info with emoji
+    - Clickable actions (view order, accept order)
+    """
+    if not settings.ntfy_enabled:
+        return
+    
+    try:
+        # Extract order data
+        order_id = order.get("id")
+        items_count = order.get("items_count", 0)
+        total = float(order.get("total", 0))
+        
+        # Customer info
+        buyer = order.get("buyer", {})
+        user = order.get("user", {})
+        customer_name = f"{buyer.get('firstname', '')} {buyer.get('lastname', '')}".strip()
+        if not customer_name:
+            customer_name = user.get("email", "Klient").split("@")[0]
+        
+        email = buyer.get("email") or user.get("email", "")
+        phone = buyer.get("phone", "")
+        
+        # Top 3 most expensive items
+        items = order.get("items", [])
+        top_items = sorted(
+            items, 
+            key=lambda x: float(x.get("price", 0)) * int(x.get("quantity", 1)), 
+            reverse=True
+        )[:3]
+        
+        top_cards_text = "\n".join([
+            f"• {item.get('name', 'Unknown')} ({item.get('quantity', 1)}x) - {float(item.get('price', 0)) * int(item.get('quantity', 1)):.2f} zł"
+            for item in top_items
+        ]) if top_items else "Brak szczegółów"
+        
+        # Status info
+        status = order.get("status", {})
+        status_name = status.get("name", "Nieznany")
+        status_id = status.get("id")
+        status_icon = "🆕" if str(status_id) == "1" else "📦"
+        
+        # Build rich notification message
+        message = f"""📊 Szczegóły zamówienia:
+
+👤 Klient: {customer_name}
+📧 Email: {email}
+{"📱 Tel: " + phone if phone else "📱 Tel: brak"}
+📍 Status: {status_name}
+
+💳 Wartość: {total:.2f} zł
+📦 Ilość kart: {items_count}
+
+🏆 Najdroższe karty:
+{top_cards_text}
+
+⏰ Data: {order.get('date', 'brak')}
+"""
+        
+        # Prepare ntfy headers
+        headers = {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Title": f"{status_icon} Zamówienie #{order_id} - {customer_name}",
+            "Priority": settings.ntfy_priority,
+            "Tags": "rotating_light,money_with_wings,shopping_cart",
+            "Click": f"{settings.app_base_url}/#/orders?open={order_id}",
+            "Actions": f"view, Zobacz szczegóły, {settings.app_base_url}/#/orders?open={order_id}; http, Przyjmij zamówienie, {settings.app_base_url}/api/orders/{order_id}/status, method=PUT, body={{\"status_id\": 2}}"
+        }
+        
+        if settings.ntfy_auth_token:
+            headers["Authorization"] = f"Bearer {settings.ntfy_auth_token}"
+        
+        # Send via ntfy
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                f"{settings.ntfy_url}/{settings.ntfy_topic}",
+                headers=headers,
+                content=message.encode("utf-8")
+            )
+            
+            if response.status_code == 200:
+                print(f"📱 Sent ntfy notification for order #{order_id}")
+            else:
+                print(f"⚠️  ntfy notification failed: {response.status_code} - {response.text}")
+                
+    except Exception as e:
+        print(f"❌ Error sending ntfy notification: {e}")
+        import traceback
+        traceback.print_exc()
 
 # In-memory timestamp of last product sync
 _last_products_sync_ts: float | None = None

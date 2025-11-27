@@ -89,3 +89,5 @@ frontend/certs/
 # Optional - Keep example files, exclude actual configs
 !.env.example
 !backend/.env.example
+storage/ntfy-config/
+storage/ntfy-cache/
