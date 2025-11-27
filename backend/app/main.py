@@ -1502,8 +1502,10 @@ async def estimate_from_image(body: PricingImageRequest):
         return await manual_search(body={"name": name, "number": number})
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"Error in estimate_from_image: {e}")
-        return JSONResponse({"error": "Wewnętrzny błąd serwera"}, status_code=500)
+        return JSONResponse({"error": f"Internal Server Error: {str(e)}"}, status_code=500)
     finally:
         db.close()
 
