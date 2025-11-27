@@ -1,3 +1,32 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Scan overlay animations */
+@keyframes slide-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out;
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 40px rgba(0, 255, 0, 0.8);
+  }
+}
+
+.overlay-stable {
+  animation: pulse-glow 1s infinite;
+}

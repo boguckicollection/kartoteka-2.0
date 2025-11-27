@@ -464,6 +464,97 @@ export default function ScanView({ session, preview, loading, analyzing, status,
     }
   };
 
+  // Canvas overlay rendering (real-time) - NEW!
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+  
+  useEffect(() => {
+    if (!overlayCanvasRef.current || !videoRef) return;
+    
+    const canvas = overlayCanvasRef.current;
+    const video = (videoRef as any).current;
+    if (!video) return;
+    
+    let rafId: number;
+    
+    const drawOverlay = () => {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      
+      // Match canvas size to video
+      if (video.videoWidth && video.videoHeight) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+      }
+      
+      // Clear canvas
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Draw overlay box if available
+      if (result?.overlay) {
+        const { x, y, w, h } = result.overlay;
+        const quality = qualityLive || 0;
+        
+        // Color based on quality
+        const color = quality > 0.7 ? '#00ff00' : 
+                      quality > 0.55 ? '#ffff00' : '#ff0000';
+        
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 4;
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = color;
+        
+        // Draw main box
+        const boxX = x * canvas.width;
+        const boxY = y * canvas.height;
+        const boxW = w * canvas.width;
+        const boxH = h * canvas.height;
+        
+        ctx.strokeRect(boxX, boxY, boxW, boxH);
+        
+        // Draw corner brackets for visual effect
+        const cornerLen = 25;
+        ctx.lineWidth = 6;
+        ctx.lineCap = 'round';
+        
+        // Top-left
+        ctx.beginPath();
+        ctx.moveTo(boxX, boxY + cornerLen);
+        ctx.lineTo(boxX, boxY);
+        ctx.lineTo(boxX + cornerLen, boxY);
+        ctx.stroke();
+        
+        // Top-right
+        ctx.beginPath();
+        ctx.moveTo(boxX + boxW - cornerLen, boxY);
+        ctx.lineTo(boxX + boxW, boxY);
+        ctx.lineTo(boxX + boxW, boxY + cornerLen);
+        ctx.stroke();
+        
+        // Bottom-left
+        ctx.beginPath();
+        ctx.moveTo(boxX, boxY + boxH - cornerLen);
+        ctx.lineTo(boxX, boxY + boxH);
+        ctx.lineTo(boxX + cornerLen, boxY + boxH);
+        ctx.stroke();
+        
+        // Bottom-right
+        ctx.beginPath();
+        ctx.moveTo(boxX + boxW - cornerLen, boxY + boxH);
+        ctx.lineTo(boxX + boxW, boxY + boxH);
+        ctx.lineTo(boxX + boxW, boxY + boxH - cornerLen);
+        ctx.stroke();
+      }
+      
+      rafId = requestAnimationFrame(drawOverlay);
+    };
+    
+    rafId = requestAnimationFrame(drawOverlay);
+    
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [result, qualityLive, videoRef]);
+
 return (
     <div className="font-display">
       <header className="flex items-center justify-between whitespace-nowrap border-b border-gray-800 px-2 md:px-6 py-3">
@@ -599,18 +690,7 @@ return (
               {isAndroid ? (
                 <div className="relative w-full aspect-[63/88] bg-gray-900 rounded-lg overflow-hidden">
                   <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover"></video>
-                  <canvas className="absolute inset-0 w-full h-full"></canvas>
-                  {result?.overlay && (
-                    <div
-                      className="absolute border-2 border-green-500"
-                      style={{
-                        left: `${result.overlay.x * 100}%`,
-                        top: `${result.overlay.y * 100}%`,
-                        width: `${result.overlay.w * 100}%`,
-                        height: `${result.overlay.h * 100}%`,
-                      }}
-                    ></div>
-                  )}
+                  <canvas ref={overlayCanvasRef} className="absolute inset-0 w-full h-full pointer-events-none"></canvas>
                   {analyzing && 
                     <>
                       <div className="scan-line" />
@@ -622,8 +702,63 @@ return (
                       </div>
                     </>
                   }
-                  {status && <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white text-center p-2 text-sm">{status}</div>}
+                  {/* Top status bar */}
+                  {status && <div className="absolute top-0 left-0 right-0 bg-black/60 backdrop-blur-sm text-white text-center py-2 px-4 text-sm font-medium">
+                    {status}
+                    {qualityLive && (
+                      <span className="ml-2 text-xs opacity-75">
+                        (Jakość: {(qualityLive * 100).toFixed(0)}%)
+                      </span>
+                    )}
+                  </div>}
+                  
                   {initStatus && <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-75 text-white text-lg">{initStatus}</div>}
+                  
+                  {/* Bottom card preview (when result available) */}
+                  {scanResult && scanResult.candidates && scanResult.candidates.length > 0 && (
+                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/80 to-transparent backdrop-blur-md p-4 animate-slide-up">
+                      <div className="flex items-center gap-3">
+                        {/* Card thumbnail */}
+                        {scanResult.candidates[0]?.image && (
+                          <img 
+                            src={scanResult.candidates[0].image} 
+                            alt={scanResult.detected?.name || 'Card'}
+                            className="w-16 h-auto rounded-lg shadow-lg border-2 border-primary/50"
+                          />
+                        )}
+                        
+                        {/* Card info */}
+                        <div className="flex-grow">
+                          <h3 className="text-white font-bold text-base leading-tight">
+                            {scanResult.detected?.name || scanResult.candidates[0]?.name || 'Unknown'}
+                          </h3>
+                          <p className="text-gray-300 text-xs mt-0.5">
+                            {scanResult.detected?.set || scanResult.candidates[0]?.set || 'Unknown Set'}
+                            {(scanResult.detected?.number || scanResult.candidates[0]?.number) && (
+                              <span className="text-primary font-semibold ml-1">
+                                • #{scanResult.detected?.number || scanResult.candidates[0]?.number}
+                              </span>
+                            )}
+                          </p>
+                          {scanResult.detected?.price_pln_final && (
+                            <div className="text-primary text-xl font-bold mt-1">
+                              {scanResult.detected.price_pln_final.toFixed(2)} PLN
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Confirm button */}
+                        <button 
+                          onClick={() => {
+                            // Scroll to form or trigger onConfirm
+                          }}
+                          className="px-4 py-2 bg-primary hover:bg-primary/90 text-white font-bold rounded-lg shadow-lg transition-colors whitespace-nowrap text-sm"
+                        >
+                          Potwierdź
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {zoomCaps && setZoom && (
                     <div className="absolute top-2 left-2 right-2 flex items-center gap-2">
