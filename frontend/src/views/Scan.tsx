@@ -561,6 +561,7 @@ return (
         <div className="flex items-center gap-3 text-white">
           <span className="material-symbols-outlined text-primary">qr_code_scanner</span>
           <h2 className="text-lg font-bold">Skanowanie kart</h2>
+          <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded-full border border-green-500/30">v2.0 HD</span>
         </div>
         <div className="flex gap-2">
           {isAndroid && onEndSession && (
