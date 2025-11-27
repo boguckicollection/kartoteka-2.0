@@ -688,7 +688,20 @@ return (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="lg:col-span-1 flex flex-col items-center gap-3">
               {isAndroid ? (
-                <div className="relative w-full aspect-[63/88] bg-gray-900 rounded-lg overflow-hidden">
+                <div 
+                  className="fixed inset-0 z-50 bg-black md:relative md:w-full md:aspect-[63/88] md:rounded-lg md:overflow-hidden"
+                  onClick={(e) => {
+                    // Tap to resume if paused
+                    if (result && scanResult) {
+                      // User tapped - could be to resume or interact
+                      // Don't interfere with button clicks
+                      const target = e.target as HTMLElement;
+                      if (!target.closest('button')) {
+                        // Tapped on video area - show hint to use confirm button
+                      }
+                    }
+                  }}
+                >
                   <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover"></video>
                   <canvas ref={overlayCanvasRef} className="absolute inset-0 w-full h-full pointer-events-none"></canvas>
                   {analyzing && 
@@ -760,8 +773,46 @@ return (
                     </div>
                   )}
 
+                  {/* Controls bar - bottom left/right */}
+                  <div className="absolute bottom-20 left-0 right-0 flex justify-between items-end px-6 pb-4">
+                    {/* Left controls */}
+                    <div className="flex flex-col gap-3">
+                      {torchSupported && onToggleTorch && (
+                        <button
+                          onClick={onToggleTorch}
+                          className={`p-4 rounded-full ${torchOn ? 'bg-yellow-500' : 'bg-gray-800/80'} backdrop-blur-sm text-white shadow-lg transition-all hover:scale-110`}
+                          title="Latarka"
+                        >
+                          <span className="material-symbols-outlined text-2xl">
+                            {torchOn ? 'flashlight_on' : 'flashlight_off'}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                    
+                    {/* Center - Manual capture button */}
+                    <div className="flex flex-col items-center gap-2">
+                      {onForceCommit && (
+                        <button
+                          onClick={onForceCommit}
+                          disabled={analyzing}
+                          className="p-5 rounded-full bg-primary/90 backdrop-blur-sm text-white shadow-2xl transition-all hover:scale-110 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed border-4 border-white/30"
+                          title="Zrób zdjęcie"
+                        >
+                          <span className="material-symbols-outlined text-3xl">photo_camera</span>
+                        </button>
+                      )}
+                      <span className="text-white text-xs font-medium opacity-75">Dotknij aby przechwycić</span>
+                    </div>
+                    
+                    {/* Right controls - placeholder for balance */}
+                    <div className="w-16"></div>
+                  </div>
+                  
+                  {/* Zoom slider - top */}
                   {zoomCaps && setZoom && (
-                    <div className="absolute top-2 left-2 right-2 flex items-center gap-2">
+                    <div className="absolute top-16 left-6 right-6 bg-black/50 backdrop-blur-sm rounded-full px-4 py-3 flex items-center gap-3">
+                      <span className="material-symbols-outlined text-white text-sm">zoom_out</span>
                       <input
                         type="range"
                         min={zoomCaps.min}
@@ -769,18 +820,10 @@ return (
                         step={zoomCaps.step}
                         defaultValue={1}
                         onChange={(e) => setZoom(parseFloat(e.target.value))}
-                        className="flex-grow"
+                        className="flex-grow h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
                       />
+                      <span className="material-symbols-outlined text-white text-sm">zoom_in</span>
                     </div>
-                  )}
-
-                  {torchSupported && onToggleTorch && (
-                    <button
-                      onClick={onToggleTorch}
-                      className={`absolute bottom-2 right-2 p-2 rounded-full ${torchOn ? 'bg-yellow-500' : 'bg-gray-700'} text-white`}
-                    >
-                      <span className="material-symbols-outlined">flashlight_on</span>
-                    </button>
                   )}
 
                   {tapFocusSupported && onTapToFocus && focusPt && (

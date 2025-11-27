@@ -209,10 +209,10 @@ export function useLiveScan({ enabled, apiBase, sessionId, onResult, intervalMs 
               if (isCard && qv!=null && qv < MIN_Q){
                 blockedByQuality = true
                 if (qv < WARN_Q) {
-                  setStatus('Jakość zbyt niska — doświetl scenę')
+                  setStatus('💡 Zbyt ciemno — włącz latarkę lub doświetl')
                   setScanState(ScanState.DETECTED)
                 } else {
-                  setStatus('Słaba jakość — zbliż kartę lub ustabilizuj')
+                  setStatus('📐 Zbliż kartę lub ustabilizuj aparat')
                   setScanState(ScanState.DETECTED)
                 }
               }
@@ -309,10 +309,10 @@ export function useLiveScan({ enabled, apiBase, sessionId, onResult, intervalMs 
                       return newBoxes; // Don't accumulate more after commit
                     } else if (newBoxes.length >= 2) {
                       setScanState(ScanState.STABILIZING);
-                      setStatus(`Trzymaj stabilnie... (${newBoxes.length}/4)`);
+                      setStatus(`🎯 Świetnie! Trzymaj stabilnie... (${newBoxes.length}/4)`);
                     } else {
                       setScanState(ScanState.DETECTED);
-                      setStatus('Wykryto kartę - trzymaj stabilnie');
+                      setStatus('✨ Wykryto kartę — nie ruszaj aparatem');
                     }
                     
                     return newBoxes;
@@ -321,7 +321,7 @@ export function useLiveScan({ enabled, apiBase, sessionId, onResult, intervalMs 
               } else if (!isCard) {
                 // No card detected
                 setScanState(ScanState.SEARCHING);
-                setStatus('Szukam karty...');
+                setStatus('🔍 Skieruj aparat na kartę Pokémon');
                 setStabilityBoxes([]);
               }
               
