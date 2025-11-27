@@ -72,6 +72,22 @@ def extract_prices_from_payload(payload: Dict[str, Any], preferred_variant: Opti
     }
 
 
+def compute_price_pln(cardmarket_avg_eur: Optional[float]) -> Dict[str, Optional[float]]:
+    if not cardmarket_avg_eur:
+        return {"price_pln": None, "price_pln_final": None}
+    try:
+        rate = float(settings.eur_pln_rate)
+        base = float(cardmarket_avg_eur) * rate
+        final = base * float(settings.price_multiplier)
+        # Round to 2 decimals
+        return {
+            "price_pln": round(base, 2),
+            "price_pln_final": round(final, 2),
+        }
+    except Exception:
+        return {"price_pln": None, "price_pln_final": None}
+
+
 def list_variant_prices(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     prices = payload.get("prices") or {}
     cardmarket = prices.get("cardmarket") or payload.get("cardmarket") or {}
@@ -80,9 +96,7 @@ def list_variant_prices(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     def _emit(label: str, val: Optional[float], source: str, estimated: bool = False):
         if val is None:
             return
-        from .settings import settings as _s
-        from .pricing import compute_price_pln as _cpp
-        comp = _cpp(val)
+        comp = compute_price_pln(val)
         out.append({
             "label": label,
             "base_eur": val,
@@ -124,16 +138,3 @@ def list_variant_prices(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         seen.add(it["label"])
         uniq.append(it)
     return uniq
-
-
-def compute_price_pln(cardmarket_avg_eur: Optional[float]) -> Dict[str, Optional[float]]:
-    if not cardmarket_avg_eur:
-        return {"price_pln": None, "price_pln_final": None}
-    rate = float(settings.eur_pln_rate)
-    base = float(cardmarket_avg_eur) * rate
-    final = base * float(settings.price_multiplier)
-    # Round to 2 decimals
-    return {
-        "price_pln": round(base, 2),
-        "price_pln_final": round(final, 2),
-    }
