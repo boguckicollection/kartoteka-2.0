@@ -58,7 +58,15 @@ export function useLivePricingScan({ enabled, apiBase, onResult, onScan, onSound
 
     const start = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        // Request HD camera quality for better card recognition
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { 
+            facingMode: 'environment',
+            width: { ideal: 1920, min: 1280 },
+            height: { ideal: 1080, min: 720 },
+            aspectRatio: { ideal: 16/9 }
+          }
+        });
         if (aborted) return;
         videoNode.srcObject = stream;
         await videoNode.play();
@@ -128,7 +136,7 @@ export function useLivePricingScan({ enabled, apiBase, onResult, onScan, onSound
             const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             onScan();
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.92); // Higher quality for better OCR
 
             const probeRes = await fetch(`${apiBase}/scan/probe`, {
                 method: 'POST',
