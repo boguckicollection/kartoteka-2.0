@@ -500,7 +500,7 @@ export default function App() {
           tabs={[
             { key: 'dashboard', icon: 'monitoring', label: 'Statystyki' },
             { key: 'scan', icon: 'qr_code_scanner', label: 'Skanuj' },
-            { key: 'pricing', icon: 'sell', label: 'Wyceń' },
+            { key: 'pricing', icon: 'photo_camera', label: 'Wyceń' },
             { key: 'inventory', icon: 'inventory_2', label: 'Magazyn' },
             { key: 'storage', icon: 'warehouse', label: 'Lokalizacje'},
           ]}

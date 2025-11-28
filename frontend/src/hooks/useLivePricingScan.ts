@@ -69,7 +69,7 @@ export function useLivePricingScan({ enabled, apiBase, onResult, onScan, onSound
     
     setAnalyzing(true);
     setStatus('Przetwarzanie zdjęcia...');
-    onSound('success'); // Shutter sound effect
+    onSound('shutter'); // Shutter sound effect przy robieniu zdjęcia
 
     try {
       let blob: Blob | null = null;
@@ -112,12 +112,15 @@ export function useLivePricingScan({ enabled, apiBase, onResult, onScan, onSound
       if (priceRes.ok) {
           const priceData = await priceRes.json();
           onResultRef.current(priceData);
-          onSound('success');
+          onSound('success'); // Sukces tylko gdy znaleziono wynik
           setStatus('Sukces!');
+      } else if (priceRes.status === 404) {
+          setStatus('Nie znaleziono karty w bazie');
+          onSound('fail');
       } else {
           const errData = await priceRes.json();
           setStatus(errData.error || 'Nie rozpoznano karty');
-          onSound('fail');
+          onSound('fail'); // Fail gdy nie znaleziono
       }
 
     } catch (err) {
@@ -139,9 +142,9 @@ export function useLivePricingScan({ enabled, apiBase, onResult, onScan, onSound
         const stream = await navigator.mediaDevices.getUserMedia({ 
           video: { 
             facingMode: 'environment',
-            width: { ideal: 1920, min: 1280 },
-            height: { ideal: 1080, min: 720 },
-            aspectRatio: { ideal: 16/9 }
+            // Prefer 4K or Full HD for better OCR
+            width: { ideal: 3840, min: 1920 },
+            height: { ideal: 2160, min: 1080 }
           }
         });
         

@@ -1462,16 +1462,16 @@ async def manual_search(body: dict = Body(default={})):
                             "pln_final": computed_graded.get("price_pln_final")
                         }
 
-        # Prepare list of alternative candidates
+        # Prepare list of alternative candidates with fallbacks
         candidates_list = []
         for c in cands:
-            # Skip the current best match if needed, or include all
+            # Ensure all fields are populated from the candidate object
             candidates_list.append({
                 "id": c.id,
-                "name": c.name,
-                "set": c.set,
-                "number": c.number,
-                "image": c.image
+                "name": c.name or "Unknown Card",
+                "set": c.set or "Unknown Set",
+                "number": c.number or "?",
+                "image": c.image or None  # Frontend will handle missing images
             })
 
         return {
@@ -1509,8 +1509,8 @@ async def estimate_from_image(body: PricingImageRequest):
         # 1. Decode image from base64
         try:
             image_bytes = base64.b64decode(body.image.split(',')[1])
-        except (IndexError, base64.binascii.Error):
-            return JSONResponse({"error": "Nieprawidłowy format obrazu (base64)"}, status_code=400)
+        except Exception as e:
+            return JSONResponse({"error": f"Nieprawidłowy format obrazu (base64): {e}"}, status_code=400)
 
         # 2. Try Local OCR Pipeline first
         name, number = None, None
@@ -1519,6 +1519,7 @@ async def estimate_from_image(body: PricingImageRequest):
         try:
             detected_tuple = extract_name_number_from_bytes(image_bytes)
             detected_data = detected_tuple[0]
+            print(f"DEBUG: Local OCR raw result: {detected_data}")
             name = detected_data.get("name")
             number = detected_data.get("number")
         except Exception as e:
@@ -1528,10 +1529,14 @@ async def estimate_from_image(body: PricingImageRequest):
         if not name or not number:
             print("Local OCR insufficient, trying OpenAI Vision...")
             openai_data = extract_fields_with_openai_bytes(image_bytes)
+            print(f"DEBUG: OpenAI Vision result: {openai_data}")
+            
             if openai_data.get("name"):
                 name = openai_data.get("name")
             if openai_data.get("number"):
                 number = openai_data.get("number")
+
+        print(f"DEBUG: Final extraction result - Name: '{name}', Number: '{number}'")
 
         if not name and not number:
             return JSONResponse({"error": "Nie udało się odczytać nazwy ani numeru z karty (OCR + AI failed)"}, status_code=404)
