@@ -73,6 +73,7 @@ services:
   ntfy:
     image: binwiederhier/ntfy:latest
     container_name: kartoteka_ntfy
+    profiles: [ntfy]  # Only start if explicitly requested with --profile ntfy
     command:
       - serve
       - --config

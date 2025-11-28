@@ -56,39 +56,18 @@ def _call_openai_vision(b64: str) -> dict:
 
     prompt = (
         "You are an expert at analyzing Pokémon Trading Card Game cards. "
-        "Extract the following fields from the card image and return ONLY valid JSON:\n\n"
+        "Your task is to identify the card name, card number, set, rarity, energy type, and card type.\n\n"
         
         "IMPORTANT INSTRUCTIONS:\n"
-        "1. **Card Number & Set Symbol**: Look in the BOTTOM RIGHT corner of the card. "
-        "Older cards (pre-2003) often show the card number and set symbol ONLY in this corner. "
-        "The number format is usually 'XX/YYY' or just 'XX'. The set symbol is a small icon next to the number.\n"
+        "1. **Card Name**: Located at the top of the card.\n"
+        "2. **Card Number**: Look in the BOTTOM corner. Format is 'XX/YYY' or 'XX'. Return ONLY the numerator (XX).\n"
+        "3. **Set**: Look for a set symbol or code near the card number.\n"
+        "4. **Rarity**: Identify the rarity symbol (e.g., Circle for Common, Diamond for Uncommon, Star for Rare).\n"
+        "5. **Energy Type**: Determine the card's energy type (e.g., Grass, Fire, Water, Lightning, Psychic, Fighting, Darkness, Metal, Fairy, Dragon, Colorless).\n"
+        "6. **Card Type**: Specify if it's a 'Pokemon', 'Trainer', or 'Energy' card.\n\n"
         
-        "2. **Set Identification**: If you see a set symbol (icon) in the bottom right, DESCRIBE IT or map it to a set code:\n"
-        "   - Circle with '1' = Base Set (base1)\n"
-        "   - Jungle leaf = Jungle (jungle)\n"
-        "   - Fossil shell = Fossil (fossil)\n"
-        "   - 'R' = Team Rocket (base5)\n"
-        "   - Look for alphanumeric codes like 'SWSH10', 'SV1', 'XY', 'SM' in the bottom corners.\n"
-        
-        "3. **Card Name**: Located at the top. Be precise.\n"
-        
-        "4. **Energy Type**: Visible from the card's type icon or attack costs. "
-        "Values: Grass, Fire, Water, Lightning, Psychic, Fighting, Darkness, Metal, Fairy, Dragon, Colorless.\n"
-        
-        "5. **Rarity**: Look for a symbol in the bottom right corner after the card number:\n"
-        "   - Circle = Common\n"
-        "   - Diamond = Uncommon\n"
-        "   - Star = Rare\n"
-        "   - Other symbols may indicate special rarities\n"
-        
-        "6. **Language**: Detect from visible text (English, Polish, German, French, Japanese, etc.)\n"
-        
-        "7. **Variant/Finish**: Holo, Reverse Holo, Normal, Full Art, etc.\n"
-        
-        "8. **Condition**: Assess visible wear (Near Mint, Light Played, etc.)\n\n"
-        
-        "Return JSON with these exact keys: name, set, set_code, number, language, variant, condition, rarity, energy. "
-        "Use null for unknown values. Respond with JSON only, no explanation."
+        "Return JSON with these exact keys: name, number, set, rarity, energy, card_type. "
+        "Use null for unknown values. Respond with JSON only."
     )
 
     chat = client.chat.completions.create(
@@ -126,13 +105,14 @@ def _call_openai_vision(b64: str) -> dict:
     return {
         'name': _scalar(data.get('name')),
         'set': _scalar(data.get('set')),
-        'set_code': _scalar(data.get('set_code')),
         'number': _normalize_card_number(_scalar(data.get('number'))),
-        'language': _scalar(data.get('language')),
-        'variant': _scalar(data.get('variant')),
-        'condition': _scalar(data.get('condition')),
         'rarity': _scalar(data.get('rarity')),
         'energy': _scalar(data.get('energy')),
+        'card_type': _scalar(data.get('card_type')),
+        'set_code': None,
+        'language': None,
+        'variant': None,
+        'condition': None,
     }
 
 

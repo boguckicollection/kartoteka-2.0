@@ -22,8 +22,59 @@ const ManualEntryView = ({ onBack }: { onBack: () => void }) => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectedVariant, setSelectedVariant] = useState<any>(null);
+  const [collectionResults, setCollectionResults] = useState<any[]>([]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+    const handleCollectionUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        setLoading(true);
+        setError('');
+        setCollectionResults([]);
+        setResult(null);
+
+        try {
+            // Convert to base64
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = async () => {
+                const base64Image = reader.result as string;
+                
+                try {
+                    const res = await fetch(`/api/pricing/analyze_collection`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ image: base64Image })
+                    });
+                    
+                    if (!res.ok) {
+                        const err = await res.json();
+                        throw new Error(err.error || 'Collection analysis failed');
+                    }
+                    
+                    const data = await res.json();
+                    setCollectionResults(data.results || []);
+                    
+                    if (data.results && data.results.length === 0) {
+                        setError('Nie znaleziono żadnych kart na zdjęciu.');
+                    }
+                } catch (err: any) {
+                    setError(err.message || 'Wystąpił błąd podczas analizy zdjęcia.');
+                } finally {
+                    setLoading(false);
+                }
+            };
+            reader.onerror = () => {
+                setError('Błąd odczytu pliku.');
+                setLoading(false);
+            };
+        } catch (err) {
+            setError('Nieoczekiwany błąd.');
+            setLoading(false);
+        }
+    };
+
+    const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
@@ -127,6 +178,31 @@ const ManualEntryView = ({ onBack }: { onBack: () => void }) => {
                     </span>
                 ) : 'Wyceń kartę'}
             </button>
+            
+            <div className="relative flex items-center gap-2 my-2">
+                <div className="h-px bg-gray-700 flex-grow"></div>
+                <span className="text-xs text-gray-500 font-medium uppercase">LUB</span>
+                <div className="h-px bg-gray-700 flex-grow"></div>
+            </div>
+            
+            <label className="cursor-pointer group relative overflow-hidden p-3 rounded-lg bg-gray-900 border border-gray-700 hover:border-primary transition-colors text-center block">
+                <input 
+                    type="file" 
+                    accept="image/*" 
+                    className="hidden" 
+                    onChange={handleCollectionUpload}
+                    disabled={loading}
+                />
+                <span className="flex items-center justify-center gap-2 text-gray-400 group-hover:text-white transition-colors text-sm lg:text-base font-medium">
+                    <span className="material-symbols-outlined">add_photo_alternate</span>
+                    Załaduj zdjęcie kolekcji (Beta)
+                </span>
+                {loading && (
+                    <div className="absolute inset-0 bg-black/60 flex items-center justify-center backdrop-blur-sm">
+                        <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                    </div>
+                )}
+            </label>
             </form>
         </div>
       </div>
@@ -849,7 +925,60 @@ const LiveScanView = ({ onBack }: { onBack: () => void }) => {
               )}
             </div>
 
-            {result && (
+        {collectionResults.length > 0 && (
+            <div className="space-y-4">
+                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                    <span className="material-symbols-outlined text-green-400">photo_library</span>
+                    Wyniki analizy kolekcji ({collectionResults.length})
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {collectionResults.map((item) => (
+                        <div key={item.id} className="bg-gray-800/80 rounded-xl p-3 border border-gray-700 flex gap-3 items-start">
+                            {/* Crop Image */}
+                            <div className="w-20 h-28 flex-shrink-0 bg-black/50 rounded-lg overflow-hidden border border-gray-600">
+                                <img src={item.crop_image} alt="Crop" className="w-full h-full object-contain" />
+                            </div>
+                            
+                            {/* Details */}
+                            <div className="flex-grow min-w-0">
+                                {item.card ? (
+                                    <>
+                                        <h4 className="font-bold text-sm text-white truncate">{item.card.name}</h4>
+                                        <div className="flex gap-2 my-1">
+                                            <span className="text-[10px] px-1.5 py-0.5 bg-primary/20 text-primary rounded border border-primary/30">
+                                                {item.card.set}
+                                            </span>
+                                            <span className="text-[10px] px-1.5 py-0.5 bg-blue-500/20 text-blue-300 rounded border border-blue-500/30">
+                                                #{item.card.number}
+                                            </span>
+                                        </div>
+                                        {item.pricing ? (
+                                            <div className="mt-2">
+                                                <p className="text-xs text-gray-400">Cena rynkowa:</p>
+                                                <p className="text-lg font-bold text-green-400">
+                                                    {item.pricing.price_pln_final?.toFixed(2)} PLN
+                                                </p>
+                                            </div>
+                                        ) : (
+                                            <p className="text-xs text-gray-500 mt-2 italic">Brak wyceny</p>
+                                        )}
+                                    </>
+                                ) : (
+                                    <div className="h-full flex flex-col justify-center">
+                                        <p className="text-sm text-red-400 font-medium">Nie rozpoznano karty</p>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            Odczytano: {item.detected.name || '?'} {item.detected.number ? '#' + item.detected.number : ''}
+                                        </p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        )}
+
+        {result && (
               <div className="w-full max-w-md mt-4">
                 <div className="bg-gradient-to-b from-gray-800/50 via-gray-900/45 to-gray-800/50 
                               backdrop-blur-2xl backdrop-saturate-150

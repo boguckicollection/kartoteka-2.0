@@ -1553,6 +1553,85 @@ async def estimate_from_image(body: PricingImageRequest):
         db.close()
 
 
+@app.post("/pricing/analyze_collection")
+async def analyze_collection(body: PricingImageRequest):
+    """
+    Analyzes an image containing MULTIPLE cards.
+    Returns a list of detected cards with their estimated pricing.
+    """
+    db = SessionLocal()
+    try:
+        import base64
+        from .analysis.pipeline import detect_multiple_cards_roi_bytes, extract_name_number_from_bytes
+        
+        # 1. Decode image
+        try:
+            image_bytes = base64.b64decode(body.image.split(',')[1])
+        except Exception as e:
+            return JSONResponse({"error": f"Invalid base64 image: {e}"}, status_code=400)
+
+        # 2. Detect multiple ROIs
+        crops = detect_multiple_cards_roi_bytes(image_bytes)
+        if not crops:
+            return JSONResponse({"error": "Nie wykryto żadnych kart na zdjęciu"}, status_code=404)
+
+        results = []
+        
+        # 3. Process each crop
+        for i, (roi, crop_bytes) in enumerate(crops):
+            try:
+                # Try Local OCR first
+                detected_tuple = extract_name_number_from_bytes(crop_bytes)
+                detected_data = detected_tuple[0]
+                name = detected_data.get("name")
+                number = detected_data.get("number")
+                
+                # If local OCR fails, maybe try OpenAI (optional - skipping for speed/cost in batch mode for now)
+                # To enable OpenAI for collection, uncomment below (WARNING: slow and costly for many cards)
+                # if not name or not number:
+                #     from .vision import extract_fields_with_openai_bytes
+                #     openai_data = extract_fields_with_openai_bytes(crop_bytes)
+                #     name = openai_data.get("name") or name
+                #     number = openai_data.get("number") or number
+
+                if name or number:
+                    # Get pricing
+                    search_res = await manual_search(body={"name": name, "number": number})
+                    
+                    pricing_data = None
+                    card_data = None
+                    
+                    if isinstance(search_res, dict):
+                        pricing_data = search_res.get("pricing")
+                        card_data = search_res.get("card")
+                    elif isinstance(search_res, JSONResponse):
+                        # Handle error response from manual_search gracefully
+                        pass
+
+                    # Encode crop to base64 for frontend display
+                    crop_b64 = "data:image/jpeg;base64," + base64.b64encode(crop_bytes).decode('ascii')
+
+                    results.append({
+                        "id": i,
+                        "crop_image": crop_b64,
+                        "detected": {"name": name, "number": number},
+                        "card": card_data,
+                        "pricing": pricing_data,
+                        "roi": roi # (x, y, w, h) normalized
+                    })
+            except Exception as e:
+                print(f"Error processing crop {i}: {e}")
+                continue
+
+        return {"results": results, "count": len(results)}
+
+    except Exception as e:
+        print(f"Error in analyze_collection: {e}")
+        return JSONResponse({"error": f"Collection analysis failed: {str(e)}"}, status_code=500)
+    finally:
+        db.close()
+
+
 @app.get("/shoper/attributes")
 async def shoper_attributes():
     if not settings.shoper_base_url or not settings.shoper_access_token:

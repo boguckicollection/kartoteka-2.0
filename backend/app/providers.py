@@ -212,15 +212,29 @@ class RapidAPITCGGOProvider(CardProvider):
             images = c.get("images") or {}
             image_url = images.get("small") or images.get("large") or c.get("imageUrl")
 
+            # Score basic similarity
             score = 0.0
             if detected.name and name:
                 score = fuzz.token_set_ratio(detected.name, name) / 100.0
+            
+            # Boost for exact number match
             if detected.number and number and str(detected.number) == str(number):
-                score += 0.15
-            if detected.set and set_name and detected.set.lower() in set_name.lower():
-                score += 0.1
+                score += 0.3  # Increased boost for number match
+            
+            # Boost for set name hints
+            if detected.set and set_name:
+                # Check for partial match (e.g. "Scarlet & Violet" in "Scarlet & Violet - Paldea Evolved")
+                if detected.set.lower() in set_name.lower() or set_name.lower() in detected.set.lower():
+                    score += 0.2
+            
+            # Boost for set code hints (Strong signal)
             if detected.set_code and set_code and str(detected.set_code).lower() == str(set_code).lower():
-                score += 0.1
+                score += 0.3
+
+            # Penalize if number exists in detected but doesn't match candidate
+            if detected.number and number and str(detected.number) != str(number):
+                score -= 0.2
+
             score = max(0.0, min(1.0, score))
 
             cid = c.get("id") or c.get("tcgid") or c.get("slug") or name or "unknown"

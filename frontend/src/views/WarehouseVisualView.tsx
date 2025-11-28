@@ -156,7 +156,7 @@ const BoxCard: React.FC<BoxCardProps> = ({ boxKey, boxData, index, onClick }) =>
       </div>
 
       {/* Rzędy PIONOWE */}
-      <div className="flex justify-center gap-3 mb-4">
+      <div className="flex flex-wrap justify-center gap-3 mb-4">
         {sortedRows.map(([rowNum, row], idx) => (
           <VerticalRowBar
             key={rowNum}
@@ -379,16 +379,16 @@ const WarehouseVisualView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const occupancyPercent = (summary.total_occupancy * 100).toFixed(2);
 
   return (
-    <div className="p-4 md:p-6 max-w-7xl mx-auto pb-24">
+    <div className="p-2 sm:p-4 md:p-6 max-w-7xl mx-auto pb-24">
       {/* Header */}
       <div className="flex items-center justify-between mb-6 animate-fade-in">
         <div className="flex items-center gap-3">
           <div className="w-12 h-12 flex items-center justify-center bg-gradient-to-br from-cyan-500/20 to-blue-600/20 rounded-xl border border-cyan-500/30">
             <span className="material-symbols-outlined text-3xl text-cyan-400">warehouse</span>
           </div>
-          <div>
-            <h1 className="text-2xl md:text-3xl font-bold text-white">Wizualizacja Magazynu</h1>
-            <p className="text-sm text-gray-400">Podgląd kartonów z zapełnieniem w czasie rzeczywistym</p>
+           <div>
+            <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-white">Wizualizacja Magazynu</h1>
+            <p className="text-xs sm:text-sm text-gray-400">Podgląd kartonów z zapełnieniem w czasie rzeczywistym</p>
           </div>
         </div>
         <button 
@@ -405,18 +405,18 @@ const WarehouseVisualView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
           <span className="material-symbols-outlined text-cyan-400">analytics</span>
           Całkowite zapełnienie
         </h2>
-        <div className="grid grid-cols-3 gap-6 text-center mb-4">
+        <div className="grid grid-cols-3 gap-4 sm:gap-6 text-center mb-4">
           <div>
-            <div className="text-4xl font-bold text-green-400">{summary.total_used}</div>
-            <div className="text-sm text-gray-400 mt-1">Zajęte</div>
+            <div className="text-2xl sm:text-4xl font-bold text-green-400">{summary.total_used}</div>
+            <div className="text-xs sm:text-sm text-gray-400 mt-1">Zajęte</div>
           </div>
           <div>
-            <div className="text-4xl font-bold text-cyan-400">{summary.total_free}</div>
-            <div className="text-sm text-gray-400 mt-1">Wolne</div>
+            <div className="text-2xl sm:text-4xl font-bold text-cyan-400">{summary.total_free}</div>
+            <div className="text-xs sm:text-sm text-gray-400 mt-1">Wolne</div>
           </div>
           <div>
-            <div className="text-4xl font-bold text-white">{summary.total_capacity}</div>
-            <div className="text-sm text-gray-400 mt-1">Pojemność</div>
+            <div className="text-2xl sm:text-4xl font-bold text-white">{summary.total_capacity}</div>
+            <div className="text-xs sm:text-sm text-gray-400 mt-1">Pojemność</div>
           </div>
         </div>
         <div className="relative w-full h-6 bg-gray-700/50 rounded-full overflow-hidden backdrop-blur-sm">
@@ -429,7 +429,7 @@ const WarehouseVisualView: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       </div>
 
       {/* Boxes Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
         {sortedBoxes.map(([boxKey, box], idx) => (
           <BoxCard
             key={boxKey}

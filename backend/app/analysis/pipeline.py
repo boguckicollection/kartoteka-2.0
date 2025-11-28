@@ -426,6 +426,137 @@ def warp_card_from_bytes(raw: bytes, out_size: Tuple[int,int] = (840, 1176)) -> 
     return warped, (x,y,w,h)
 
 
+
+def detect_multiple_cards_roi_bytes(raw: bytes) -> list[Tuple[Tuple[float, float, float, float], bytes]]:
+    """Detect multiple card ROIs in an image.
+    
+    Returns a list of tuples: ((x,y,w,h) normalized, cropped_image_bytes)
+    """
+    try:
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return []
+        
+        # 1. Preprocessing for low quality images
+        h, w = img.shape[:2]
+        processed = img.copy()
+        
+        # Upscale if too small (width < 1000px)
+        if w < 1000:
+            scale = 1000 / w
+            processed = cv2.resize(processed, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        
+        gray = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+        
+        # CLAHE (Contrast Limited Adaptive Histogram Equalization) - crucial for bad lighting
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        gray = clahe.apply(gray)
+        
+        # Denoise
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # Edge detection with broader thresholds
+        edges = cv2.Canny(gray, 30, 200)
+        
+        # Dilate to connect broken edges
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
+        dilated = cv2.dilate(edges, kernel, iterations=2)
+        
+        # Find contours
+        cnts, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        results = []
+        ph, pw = processed.shape[:2] # Dimensions of processed image
+        
+        for c in cnts:
+            # Filter by area (at least 0.5% of image to avoid noise, but catch smaller cards in collection)
+            area = cv2.contourArea(c)
+            if area < (pw * ph * 0.005):
+                continue
+                
+            x, y, cw, ch = cv2.boundingRect(c)
+            
+            # Filter by aspect ratio (Pokemon cards are ~0.71 or 1.4)
+            aspect = float(cw) / ch
+            # Allow wider range for slightly tilted cards
+            if aspect < 0.5 or aspect > 2.2:
+                continue
+                
+            # Filter by absolute size
+            if cw < 50 or ch < 50:
+                continue
+
+            # Check solidity (card should be somewhat solid rectangle)
+            hull = cv2.convexHull(c)
+            hull_area = cv2.contourArea(hull)
+            if hull_area > 0:
+                solidity = float(area)/hull_area
+                if solidity < 0.7: # Ignore weird shapes
+                    continue
+
+            # Map coordinates back to original image if upscaled
+            orig_x = int(x * (w / pw))
+            orig_y = int(y * (h / ph))
+            orig_cw = int(cw * (w / pw))
+            orig_ch = int(ch * (h / ph))
+            
+            # Ensure bounds
+            orig_x = max(0, orig_x)
+            orig_y = max(0, orig_y)
+            orig_cw = min(w - orig_x, orig_cw)
+            orig_ch = min(h - orig_y, orig_ch)
+
+            # Crop from ORIGINAL image
+            crop = img[orig_y:orig_y+orig_ch, orig_x:orig_x+orig_cw]
+            success, encoded = cv2.imencode('.jpg', crop)
+            if not success:
+                continue
+                
+            # Normalize ROI relative to original dimensions
+            nx = float(orig_x) / w
+            ny = float(orig_y) / h
+            nw = float(orig_cw) / w
+            nh = float(orig_ch) / h
+            
+            results.append(((nx, ny, nw, nh), encoded.tobytes()))
+            
+        # Deduplicate overlapping rectangles (non-max suppression style)
+        # Sort by area descending
+        results.sort(key=lambda r: r[0][2] * r[0][3], reverse=True)
+        final_results = []
+        
+        for r in results:
+            roi1 = r[0]
+            overlap = False
+            for fr in final_results:
+                roi2 = fr[0]
+                # Calculate Intersection over Union (IoU) or Intersection over Area1
+                x_left = max(roi1[0], roi2[0])
+                y_top = max(roi1[1], roi2[1])
+                x_right = min(roi1[0] + roi1[2], roi2[0] + roi2[2])
+                y_bottom = min(roi1[1] + roi1[3], roi2[1] + roi2[3])
+                
+                if x_right > x_left and y_bottom > y_top:
+                    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+                    area1 = roi1[2] * roi1[3]
+                    # If huge overlap (>50% of smaller rect), treat as duplicate
+                    if intersection_area > 0.5 * area1:
+                        overlap = True
+                        break
+            if not overlap:
+                final_results.append(r)
+
+        # Final Sort: top-to-bottom, then left-to-right for display
+        # Use a tolerance for Y to group rows
+        final_results.sort(key=lambda r: (int(r[0][1] * 10), r[0][0]))
+        
+        return final_results
+    except Exception as e:
+        print(f"Multi-card detection failed: {e}")
+        return []
+
+
 def assess_quality(image_bgr: np.ndarray) -> Dict[str, float]:
     """Return simple quality metrics and overall score in 0..1.
     - sharpness via variance of Laplacian

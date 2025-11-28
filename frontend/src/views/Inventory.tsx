@@ -129,7 +129,8 @@ export default function InventoryView({ items, page, limit, hasNext, sort, order
             )}
           </button>
         </div>
-        <div className="overflow-auto rounded-xl border border-white/10">
+        {/* DESKTOP: Tabela */}
+        <div className="hidden md:block overflow-auto rounded-xl border border-white/10">
           <table className="w-full min-w-[680px] table-auto">
             <thead>
               <tr className="bg-[#111827] text-gray-200">
@@ -169,6 +170,33 @@ export default function InventoryView({ items, page, limit, hasNext, sort, order
             </tbody>
           </table>
         </div>
+
+        {/* MOBILE: Lista kart */}
+        <div className="md:hidden space-y-3">
+            {items.map(p => (
+                <div key={p.id} className="bg-gray-800/50 rounded-lg p-3 border border-gray-700 flex gap-3 items-start" onClick={() => handleProductClick(p)}>
+                    {/* Obrazek */}
+                    <div className="w-16 h-20 flex-shrink-0 bg-black/50 rounded overflow-hidden border border-gray-600">
+                        {p.image ? (
+                            <img src={p.image} alt={p.name} className="w-full h-full object-cover" />
+                        ) : (
+                            <div className="w-full h-full flex items-center justify-center text-gray-500 text-xs">brak</div>
+                        )}
+                    </div>
+                    
+                    {/* Detale */}
+                    <div className="flex-grow min-w-0">
+                        <h4 className="font-bold text-sm text-white truncate">{p.name}</h4>
+                        <p className="text-xs text-gray-400 mt-1">{p.category_name || 'Brak kategorii'}</p>
+                        <div className="flex items-center justify-between mt-2">
+                            <span className="text-base font-bold text-primary">{p.price ?? '0.00'} PLN</span>
+                            <span className="text-xs px-2 py-1 bg-gray-700 rounded text-gray-300">Stan: {p.stock ?? '0'}</span>
+                        </div>
+                    </div>
+                </div>
+            ))}
+        </div>
+
         <div className="flex items-center justify-between mt-4">
           <div className="text-gray-400 text-sm">Strona {page} • {items.length} pozycji • Na stronę: {localLimit}</div>
           <div className="flex gap-2">

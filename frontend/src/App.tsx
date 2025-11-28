@@ -502,7 +502,8 @@ export default function App() {
             { key: 'scan', icon: 'qr_code_scanner', label: 'Skanuj' },
             { key: 'pricing', icon: 'photo_camera', label: 'Wyceń' },
             { key: 'inventory', icon: 'inventory_2', label: 'Magazyn' },
-            { key: 'storage', icon: 'warehouse', label: 'Lokalizacje'},
+            { key: 'warehouse', icon: 'warehouse', label: 'Lokalizacje'},
+            { key: 'orders', icon: 'receipt_long', label: 'Zamówienia'}
           ]}
           active={tab}
           onChange={(k)=>{ setTab(k as any); if(k==='dashboard') loadStats(true); if(k==='inventory') loadProducts(); if(k==='pricing' && !pricingItems) loadPricing(); if(k === 'scan') { setShowSessionStart(true); setShowBatchScan(false); } }}
