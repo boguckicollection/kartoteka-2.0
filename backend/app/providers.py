@@ -210,7 +210,7 @@ class RapidAPITCGGOProvider(CardProvider):
             set_code = set_info.get("id") or set_info.get("code") or c.get("setCode")
             number = c.get("number")
             images = c.get("images") or {}
-            image_url = images.get("small") or images.get("large") or c.get("imageUrl")
+            image_url = images.get("small") or images.get("large") or c.get("imageUrl") or c.get("image")
 
             # Score basic similarity
             score = 0.0

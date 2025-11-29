@@ -1474,7 +1474,7 @@ async def build_shoper_payload(client: ShoperClient, scan: Scan, candidate: Opti
 
     # Build payload - start with minimal required fields
     payload: Dict[str, Any] = {
-        "category_id": int(category_id) if category_id is not None else 18,
+        "category_id": int(category_id) if category_id is not None else 38,
         "unit_id": int(settings.default_unit_id),
         "currency_id": 1,
         "translations": {

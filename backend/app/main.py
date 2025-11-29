@@ -24,11 +24,11 @@ from .pricing import extract_prices_from_payload, compute_price_pln, list_varian
 from .db import init_db, SessionLocal, Scan, ScanCandidate, Product, Fingerprint, Session, CardCatalog, InventoryItem, BatchScanItem
 from sqlalchemy import func
 from .db import Session as ScanSession
-from .shoper import ShoperClient, upsert_products, publish_scan_to_shoper, build_shoper_payload, _category_name_from_id, get_shoper_categories, _get_related_products_from_category
+from .shoper import ShoperClient, upsert_products, publish_scan_to_shoper, build_shoper_payload, _category_name_from_id, get_shoper_categories, _get_related_products_from_category, build_product_attributes_payload
 from rapidfuzz import fuzz
 from .attributes import map_detected_to_shoper_attributes, simplify_attributes, simplify_categories
 from .db import PushSubscription
-from .warehouse import get_storage_summary, get_next_free_location, NoFreeLocationError, location_to_index, parse_warehouse_code, get_used_indices
+from .warehouse import get_storage_summary, get_next_free_location, NoFreeLocationError, location_to_index, parse_warehouse_code, get_used_indices, get_next_free_location_for_batch
 from pywebpush import webpush, WebPushException
 import asyncio
 import re
@@ -4526,11 +4526,20 @@ async def stats():
         scans_ready = db.query(func.count(Scan.id)).filter(Scan.selected_candidate_id.isnot(None)).scalar() or 0
         scans_published = db.query(func.count(Scan.id)).filter(Scan.publish_status == "published").scalar() or 0
         total_products = db.query(func.count(Product.id)).scalar() or 0
-        # last 5 published scans with images
-        rows = db.query(Scan).filter(Scan.publish_status == "published").order_by(Scan.id.desc()).limit(5).all()
-        recent = []
-        for s in rows:
-            # Get image from selected candidate or first candidate
+        
+        # Recent activity: Combined Scans and BatchScanItems (published)
+        # Fetch top 10 from each to ensure we get the true top 10 combined
+        
+        # 1. Recent Scans
+        scan_rows = db.query(Scan).filter(Scan.publish_status == "published").order_by(Scan.id.desc()).limit(10).all()
+        
+        # 2. Recent Batch Items
+        batch_rows = db.query(BatchScanItem).filter(BatchScanItem.publish_status == "published").order_by(BatchScanItem.processed_at.desc()).limit(10).all()
+        
+        combined_recent = []
+        
+        # Process Scans
+        for s in scan_rows:
             image_url = None
             if s.selected_candidate_id:
                 cand = db.get(ScanCandidate, s.selected_candidate_id)
@@ -4540,19 +4549,19 @@ async def stats():
                 first_cand = db.query(ScanCandidate).filter(ScanCandidate.scan_id == s.id).first()
                 if first_cand:
                     image_url = first_cand.image
-            # Fallback to stored scan image
             if not image_url and s.stored_path:
                 image_url = f"/uploads/{Path(s.stored_path).name}"
             
-            # Get permalink from Product if published
             permalink = None
             if s.published_shoper_id:
                 product = db.query(Product).filter(Product.shoper_id == s.published_shoper_id).first()
                 if product:
                     permalink = product.permalink
             
-            recent.append({
+            combined_recent.append({
+                "type": "scan",
                 "id": s.id,
+                "date": s.created_at,
                 "created_at": s.created_at.isoformat(),
                 "name": s.detected_name,
                 "set": s.detected_set,
@@ -4562,8 +4571,49 @@ async def stats():
                 "price_pln_final": s.price_pln_final,
                 "permalink": permalink,
             })
+            
+        # Process Batch Items
+        for b in batch_rows:
+            image_url = None
+            if b.matched_image:
+                image_url = b.matched_image
+            elif b.stored_path:
+                image_url = f"/uploads/{Path(b.stored_path).name}"
+                
+            permalink = None
+            if b.published_shoper_id:
+                product = db.query(Product).filter(Product.shoper_id == b.published_shoper_id).first()
+                if product:
+                    permalink = product.permalink
+            
+            # Use processed_at or fallback to now if missing
+            date_val = b.processed_at or datetime.utcnow()
+            
+            combined_recent.append({
+                "type": "batch_item",
+                "id": b.id,
+                "date": date_val,
+                "created_at": date_val.isoformat(),
+                "name": b.matched_name or b.detected_name,
+                "set": b.matched_set or b.detected_set,
+                "number": b.matched_number or b.detected_number,
+                "priced": bool(b.price_pln_final is not None),
+                "image": image_url,
+                "price_pln_final": b.price_pln_final,
+                "permalink": permalink,
+            })
+            
+        # Sort by date descending and take top 10
+        combined_recent.sort(key=lambda x: x["date"], reverse=True)
+        recent = combined_recent[:10]
+        
+        # Remove raw date object before returning
+        for r in recent:
+            r.pop("date", None)
+
         # Augment with external API metrics if configured
         metrics = await _get_sales_metrics()
+
         sold_value_pln = metrics.get("sold_value_pln", 0.0)
         sold_count = metrics.get("sold_count", 0)
         users_count = metrics.get("users_count")
@@ -4918,7 +4968,7 @@ async def batch_analyze_next(batch_id: int):
                     starting_code = session.starting_warehouse_code
             
             try:
-                warehouse_code = get_next_free_location(db, starting_code=starting_code)
+                warehouse_code = get_next_free_location_for_batch(db, batch_id=batch.id, starting_code=starting_code)
                 next_item.warehouse_code = warehouse_code
             except Exception as e:
                 print(f"WARNING: Could not assign warehouse code: {e}")
@@ -5265,6 +5315,9 @@ async def batch_items(batch_id: int):
                 "detected_number": item.detected_number,
                 "detected_variant": item.detected_variant,
                 "detected_condition": item.detected_condition,
+                "detected_rarity": item.detected_rarity,
+                "detected_energy": item.detected_energy,
+                "detected_language": item.detected_language,
                 "matched_provider_id": item.matched_provider_id,
                 "matched_name": item.matched_name,
                 "matched_set": item.matched_set,
@@ -5273,6 +5326,17 @@ async def batch_items(batch_id: int):
                 "match_score": item.match_score,
                 "price_eur": item.price_eur,
                 "price_pln": item.price_pln,
+                "price_pln_final": item.price_pln_final,
+                "attr_language": item.attr_language,
+                "attr_condition": item.attr_condition,
+                "attr_finish": item.attr_finish,
+                "attr_rarity": item.attr_rarity,
+                "attr_energy": item.attr_energy,
+                "attr_card_type": item.attr_card_type,
+                "candidates": json_module.loads(item.candidates_json) if item.candidates_json else [],
+                "variants": json_module.loads(item.variants_json) if item.variants_json else None,
+                "duplicate_of_scan_id": item.duplicate_of_scan_id,
+                "duplicate_distance": item.duplicate_distance,
                 "fields_complete": item.fields_complete,
                 "fields_total": item.fields_total,
                 "fields_status": json_module.loads(item.fields_status) if item.fields_status else None,
@@ -5411,50 +5475,46 @@ async def batch_publish(batch_id: int, request: Request):
         async with httpx.AsyncClient(timeout=30) as http:
             for item in items:
                 try:
-                    # Build product data
-                    name = item.matched_name or item.detected_name or item.filename
+                    # Create temporary objects for builders
+                    temp_scan = Scan(
+                        detected_name=item.detected_name,
+                        detected_set=item.detected_set,
+                        detected_number=item.detected_number,
+                        detected_language=item.detected_language,
+                        detected_variant=item.detected_variant,
+                        detected_condition=item.detected_condition,
+                        detected_rarity=item.detected_rarity,
+                        detected_energy=item.detected_energy,
+                        price_pln_final=item.price_pln_final,
+                        price_pln=item.price_pln,
+                        stored_path=item.stored_path,
+                    )
                     
-                    # Calculate price
-                    price_pln = item.price_pln
-                    if not price_pln and item.price_eur:
-                        price_pln = round(item.price_eur * settings.eur_pln_rate * settings.price_multiplier, 2)
-                    if not price_pln:
-                        price_pln = 9.99  # Default price
+                    temp_candidate = None
+                    if item.matched_provider_id:
+                        temp_candidate = ScanCandidate(
+                            provider_id=item.matched_provider_id,
+                            name=item.matched_name,
+                            set=item.matched_set,
+                            number=item.matched_number,
+                            rarity=item.matched_rarity,
+                            image=item.matched_image,
+                        )
+
+                    # 1. Build attributes payload
+                    attributes_payload = await build_product_attributes_payload(client, temp_scan, temp_candidate)
                     
-                    product_data = {
-                        "translations": {
-                            settings.default_language_code: {
-                                "name": name,
-                                "active": "1",
-                            }
-                        },
-                        "stock": {
-                            "stock": 1,
-                            "price": f"{price_pln:.2f}",
-                        },
-                        "producer_id": 1,
-                    }
+                    # 2. Build product payload
+                    payload = await build_shoper_payload(client, temp_scan, temp_candidate)
                     
-                    if item.warehouse_code:
-                        product_data["code"] = item.warehouse_code
-                    
-                    # Try to determine category from matched_set
-                    if item.matched_set:
-                        # Try to find category by set name
-                        for cat in _CATEGORIES_FALLBACK:
-                            if cat["name"].lower() == item.matched_set.lower():
-                                product_data["category_id"] = cat["category_id"]
-                                break
-                    
-                    # Create product in Shoper via direct POST
                     if settings.publish_dry_run:
-                        # Dry run - simulate success
                         item.publish_status = "published"
                         item.published_shoper_id = 0
                         published.append({"id": item.id, "filename": item.filename, "shoper_id": 0, "dry_run": True})
                         continue
                     
-                    r = await http.post(products_url, json=product_data, headers=headers)
+                    # 3. Publish product
+                    r = await http.post(products_url, json=payload, headers=headers)
                     
                     if r.status_code in (200, 201):
                         response_json = r.json()
@@ -5472,14 +5532,39 @@ async def batch_publish(batch_id: int, request: Request):
                             item.published_shoper_id = product_id
                             published.append({"id": item.id, "filename": item.filename, "shoper_id": product_id})
                             
-                            # Upload image if available
-                            if item.matched_image:
+                            # 4. Set attributes
+                            if attributes_payload:
+                                await client.set_product_attributes(product_id, attributes_payload)
+                                
+                            # 5. Upload image
+                            image_to_upload = None
+                            if item.matched_image and item.matched_image.startswith("http"):
+                                image_to_upload = item.matched_image
+                            elif item.stored_path and Path(item.stored_path).is_file():
+                                image_to_upload = item.stored_path
+                                
+                            if image_to_upload:
                                 try:
-                                    img_result = await client.upload_product_image(product_id, item.matched_image, main=True)
-                                    if img_result.get("error"):
-                                        print(f"WARNING: Image upload failed for item {item.id}: {img_result.get('message')}")
+                                    await client.upload_product_image(product_id, str(image_to_upload), main=True)
                                 except Exception as img_e:
                                     print(f"WARNING: Image upload exception for item {item.id}: {img_e}")
+                            
+                            # 6. Set Related Products
+                            try:
+                                # Determine set_id from payload (category_id)
+                                category_id = payload.get("category_id")
+                                if not category_id and "categories" in payload and payload["categories"]:
+                                    category_id = payload["categories"][0]
+                                
+                                if category_id:
+                                    # Use existing helper to get related products from same category
+                                    related_ids = await _get_related_products_from_category(client, int(category_id), limit=10)
+                                    if related_ids:
+                                        # Use update_product to set related products (ShoperClient doesn't have set_product_related)
+                                        await client.update_product(product_id, {"related": related_ids})
+                            except Exception as rel_e:
+                                print(f"WARNING: Failed to set related products for item {item.id}: {rel_e}")
+
                         else:
                             raise Exception("No product_id in response")
                     else:

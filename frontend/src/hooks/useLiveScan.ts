@@ -99,11 +99,16 @@ export function useLiveScan({ enabled, apiBase, sessionId, onResult, intervalMs 
     }
 
     const isSecure = (window.isSecureContext === true) || ['localhost','127.0.0.1'].includes(location.hostname)
+    
+    if (!isSecure){ 
+      setInitStatus('Kamera wymaga połączenia HTTPS (nie działa po HTTP/Tailscale bez certyfikatu).')
+      return
+    }
+
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
       setInitStatus('Brak wsparcia kamery w tej przeglądarce')
       return
     }
-    if (!isSecure){ setInitStatus('Kamera wymaga HTTPS lub localhost') }
 
     let aborted = false
 

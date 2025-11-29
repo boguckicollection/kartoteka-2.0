@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from . import db as models
 from .settings import settings
@@ -174,14 +175,18 @@ def get_used_indices(db: Session, only_published: bool = True) -> set[int]:
     # Check Batch Scan Items - only published ones
     batch_query = db.query(models.BatchScanItem.warehouse_code).filter(models.BatchScanItem.warehouse_code.isnot(None))
     if only_published:
-        batch_query = batch_query.filter(models.BatchScanItem.publish_status == 'published')
+        # Check if published OR if we have a shoper ID (which implies publication)
+        batch_query = batch_query.filter(or_(
+            models.BatchScanItem.publish_status == 'published',
+            models.BatchScanItem.published_shoper_id.isnot(None)
+        ))
     _process_query(batch_query.all())
     
     return used_indices
 
-def get_next_free_location(db: Session, starting_code: str | None = None) -> str:
+def get_next_free_location(db: Session, starting_code: str | None = None, only_published: bool = True) -> str:
     """Finds the next available warehouse location code."""
-    used_indices = get_used_indices(db)
+    used_indices = get_used_indices(db, only_published=only_published)
     
     start_idx = 0
     if starting_code:
@@ -276,3 +281,52 @@ def get_storage_summary(db: Session) -> dict:
         "total_occupancy": total_used_with_virtual / total_capacity if total_capacity > 0 else 0,
         "boxes": occupancy_by_box,
     }
+
+
+def get_next_free_location_for_batch(db: Session, batch_id: int, starting_code: str | None = None) -> str:
+    """
+    Finds next free location, considering:
+    1. Permanently published items (Scan, Inventory, BatchScanItem with published status)
+    2. Items reserved by the CURRENT batch (even if not published yet)
+    Ignores unpublished items from OTHER batches (allows reusing abandoned codes).
+    """
+    # 1. Get base used indices (only published items from Scans, Inventory, Batches)
+    used_indices = get_used_indices(db, only_published=True)
+    
+    # 2. Add indices from the CURRENT batch (pending/processing/success) to avoid self-collision
+    # We query all items in this batch that have a code assigned
+    batch_items = db.query(models.BatchScanItem.warehouse_code).filter(
+        models.BatchScanItem.batch_id == batch_id,
+        models.BatchScanItem.warehouse_code.isnot(None)
+    ).all()
+    
+    for (code,) in batch_items:
+        if not code:
+            continue
+        # Split in case of multiple codes (though rare for batch items)
+        for single_code in code.split(';'):
+            idx = location_to_index(single_code)
+            if idx is not None:
+                used_indices.add(idx)
+            
+    # 3. Find next free slot
+    start_idx = 0
+    if starting_code:
+        parsed_idx = location_to_index(starting_code)
+        if parsed_idx is not None:
+            start_idx = parsed_idx
+    
+    idx = start_idx
+    while idx in used_indices:
+        idx += 1
+        
+    if idx >= max_capacity():
+        # Fallback: search from beginning if we ran out of space from starting point
+        for i in range(max_capacity()):
+            if i not in used_indices:
+                idx = i
+                break
+        else:
+            raise NoFreeLocationError("No free storage locations available.")
+
+    return generate_location(idx)
