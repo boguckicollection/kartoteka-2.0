@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import List, Optional
+import json
+import os
 import httpx
 from rapidfuzz import fuzz
 
@@ -109,8 +111,46 @@ class RapidAPITCGGOProvider(CardProvider):
 
     Config via settings: rapidapi_key, rapidapi_host, tcggo_base_url, tcggo_search_path.
     """
+    
+    _set_abbr_map = None
+
+    def _load_set_map(self):
+        if self.__class__._set_abbr_map is not None:
+            return
+
+        mapping = {}
+        try:
+            # Check likely locations
+            # 1. Current working directory
+            # 2. Relative to this file (backend/app/../../tcg_sets.json)
+            possible_paths = [
+                "tcg_sets.json",
+                os.path.join(os.path.dirname(__file__), "../../tcg_sets.json"),
+            ]
+            
+            found_path = None
+            for p in possible_paths:
+                if os.path.exists(p):
+                    found_path = p
+                    break
+            
+            if found_path:
+                with open(found_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    for group_sets in data.values():
+                        for s in group_sets:
+                            if "name" in s and "abbr" in s:
+                                mapping[s["name"]] = s["abbr"]
+                # print(f"DEBUG: Loaded {len(mapping)} set abbreviations from {found_path}")
+            else:
+                print("WARNING: tcg_sets.json not found for TCGGO provider")
+        except Exception as e:
+            print(f"ERROR: Failed to load tcg_sets.json: {e}")
+        
+        self.__class__._set_abbr_map = mapping
 
     def __init__(self):
+        self._load_set_map()
         self.key = settings.rapidapi_key
         self.host = settings.rapidapi_host
 
@@ -145,8 +185,17 @@ class RapidAPITCGGOProvider(CardProvider):
         async with httpx.AsyncClient(timeout=12) as client:
             # 1. First attempt: Precise search with name and number
             parts1 = [str(detected.name or '').strip(), str(detected.number or '').strip()]
-            if detected.set:
-                parts1.append(f"EPISODE:{str(detected.set).strip()}")
+            
+            search_set = detected.set
+            if search_set:
+                # Normalize set name if possible
+                if self._set_abbr_map and search_set in self._set_abbr_map:
+                    abbr = self._set_abbr_map[search_set]
+                    print(f"DEBUG: Normalized set '{search_set}' to '{abbr}'")
+                    search_set = abbr
+                
+                parts1.append(f"EPISODE:{str(search_set).strip()}")
+            
             search_q1 = " ".join([p for p in parts1 if p]).strip()
             
             print(f"DEBUG: TCGGO search query (attempt 1): '{search_q1}'")
