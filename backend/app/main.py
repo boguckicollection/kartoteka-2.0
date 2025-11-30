@@ -762,20 +762,7 @@ async def scan_frame(payload: FrameScanRequest):
 class StartSessionRequest(BaseModel):
     starting_warehouse_code: str | None = None
 
-@app.post("/sessions/start")
-def start_session(payload: StartSessionRequest | None = None):
-    """Starts a new session and returns its ID."""
-    db = SessionLocal()
-    try:
-        new_session = Session(
-            starting_warehouse_code=payload.starting_warehouse_code if payload else None
-        )
-        db.add(new_session)
-        db.commit()
-        db.refresh(new_session)
-        return {"session_id": new_session.id, "starting_warehouse_code": new_session.starting_warehouse_code}
-    finally:
-        db.close()
+
 
 
 @app.get("/sessions/recent")
@@ -1724,26 +1711,7 @@ async def get_shoper_product(product_id: int):
     return product
 
 
-@app.get("/products/{shoper_id}/locations")
-async def get_product_locations(shoper_id: int):
-    """
-    Returns all warehouse_codes for a given Shoper product ID.
-    It finds all scans linked to the product and returns their locations.
-    """
-    db = SessionLocal()
-    try:
-        # Find all scans that have been published with this shoper_id
-        scans = db.query(Scan).filter(Scan.published_shoper_id == shoper_id, Scan.warehouse_code.isnot(None)).all()
-        
-        if not scans:
-            return []
-            
-        # Return a list of unique warehouse codes
-        locations = sorted(list({s.warehouse_code for s in scans if s.warehouse_code}))
-        
-        return [{"warehouse_code": code} for code in locations]
-    finally:
-        db.close()
+
 
 
 async def _find_best_category_match_internal(name: str, threshold: int = 85) -> dict | None:
@@ -1782,41 +1750,7 @@ async def _find_best_category_match_internal(name: str, threshold: int = 85) -> 
     return None
 
 
-@app.post("/pricing/estimate")
-async def pricing_estimate(body: dict = Body(default={})):  # name, number, set or set_code optional
-    name = (body or {}).get('name')
-    number = (body or {}).get('number')
-    set_name = (body or {}).get('set')
-    set_code = (body or {}).get('set_code')
-    if not name and not number:
-        return JSONResponse({"error": "name or number required"}, status_code=400)
-    provider = get_provider()
-    # Build minimal detected object
-    det = DetectedData(name=name, number=str(number) if number is not None else None, set=set_name, set_code=set_code)
-    # Search and take best candidate
-    try:
-        cands = await provider.search(det)
-    except Exception as e:
-        return JSONResponse({"error": f"search failed: {e}"}, status_code=500)
-    if not cands:
-        return {"pricing": None, "note": "no candidates"}
-    cid = cands[0].id
-    try:
-        details = await provider.details(cid)
-        extracted = extract_prices_from_payload(details)
-        cm_avg = extracted.get("cardmarket_7d_average")
-        computed = compute_price_pln(cm_avg)
-        pricing_payload = {
-            "cardmarket_currency": extracted.get("cardmarket_currency"),
-            "cardmarket_7d_average": cm_avg,
-            "eur_pln_rate": float(settings.eur_pln_rate),
-            "multiplier": float(settings.price_multiplier),
-            "price_pln": computed.get("price_pln"),
-            "price_pln_final": computed.get("price_pln_final"),
-        }
-        return {"pricing": pricing_payload, "provider_id": cid}
-    except Exception as e:
-        return JSONResponse({"error": f"details failed: {e}"}, status_code=500)
+
 
 
 @app.get("/shoper/availability")
