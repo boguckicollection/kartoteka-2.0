@@ -1,14 +1,15 @@
 import json
 import os
 import traceback
+import asyncio
 from .shoper import ShoperClient
 from .settings import settings
 
 ROOT_CATEGORY_ID = 38  # ID dla "Karty Pokémon"
 
-def sync_shoper_categories():
+async def sync_shoper_categories_async():
     """
-    Synchronizuje kategorie z tcg_sets.json do Shopera.
+    Synchronizuje kategorie z tcg_sets.json do Shopera (Async).
     Tworzy strukturę: Karty Pokémon -> Era -> Set.
     """
     client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
@@ -33,7 +34,8 @@ def sync_shoper_categories():
 
     # 2. Pobierz istniejące kategorie
     print("Fetching existing categories from Shoper...")
-    existing_categories = client.get_all_categories()
+    # Use the new async method
+    existing_categories = await client.fetch_all_categories()
     
     existing_by_name = {}
     for cat in existing_categories:
@@ -64,16 +66,20 @@ def sync_shoper_categories():
                     }
                 }
             }
-            created_era = client.create_category(era_payload)
-            era_id = created_era.get("category_id")
-            if not era_id:
-                print(f"ERROR: Failed to create Era '{era}'. Response: {created_era}")
+            # Use async create
+            try:
+                created_era = await client.create_category_async(era_payload)
+                era_id = created_era.get("category_id") or created_era.get("id")
+                if not era_id:
+                    print(f"ERROR: Failed to create Era '{era}'. Response: {created_era}")
+                    continue
+                print(f"Era '{era}' created with ID: {era_id}")
+                existing_by_name[era] = {"category_id": era_id}
+            except Exception as e:
+                print(f"ERROR: Exception creating Era '{era}': {e}")
                 continue
-            print(f"Era '{era}' created with ID: {era_id}")
-            # Add newly created era to our lookup to avoid re-creating it if duplicated in json
-            existing_by_name[era] = {"category_id": era_id}
         else:
-            era_id = era_category.get('category_id')
+            era_id = era_category.get('category_id') or era_category.get("id")
             print(f"Era '{era}' already exists with ID: {era_id}")
 
         if not era_id:
@@ -99,16 +105,22 @@ def sync_shoper_categories():
                         }
                     }
                 }
-                created_set = client.create_category(set_payload)
-                set_id = created_set.get("category_id")
-                if not set_id:
-                    print(f"    ERROR: Failed to create Set '{set_name}'. Response: {created_set}")
-                    continue
-                print(f"    Set '{set_name}' created with ID: {set_id}")
-                # Add to lookup
-                existing_by_name[set_name] = {"category_id": set_id}
+                try:
+                    created_set = await client.create_category_async(set_payload)
+                    set_id = created_set.get("category_id") or created_set.get("id")
+                    if not set_id:
+                        print(f"    ERROR: Failed to create Set '{set_name}'. Response: {created_set}")
+                        continue
+                    print(f"    Set '{set_name}' created with ID: {set_id}")
+                    existing_by_name[set_name] = {"category_id": set_id}
+                except Exception as e:
+                    print(f"    ERROR: Exception creating Set '{set_name}': {e}")
             else:
                 print(f"    Set '{set_name}' already exists.")
 
     print("\nCategory synchronization complete.")
     return {"status": "completed"}
+
+def sync_shoper_categories():
+    """Wrapper for running async sync synchronously."""
+    return asyncio.run(sync_shoper_categories_async())
