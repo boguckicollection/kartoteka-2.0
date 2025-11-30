@@ -124,6 +124,7 @@ class RapidAPITCGGOProvider(CardProvider):
             # 1. Current working directory
             # 2. Relative to this file (backend/app/../../tcg_sets.json)
             possible_paths = [
+                "/app/tcg_sets.json",
                 "tcg_sets.json",
                 os.path.join(os.path.dirname(__file__), "../../tcg_sets.json"),
             ]
@@ -143,7 +144,7 @@ class RapidAPITCGGOProvider(CardProvider):
                                 mapping[s["name"]] = s["abbr"]
                 # print(f"DEBUG: Loaded {len(mapping)} set abbreviations from {found_path}")
             else:
-                print("WARNING: tcg_sets.json not found for TCGGO provider")
+                print(f"ERROR: tcg_sets.json not found for TCGGO provider. Checked paths: {possible_paths}")
         except Exception as e:
             print(f"ERROR: Failed to load tcg_sets.json: {e}")
         
@@ -182,71 +183,70 @@ class RapidAPITCGGOProvider(CardProvider):
             "x-rapidapi-key": self.key or "",
             "x-rapidapi-host": self.host,
         }
+
+        # Prepare set information
+        search_set = detected.set
+        # 1. Handle "null" string
+        if search_set and str(search_set).strip().lower() in ("null", "none"):
+            search_set = None
+
+        if search_set and self._set_abbr_map and search_set in self._set_abbr_map:
+            abbr = self._set_abbr_map[search_set]
+            print(f"DEBUG: Normalized set '{search_set}' to '{abbr}'")
+            search_set = abbr
+
+        # Define search tiers
+        attempts = []
+        
+        # Attempt 1: Specific (Name + Number + EPISODE:Set)
+        if search_set:
+            parts = [str(detected.name).strip()]
+            if detected.number:
+                parts.append(str(detected.number).strip())
+            parts.append(f"EPISODE:{str(search_set).strip()}")
+            attempts.append(("Attempt 1 (Specific)", " ".join(parts)))
+
+        # Attempt 2: Name + Number (without Set)
+        if detected.number:
+            parts = [str(detected.name).strip(), str(detected.number).strip()]
+            attempts.append(("Attempt 2 (Name + Number)", " ".join(parts)))
+
+        # Attempt 3: Broad (Name only)
+        attempts.append(("Attempt 3 (Broad)", str(detected.name).strip()))
+
+        cards = []
+        
         async with httpx.AsyncClient(timeout=12) as client:
-            # 1. First attempt: Precise search with name and number
-            parts1 = [str(detected.name or '').strip(), str(detected.number or '').strip()]
-            
-            search_set = detected.set
-            if search_set:
-                # Normalize set name if possible
-                if self._set_abbr_map and search_set in self._set_abbr_map:
-                    abbr = self._set_abbr_map[search_set]
-                    print(f"DEBUG: Normalized set '{search_set}' to '{abbr}'")
-                    search_set = abbr
-                
-                parts1.append(f"EPISODE:{str(search_set).strip()}")
-            
-            search_q1 = " ".join([p for p in parts1 if p]).strip()
-            
-            print(f"DEBUG: TCGGO search query (attempt 1): '{search_q1}'")
-            print(f"DEBUG: Detected data - name: '{detected.name}', number: '{detected.number}', set: '{detected.set}'")
-            
-            payload = None
-            if search_q1:
-                r1 = await client.get(
-                    f"{self.base_url}{self.search_search_path}",
-                    params={"search": search_q1, "sort": settings.tcggo_sort},
-                    headers=headers,
-                )
-                r1.raise_for_status()
-                payload = r1.json()
-                print(f"DEBUG: TCGGO returned {len(payload) if isinstance(payload, list) else len(payload.get('data', []))} results")
+            for label, query in attempts:
+                if not query:
+                    continue
+                    
+                print(f"DEBUG: Search {label}: '{query}'")
+                try:
+                    r = await client.get(
+                        f"{self.base_url}{self.search_search_path}",
+                        params={"search": query, "sort": settings.tcggo_sort},
+                        headers=headers,
+                    )
+                    r.raise_for_status()
+                    payload = r.json()
+                except Exception as e:
+                    print(f"DEBUG: Search {label} failed: {e}")
+                    continue
 
-            # Extract cards from payload
-            if isinstance(payload, list):
-                cards = payload
-            elif isinstance(payload, dict):
-                cards = payload.get("data") or payload.get("cards") or payload.get("results") or []
-            else:
-                cards = []
-
-            # 2. Second attempt: If first search yielded no results, try a broader search with just the name
-            if not cards and detected.name:
-                search_q2 = str(detected.name).strip()
-                print(f"DEBUG: First search returned no results, trying broader search: '{search_q2}'")
-                r2 = await client.get(
-                    f"{self.base_url}{self.search_search_path}",
-                    params={"search": search_q2, "sort": settings.tcggo_sort},
-                    headers=headers,
-                )
-                r2.raise_for_status()
-                payload = r2.json()
-                print(f"DEBUG: TCGGO broader search returned {len(payload) if isinstance(payload, list) else len(payload.get('data', []))} results")
-                # Re-extract cards
+                # Extract cards
+                current_cards = []
                 if isinstance(payload, list):
-                    cards = payload
+                    current_cards = payload
                 elif isinstance(payload, dict):
-                    cards = payload.get("data") or payload.get("cards") or payload.get("results") or []
+                    current_cards = payload.get("data") or payload.get("cards") or payload.get("results") or []
+                
+                if current_cards:
+                    print(f"DEBUG: Search {label} returned {len(current_cards)} results")
+                    cards = current_cards
+                    break
                 else:
-                    cards = []
-
-        # Try multiple shapes: {data: [...]}, {cards: [...]}, {results: [...]}, or top-level list
-        if isinstance(payload, list):
-            cards = payload
-        elif isinstance(payload, dict):
-            cards = payload.get("data") or payload.get("cards") or payload.get("results") or []
-        else:
-            cards = []
+                    print(f"DEBUG: Search {label} returned 0 results")
 
         results: List[Candidate] = []
         for c in cards or []:

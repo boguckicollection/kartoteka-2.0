@@ -226,6 +226,26 @@ class ShoperClient:
             raise ValueError("product_id is required")
         return self.put(f"products/{product_id}", json=data)
 
+    def get_all_categories(self):
+        """Pobiera wszystkie kategorie, obsługując paginację."""
+        all_categories = []
+        page = 1
+        while True:
+            response = self.get("categories", params={"page": page, "limit": 50})
+            categories_on_page = response.get("list", [])
+            if not categories_on_page:
+                break
+            all_categories.extend(categories_on_page)
+            if len(categories_on_page) < 50:
+                break
+            page += 1
+        return all_categories
+
+    def create_category(self, data):
+        """Tworzy nową kategorię."""
+        return self.post("categories", json=data)
+
+
     def update_product_stock(self, product_id, stock, warn_level=None):
         try:
             stock_int = int(float(stock))
