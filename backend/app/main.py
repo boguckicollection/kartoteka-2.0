@@ -243,30 +243,7 @@ def _product_image_url(row: Product) -> str | None:
     return None
 
 
-from . import shoper_sync
 
-app = FastAPI(title=settings.app_name)
-
-@app.post("/shoper/create-category-tree", status_code=200)
-def create_shoper_category_tree_sync():
-    """
-    Tworzy drzewo kategorii w Shoperze na podstawie tcg_sets.json.
-    Operacja jest synchroniczna - odpowiedź nadejdzie po zakończeniu.
-    """
-    print("Endpoint /shoper/create-category-tree called. Starting sync.")
-    try:
-        result = shoper_sync.sync_shoper_categories()
-        print("Sync finished.")
-        if "error" in result:
-             return JSONResponse(status_code=400, content=result)
-        return {"message": "Category tree creation process finished.", "result": result}
-    except Exception as e:
-        print("CRITICAL ERROR in /shoper/create-category-tree endpoint:")
-        print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Internal Server Error", "detail": str(e), "traceback": traceback.format_exc()},
-        )
 
 
 origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
@@ -1713,15 +1690,7 @@ async def shoper_categories():
     return out
 
 
-@app.post("/shoper/create-category-tree", status_code=201)
-async def create_shoper_category_tree(background_tasks: BackgroundTasks):
-    """
-    Tworzy drzewo kategorii w Shoperze na podstawie tcg_sets.json.
-    Operacja jest jednorazowa i uruchamiana w tle.
-    """
-    print("Endpoint /shoper/create-category-tree called. Starting sync in background.")
-    background_tasks.add_task(shoper_sync.sync_shoper_categories)
-    return {"message": "Category tree creation process started in the background. Check logs for progress."}
+
 
 
 @app.get("/shoper/languages")
