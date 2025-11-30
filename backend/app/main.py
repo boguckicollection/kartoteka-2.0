@@ -245,6 +245,8 @@ def _product_image_url(row: Product) -> str | None:
 
 
 
+app = FastAPI(title=settings.app_name)
+
 origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
