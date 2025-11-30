@@ -6,11 +6,62 @@ from .shoper import ShoperClient
 from .settings import settings
 
 ROOT_CATEGORY_ID = 38  # ID dla "Karty Pokémon"
+DEFAULT_ATTRIBUTE_GROUPS = [11, 12, 13, 14]
+
+def get_set_logo_url(set_code: str, era_name: str) -> str:
+    """
+    Constructs the official Pokemon TCG logo URL based on set code and era.
+    Logic tries to map internal codes to pokemon.com URL structure.
+    """
+    code = set_code.lower()
+    
+    # Map Era names to URL series segments
+    era_map = {
+        "scarlet & violet": "sv_series",
+        "sword & shield": "swsh_series",
+        "sun & moon": "sm_series",
+        "xy": "xy_series",
+        "black & white": "bw_series",
+    }
+    
+    series_segment = "sv_series" # Default fallback
+    for era_key, segment in era_map.items():
+        if era_key in era_name.lower():
+            series_segment = segment
+            break
+            
+    # Standard pattern: https://assets.pokemon.com/.../series/sv_series/sv01/sv01_logo_169_en.png
+    # But sometimes the filename differs slightly. We use the most common pattern.
+    return f"https://assets.pokemon.com/static-assets/content-assets/cms2/img/trading-card-game/series/{series_segment}/{code}/{code}_logo_169_en.png"
+
+def generate_description_html(set_name: str, set_code: str, era_name: str, logo_url: str) -> str:
+    """Generates the main HTML description with logo."""
+    return f"""<!-- ============== {set_name.upper()} ({set_code.upper()}) ============== -->
+<section id="{set_code.lower()}" class="tcg-category"><header class="tcg-header" style="display: flex; align-items: center; gap: 12px;"><img src="{logo_url}" alt="Pokémon TCG {set_name} logo" height="48" />
+<h2 style="margin: 0;">Pokémon TCG: <strong>{set_name}</strong></h2>
+</header><!-- Krótki opis -->
+<div class="short">
+<p><strong>{set_name}</strong> to zestaw z ery <strong>{era_name}</strong>. Odkryj nowe karty, mechaniki i unikalne ilustracje w świecie Pokémon TCG.</p>
+</div>
+</section>"""
+
+def generate_bottom_description_html(set_name: str, set_code: str, era_name: str) -> str:
+    """Generates the bottom HTML description with SEO content."""
+    return f"""<div class="long">
+<p><strong>{set_name}</strong> ({set_code.upper()}) to dodatek z serii <em>{era_name}</em>. Oferuje kolekcjonerom i graczom nowe możliwości budowania talii oraz poszerzania kolekcji o rzadkie okazy.</p>
+<ul>
+<li><strong>Oryginalne produkty:</strong> gwarancja autentyczności każdej karty.</li>
+<li><strong>Szeroki wybór:</strong> od kart Common po rzadkie wersje Illustration Rare i Special Illustration Rare.</li>
+<li><strong>Bezpieczna wysyłka:</strong> Twoje karty dotrą w nienaruszonym stanie.</li>
+</ul>
+<p>W <strong>Kartotece</strong> znajdziesz pełną ofertę singli z <strong>{set_name}</strong> – od <strong>commonów</strong> po najrzadsze chase’y. Każda karta jest <strong>dokładnie opisana</strong> i <strong>gotowa do wysyłki w 24–48h</strong>. Buduj talię, uzupełniaj binder i kolekcjonuj ulubione postacie!</p>
+</div>"""
 
 async def sync_shoper_categories_async():
     """
     Synchronizuje kategorie z tcg_sets.json do Shopera (Async).
     Tworzy strukturę: Karty Pokémon -> Era -> Set.
+    Dodaje opisy HTML, SEO i grupy atrybutów.
     """
     client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
 
@@ -124,14 +175,23 @@ async def sync_shoper_categories_async():
         era_id = None
         if not era_category:
             print(f"Era '{era}' not found. Creating...")
+            
+            # Basic info for Era description (Era usually doesn't have a specific set code, use generic logic)
+            era_logo_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Pok%C3%A9mon_Trading_Card_Game_logo.svg/2560px-Pok%C3%A9mon_Trading_Card_Game_logo.svg.png" # Generic fallback
+            
             era_payload = {
                 "parent_id": ROOT_CATEGORY_ID,
                 "translations": {
                     "pl_PL": {
                         "name": era,
                         "active": True,
+                        "description": f"""<div style="display:flex;align-items:center;gap:12px;"><img src="{era_logo_url}" height="48" alt="{era} logo"><h2>Era <strong>{era}</strong></h2></div><p>Odkryj karty z ery {era}.</p>""",
+                        "seo_title": f"Karty Pokémon Era {era} | Sklep Kartoteka",
+                        "seo_description": f"Oryginalne karty Pokémon z ery {era}. Największy wybór singli i zestawów.",
+                        "seo_keywords": f"pokemon tcg, {era}, karty pokemon, sklep pokemon",
                     }
-                }
+                },
+                "attribute_groups": DEFAULT_ATTRIBUTE_GROUPS
             }
             # Use async create
             try:
@@ -165,6 +225,8 @@ async def sync_shoper_categories_async():
         # Iteruj przez Sety w Erze
         for set_info in sets:
             set_name = set_info.get("name")
+            set_code = set_info.get("code", "").lower()
+            
             if not set_name:
                 continue
 
@@ -174,14 +236,26 @@ async def sync_shoper_categories_async():
             
             if not set_category:
                 print(f"    Set '{set_name}' not found. Creating under Era ID {era_id}...")
+                
+                # Generate rich content
+                logo_url = get_set_logo_url(set_code, era)
+                desc_html = generate_description_html(set_name, set_code, era, logo_url)
+                desc_bottom_html = generate_bottom_description_html(set_name, set_code, era)
+                
                 set_payload = {
                     "parent_id": int(era_id),
                     "translations": {
                         "pl_PL": {
                             "name": set_name,
                             "active": True,
+                            "description": desc_html,
+                            "description_bottom": desc_bottom_html,
+                            "seo_title": f"Pokémon TCG {set_name} ({set_code.upper()}) | Kartoteka.shop",
+                            "seo_description": f"Kup karty Pokémon z dodatku {set_name}. Gwarancja autentyczności, szybka wysyłka. Sprawdź naszą ofertę singli {set_name}!",
+                            "seo_keywords": f"pokemon {set_name}, {set_code}, karty pokemon {set_name}, {era}",
                         }
-                    }
+                    },
+                    "attribute_groups": DEFAULT_ATTRIBUTE_GROUPS
                 }
                 try:
                     created_set = await client.create_category_async(set_payload)
