@@ -17,3 +17,9 @@
 - **Paths:** USE ABSOLUTE PATHS for all file operations (Root: `/home/bogus/Skrypty/kartoteka-2.0`).
 - **Testing:** Verify changes with existing tests. Do not modify `tests/` unless necessary.
 - **Safety:** Read files before editing. Check for side effects.
+
+## Key Logic (Do Not Break)
+- **Card Analysis:** Uses "Combined Intelligence" (OpenAI Vision + Symbol Matcher + OCR). See `backend/app/analysis/pipeline.py`.
+- **Shoper Sync:** Category tree creation (`POST /shoper/create-category-tree`) uses `shoper_sync.py` with deduplication and rich content generation.
+- **Batch Scanning:** Warehouse codes are allocated per-batch (`get_next_free_location_for_batch`).
+- **Mobile:** Camera requires HTTPS context.
