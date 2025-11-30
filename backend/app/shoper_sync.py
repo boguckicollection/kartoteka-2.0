@@ -43,22 +43,73 @@ async def sync_shoper_categories_async():
         try:
             name = cat.get('translations', {}).get('pl_PL', {}).get('name')
             if name:
-                if name not in existing_by_name:
-                    existing_by_name[name] = []
-                existing_by_name[name].append(cat)
+                # Normalize name: strip whitespace
+                norm_name = name.strip()
+                if norm_name not in existing_by_name:
+                    existing_by_name[norm_name] = []
+                existing_by_name[norm_name].append(cat)
         except Exception:
             continue # Skip malformed category data
             
     print(f"Found {len(existing_categories)} existing categories, indexed {len(existing_by_name)} unique names.")
 
+    # Deduplication routine
+    deleted_count = 0
+    for name, cats in existing_by_name.items():
+        if len(cats) > 1:
+            # Group by parent_id
+            by_parent = {}
+            for cat in cats:
+                pid = cat.get("parent_id")
+                try:
+                    pid = int(pid) if pid is not None else 0
+                except (ValueError, TypeError):
+                    pid = 0
+                if pid not in by_parent:
+                    by_parent[pid] = []
+                by_parent[pid].append(cat)
+            
+            # Check for duplicates within same parent
+            for pid, duplicate_cats in by_parent.items():
+                if len(duplicate_cats) > 1:
+                    print(f"WARNING: Found {len(duplicate_cats)} duplicate categories for '{name}' (Parent ID: {pid}). Keeping oldest...")
+                    # Sort by ID (assuming lower ID is older)
+                    duplicate_cats.sort(key=lambda x: int(x.get("category_id") or x.get("id") or 999999999))
+                    # Keep first, delete others
+                    to_delete = duplicate_cats[1:]
+                    for del_cat in to_delete:
+                        del_id = int(del_cat.get("category_id") or del_cat.get("id"))
+                        print(f"  - Deleting duplicate category ID {del_id}...")
+                        try:
+                            success = await client.delete_category_async(del_id)
+                            if success:
+                                print(f"    SUCCESS: Deleted category {del_id}")
+                                deleted_count += 1
+                                # Remove from existing_by_name to avoid confusion later
+                                existing_by_name[name].remove(del_cat)
+                            else:
+                                print(f"    ERROR: Failed to delete category {del_id}")
+                        except Exception as e:
+                            print(f"    ERROR: Exception deleting category {del_id}: {e}")
+
+    if deleted_count > 0:
+        print(f"Cleanup complete. Deleted {deleted_count} duplicate categories.")
+
     def find_category(name: str, parent_id: int) -> dict | None:
         """Find a category by name and parent_id."""
-        candidates = existing_by_name.get(name, [])
+        candidates = existing_by_name.get(name.strip(), [])
         for cat in candidates:
             try:
                 # Shoper sometimes returns parent_id as string or int
                 pid = cat.get("parent_id")
-                if pid is not None and int(pid) == int(parent_id):
+                # Handle root category check (parent_id 0 or None)
+                pid_int = int(pid) if pid is not None else 0
+                
+                # Special logic for ROOT_CATEGORY_ID which is a parent itself, but its parent is 0/None?
+                # No, we are searching for children OF parent_id.
+                # So we check if cat.parent_id == parent_id
+                
+                if pid_int == int(parent_id):
                     return cat
             except (ValueError, TypeError):
                 continue

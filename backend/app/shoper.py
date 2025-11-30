@@ -79,6 +79,14 @@ class ShoperClient:
             r.raise_for_status()
             return r.json()
 
+    async def delete_category_async(self, category_id: int) -> bool:
+        """Delete a category (async)."""
+        url = f"{self.base_url}/categories/{category_id}"
+        headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.delete(url, headers=headers)
+            return r.status_code in (200, 204)
+
     async def fetch_products_page(self, page: int = 1, limit: int = 50) -> Dict[str, Any]:
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
         url = f"{self.base_url}{settings.shoper_products_path}"
