@@ -168,7 +168,7 @@ async def sync_shoper_categories_async():
 
     # 3. Iteruj przez Ery i Sety
     # Limit processing to only one era for testing if desired
-    TEST_ERA_NAME = "Scarlet & Violet"
+    TEST_ERA_NAME = "Mega Evolution"
     
     for era, sets in sets_data.items():
         # TEST MODE: Process ONLY the specific era
