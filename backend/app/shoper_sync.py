@@ -167,7 +167,14 @@ async def sync_shoper_categories_async():
         return None
 
     # 3. Iteruj przez Ery i Sety
+    # Limit processing to only one era for testing if desired
+    TEST_ERA_NAME = "Scarlet & Violet"
+    
     for era, sets in sets_data.items():
+        # TEST MODE: Process ONLY the specific era
+        if TEST_ERA_NAME and era != TEST_ERA_NAME:
+            continue
+            
         print(f"\nProcessing Era: {era}")
         
         # Sprawdź, czy Era istnieje (parent_id = ROOT_CATEGORY_ID)
