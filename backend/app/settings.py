@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     tcggo_search_path: str = Field(default="/cards")
     tcggo_search_search_path: str = Field(default="/cards/search")
     tcggo_sort: str = Field(default="episode_newest")
+    
+    # Pokemon TCG API (pokemontcg.io)
+    pokemontcg_io_api_key: str | None = Field(default=None, alias="POKEMONTCG_IO_API_KEY")
 
     # Duplicate detection (fingerprint) before Vision
     duplicate_check_enabled: bool = Field(default=True, alias="DUPLICATE_CHECK_ENABLED")
