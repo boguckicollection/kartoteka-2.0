@@ -56,6 +56,7 @@ type BatchItem = {
   fields_complete?: number;
   fields_total?: number;
   error_message?: string;
+  cardmarket_url?: string;
   publish_status?: string;
   candidates?: any[];
 };
@@ -796,23 +797,35 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
                   <div className="grid grid-cols-2 gap-3 pt-2">
                     <div>
                       <label className="text-xs text-gray-400">Cena PLN</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={selectedItem.price_pln_final || ''}
-                        onChange={(e) => setSelectedItem({ ...selectedItem, price_pln_final: parseFloat(e.target.value) || undefined })}
-                        className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                      />
+                      <div className="relative">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={selectedItem.price_pln_final || ''}
+                          onChange={(e) => setSelectedItem({ ...selectedItem, price_pln_final: parseFloat(e.target.value) || undefined })}
+                          className="w-full mt-1 pl-3 pr-10 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        />
+                        <button className="absolute inset-y-0 right-0 px-2 text-gray-400 hover:text-white">
+                          <span className="material-symbols-outlined text-base">refresh</span>
+                        </button>
+                      </div>
                     </div>
                     <div>
                       <label className="text-xs text-gray-400">Bazowa EUR</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={selectedItem.price_eur || ''}
-                        readOnly
-                        className="w-full mt-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-gray-400 cursor-not-allowed"
-                      />
+                      <div className="relative">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={selectedItem.price_eur || ''}
+                          readOnly
+                          className="w-full mt-1 pl-3 pr-10 py-2 bg-gray-900 border border-gray-700 rounded-lg text-gray-400 cursor-not-allowed"
+                        />
+                        {selectedItem.cardmarket_url && (
+                          <a href={selectedItem.cardmarket_url} target="_blank" rel="noopener noreferrer" className="absolute inset-y-0 right-0 px-2 flex items-center text-gray-400 hover:text-white">
+                            <span className="material-symbols-outlined text-base">open_in_new</span>
+                          </a>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>

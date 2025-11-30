@@ -286,6 +286,21 @@ class RapidAPITCGGOProvider(CardProvider):
 
             score = max(0.0, min(1.0, score))
 
+            # PENALTY: If we only matched by name (no number, no set hints confirmed), cap the score.
+            # This prevents "Pikachu" from auto-selecting the first result (usually latest promo)
+            # when we actually have no idea which Pikachu it is.
+            is_name_only_match = (
+                (not detected.number or str(detected.number) != str(number)) and 
+                (not detected.set or not set_name or detected.set.lower() not in set_name.lower()) and
+                (not detected.set_code or not set_code or str(detected.set_code).lower() != str(set_code).lower())
+            )
+            
+            if is_name_only_match:
+                # Cap at 0.45 so it's below the typical 0.5/0.6 auto-match threshold
+                score = min(score, 0.45)
+            
+            score = max(0.0, min(1.0, score))
+
             cid = c.get("id") or c.get("tcgid") or c.get("slug") or name or "unknown"
             results.append(
                 Candidate(

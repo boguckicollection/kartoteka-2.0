@@ -329,6 +329,7 @@ class BatchScanItem(Base):
     publish_status = Column(String(32), nullable=True)  # pending, published, failed
     published_shoper_id = Column(Integer, nullable=True)
     warehouse_code = Column(String(64), nullable=True)
+    cardmarket_url = Column(Text, nullable=True)
     
     batch = relationship("BatchScan", back_populates="items")
 
@@ -437,6 +438,7 @@ def init_db():
             ("attr_energy", "VARCHAR(16)"),
             ("attr_card_type", "VARCHAR(16)"),
             ("use_tcggo_image", "INTEGER DEFAULT 1"),
+            ("cardmarket_url", "TEXT"),
         ],
     }
 

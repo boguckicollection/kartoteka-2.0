@@ -241,7 +241,21 @@ def _product_image_url(row: Product) -> str | None:
     return None
 
 
+from . import shoper_sync
+
 app = FastAPI(title=settings.app_name)
+
+@app.post("/shoper/create-category-tree", status_code=201)
+def create_shoper_category_tree_sync():
+    """
+    Tworzy drzewo kategorii w Shoperze na podstawie tcg_sets.json.
+    Operacja jest synchroniczna - odpowiedź nadejdzie po zakończeniu.
+    """
+    print("Endpoint /shoper/create-category-tree called. Starting sync.")
+    result = shoper_sync.sync_shoper_categories()
+    print("Sync finished.")
+    return {"message": "Category tree creation process finished.", "result": result}
+
 
 origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 app.add_middleware(
@@ -1685,6 +1699,18 @@ async def shoper_categories():
     out = { 'items': simple }
     _tax_cache_set('categories', out)
     return out
+
+
+@app.post("/shoper/create-category-tree", status_code=201)
+async def create_shoper_category_tree(background_tasks: BackgroundTasks):
+    """
+    Tworzy drzewo kategorii w Shoperze na podstawie tcg_sets.json.
+    Operacja jest jednorazowa i uruchamiana w tle.
+    """
+    print("Endpoint /shoper/create-category-tree called. Starting sync in background.")
+    from . import shoper_sync
+    background_tasks.add_task(shoper_sync.sync_shoper_categories)
+    return {"message": "Category tree creation process started in the background. Check logs for progress."}
 
 
 @app.get("/shoper/languages")
@@ -5037,7 +5063,7 @@ async def batch_analyze_next(batch_id: int):
                 if details:
                     next_item.matched_set = details.get("episode", {}).get("name") or next_item.matched_set
                     next_item.matched_set_code = details.get("episode", {}).get("code") or next_item.matched_set_code
-                    next_item.matched_rarity = details.get("rarity") or next_item.matched_rarity
+                     next_item.matched_rarity = details.get("rarity") or next_item.matched_rarity
                     
                     # Extract energy from types list
                     types = details.get('types')
@@ -5045,6 +5071,11 @@ async def batch_analyze_next(batch_id: int):
                         next_item.detected_energy = types[0]
                     elif isinstance(types, str):
                         next_item.detected_energy = types
+                    
+                    # Extract Cardmarket URL
+                    cardmarket_data = details.get("cardmarket", {})
+                    if cardmarket_data and isinstance(cardmarket_data, dict):
+                        next_item.cardmarket_url = cardmarket_data.get("url")
             
             # === STEP 6: Pricing with Variants ===
             variants_data = []
