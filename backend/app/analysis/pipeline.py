@@ -40,27 +40,37 @@ def ocr_extract(image_path: str) -> Dict[str, Optional[str]]:
 
 
 def analyze_card(image_path: str) -> Dict[str, Optional[str]]:
-    """Combined extraction using OpenAI Vision and OCR fallback.
+    """Combined extraction using OpenAI Vision, Symbol Matching, and OCR fallback.
 
     Returns a dict with keys: name, number, total, set, set_code, language, variant, condition
     """
+    # Step 1: Primary analysis with OpenAI Vision
     data = extract_fields_with_openai(image_path)
-    # If number or set is missing, try OCR to fill number/total
-    if not data.get("number"):
-        oc = ocr_extract(image_path)
-        if oc.get("number"):
-            data["number"] = oc.get("number")
-            if oc.get("total"):
-                data["total"] = oc.get("total")
-    # If set is missing, try symbol matching (best-effort)
+
+    # Step 2: If set is missing, use local symbol matching as a specialist
     if not data.get("set"):
         try:
             match = identify_set_by_symbol(image_path)
             if match:
-                _, set_name = match
+                set_code, set_name = match
+                print(f"DEBUG: Symbol matcher overrode set. Found: {set_name} ({set_code})")
                 data["set"] = set_name
-        except Exception:
-            pass
+                data["set_code"] = set_code
+        except Exception as e:
+            print(f"DEBUG: Symbol matcher failed: {e}")
+
+    # Step 3: If number is missing (common with Vision hallucinations), use local OCR as a specialist
+    if not data.get("number"):
+        try:
+            ocr_data = ocr_extract(image_path)
+            if ocr_data.get("number"):
+                print(f"DEBUG: OCR overrode number. Found: {ocr_data.get('number')}")
+                data["number"] = ocr_data.get("number")
+                if ocr_data.get("total"):
+                    data["total"] = ocr_data.get("total")
+        except Exception as e:
+            print(f"DEBUG: OCR fallback failed: {e}")
+            
     return data
 
 
