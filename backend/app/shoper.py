@@ -32,6 +32,53 @@ class ShoperClient:
         self.base_url = base_url.rstrip("/")
         self.token = token
 
+    async def fetch_all_categories(self) -> List[Dict[str, Any]]:
+        """Fetch all categories handling pagination (async)."""
+        results: List[Dict[str, Any]] = []
+        page = 1
+        while True:
+            url = f"{self.base_url}/categories"
+            params = {"page": page, "limit": 50}
+            headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+            
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    r = await client.get(url, params=params, headers=headers)
+                    if r.status_code != 200:
+                        break
+                    data = r.json()
+                    
+                items = []
+                if isinstance(data, dict):
+                    items = data.get("list") or data.get("items") or []
+                    pages = int(data.get("pages") or 1)
+                elif isinstance(data, list):
+                    items = data
+                    pages = 1
+                else:
+                    pages = 1
+                    
+                if not items:
+                    break
+                    
+                results.extend(items)
+                
+                if page >= pages:
+                    break
+                page += 1
+            except Exception:
+                break
+        return results
+
+    async def create_category_async(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a category (async)."""
+        url = f"{self.base_url}/categories"
+        headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(url, json=payload, headers=headers)
+            r.raise_for_status()
+            return r.json()
+
     async def fetch_products_page(self, page: int = 1, limit: int = 50) -> Dict[str, Any]:
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
         url = f"{self.base_url}{settings.shoper_products_path}"
