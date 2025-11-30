@@ -247,6 +247,28 @@ def _product_image_url(row: Product) -> str | None:
 
 app = FastAPI(title=settings.app_name)
 
+@app.post("/shoper/create-category-tree", status_code=200)
+def create_shoper_category_tree_sync():
+    """
+    Tworzy drzewo kategorii w Shoperze na podstawie tcg_sets.json.
+    Operacja jest synchroniczna - odpowiedź nadejdzie po zakończeniu.
+    """
+    print("Endpoint /shoper/create-category-tree called. Starting sync.")
+    try:
+        from . import shoper_sync
+        result = shoper_sync.sync_shoper_categories()
+        print("Sync finished.")
+        if "error" in result:
+             return JSONResponse(status_code=400, content=result)
+        return {"message": "Category tree creation process finished.", "result": result}
+    except Exception as e:
+        print("CRITICAL ERROR in /shoper/create-category-tree endpoint:")
+        print(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Internal Server Error", "detail": str(e), "traceback": traceback.format_exc()},
+        )
+
 origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,

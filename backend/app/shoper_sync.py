@@ -129,39 +129,42 @@ ERA_TEMPLATES = {
 
 # --- LOGIC ---
 
-async def fetch_official_logos() -> Dict[str, str]:
+async def fetch_pokemontcg_io_sets() -> Dict[str, Dict[str, Any]]:
     """
-    Fetches the official expansion list from Pokemon.com API.
-    Returns a dict: { "Clean Set Name": "Full Image URL" }
+    Fetches all sets from api.pokemontcg.io V2.
+    Returns a dict mapping normalized set name -> set data (logo, release date, etc.)
     """
-    url = "https://www.pokemon.com/api/1/uk/expansions"
-    print(f"Fetching official logos from {url}...")
-    logos = {}
+    url = "https://api.pokemontcg.io/v2/sets"
+    headers = {"X-Api-Key": settings.pokemontcg_io_api_key} if settings.pokemontcg_io_api_key else {}
+    
+    print(f"Fetching sets from {url}...")
+    sets_map = {}
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url)
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
-                data = resp.json()
+                data = resp.json().get("data", [])
                 for item in data:
-                    # Clean title: "<em>Mega Evolution—Phantasmal Flames</em>" -> "Phantasmal Flames"
-                    raw_title = item.get("title", "")
-                    clean_title = raw_title.replace("<em>", "").replace("</em>", "").replace("&amp;", "&")
-                    
-                    # Remove prefixes like "Scarlet & Violet—" or "Mega Evolution—"
-                    if "—" in clean_title:
-                        clean_title = clean_title.split("—")[-1].strip()
-                    
-                    thumb = item.get("thumbnail")
-                    if clean_title and thumb:
-                        # Construct full URL
-                        full_url = f"https://www.pokemon.com{thumb}"
-                        logos[clean_title.lower()] = full_url
-                        # Also add with original spacing just in case
-                        logos[clean_title.lower().replace("  ", " ")] = full_url
-                print(f"Fetched {len(logos)} logos from official API.")
+                    name = item.get("name", "").strip()
+                    if name:
+                        sets_map[name.lower()] = {
+                            "logo_url": item.get("images", {}).get("logo"),
+                            "symbol_url": item.get("images", {}).get("symbol"),
+                            "release_date": item.get("releaseDate"),
+                            "total": item.get("printedTotal"),
+                            "series": item.get("series"),
+                            "code": item.get("id")
+                        }
+                print(f"Fetched {len(sets_map)} sets from pokemontcg.io API.")
+            else:
+                print(f"WARNING: API returned status {resp.status_code}: {resp.text}")
     except Exception as e:
-        print(f"WARNING: Failed to fetch official logos: {e}")
-    return logos
+        print(f"WARNING: Failed to fetch sets from pokemontcg.io: {e}")
+    return sets_map
+
+async def fetch_official_logos() -> Dict[str, str]:
+    """Deprecated: Use fetch_pokemontcg_io_sets instead."""
+    return {}
 
 async def upload_logo_to_shoper(client: ShoperClient, image_url: str, set_name: str) -> Optional[str]:
     """
@@ -209,11 +212,16 @@ async def upload_logo_to_shoper(client: ShoperClient, image_url: str, set_name: 
         print(f"Error processing logo for {set_name}: {e}")
         return None
 
-def generate_content(set_name: str, set_code: str, era_name: str, logo_url: str) -> Dict[str, str]:
+def generate_content(set_name: str, set_code: str, era_name: str, set_data: Dict[str, Any] | None) -> Dict[str, str]:
     """
-    Generates rich HTML content (description, bottom, SEO) using templates.
+    Generates rich HTML content using templates and API data.
     """
     key = set_name.lower().strip()
+    
+    # Extract data from API result
+    logo_url = set_data.get("logo_url") if set_data else None
+    release_date = set_data.get("release_date", "")
+    total_cards = set_data.get("total", "")
     
     # 1. Try exact match from predefined
     data = PREDEFINED_DESCRIPTIONS.get(key)
@@ -229,9 +237,13 @@ def generate_content(set_name: str, set_code: str, era_name: str, logo_url: str)
         
         tmpl = ERA_TEMPLATES[era_key]
         
+        # Enhanced description with API data
+        release_info = f" Wydany {release_date}." if release_date else ""
+        cards_info = f" Zawiera ponad {total_cards} kart." if total_cards else ""
+        
         data = {
-            "short": f"{set_name} to {tmpl['adjective']} set z ery {era_name}. Odkryj nowe karty, mechaniki i unikalne ilustracje w świecie Pokémon TCG.",
-            "long_intro": f"to dodatek z serii <em>{era_name}</em>. Oferuje kolekcjonerom i graczom nowe możliwości budowania talii oraz poszerzania kolekcji o rzadkie okazy.",
+            "short": f"{set_name} to {tmpl['adjective']} set z ery {era_name}.{release_info}{cards_info} Odkryj nowe karty, mechaniki i unikalne ilustracje w świecie Pokémon TCG.",
+            "long_intro": f"to dodatek z serii <em>{era_name}</em>{release_info}. Oferuje kolekcjonerom i graczom nowe możliwości budowania talii oraz poszerzania kolekcji o rzadkie okazy.",
             "features": tmpl['features'],
             "why_buy": [
                 "Gwarancja oryginalności",
@@ -285,8 +297,8 @@ async def sync_shoper_categories_async():
     """
     client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
     
-    # 0. Fetch official logos map
-    official_logos = await fetch_official_logos()
+    # 0. Fetch official set data from pokemontcg.io
+    api_sets = await fetch_pokemontcg_io_sets()
 
     # 1. Wczytaj tcg_sets.json
     sets_data = None
@@ -467,16 +479,11 @@ async def sync_shoper_categories_async():
             if not set_category:
                 print(f"    Set '{set_name}' not found. Creating under Era ID {era_id}...")
                 
-                # Resolve Logo URL
-                # 1. Try official API map
-                logo_url = official_logos.get(set_name.lower())
-                # 2. Fallback to generic generator if not in official map
-                if not logo_url:
-                     # Fallback logic logic from previous version or generic image
-                     logo_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Pok%C3%A9mon_Trading_Card_Game_logo.svg/2560px-Pok%C3%A9mon_Trading_Card_Game_logo.svg.png"
-
-                # Generate content
-                content = generate_content(set_name, set_code, era, logo_url)
+                # Fetch detailed data from API map
+                set_api_data = api_sets.get(set_name.lower())
+                
+                # Generate content using API data (logo, date, etc.)
+                content = generate_content(set_name, set_code, era, set_api_data)
                 
                 set_payload = {
                     "parent_id": int(era_id),
