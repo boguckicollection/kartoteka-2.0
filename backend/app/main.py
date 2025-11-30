@@ -1719,7 +1719,7 @@ async def create_shoper_category_tree(background_tasks: BackgroundTasks):
     Operacja jest jednorazowa i uruchamiana w tle.
     """
     print("Endpoint /shoper/create-category-tree called. Starting sync in background.")
-    from . import shoper_sync
+from .. import shoper_sync
     background_tasks.add_task(shoper_sync.sync_shoper_categories)
     return {"message": "Category tree creation process started in the background. Check logs for progress."}
 
