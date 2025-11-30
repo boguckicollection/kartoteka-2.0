@@ -223,8 +223,8 @@ def generate_content(set_name: str, set_code: str, era_name: str, set_data: Dict
     
     # Extract data from API result
     logo_url = set_data.get("logo_url") if set_data else None
-    release_date = set_data.get("release_date", "")
-    total_cards = set_data.get("total", "")
+    release_date = set_data.get("release_date", "") if set_data else ""
+    total_cards = set_data.get("total", "") if set_data else ""
     
     # 1. Try exact match from predefined
     data = PREDEFINED_DESCRIPTIONS.get(key)
