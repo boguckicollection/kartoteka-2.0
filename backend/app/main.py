@@ -1,5 +1,6 @@
 import traceback
 from fastapi import FastAPI, UploadFile, File, Query, Body, Form, Request, BackgroundTasks
+from .. import shoper_sync
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -1719,7 +1720,6 @@ async def create_shoper_category_tree(background_tasks: BackgroundTasks):
     Operacja jest jednorazowa i uruchamiana w tle.
     """
     print("Endpoint /shoper/create-category-tree called. Starting sync in background.")
-from .. import shoper_sync
     background_tasks.add_task(shoper_sync.sync_shoper_categories)
     return {"message": "Category tree creation process started in the background. Check logs for progress."}
 
