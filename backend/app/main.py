@@ -5074,7 +5074,7 @@ async def batch_analyze_next(batch_id: int):
                 if details:
                     next_item.matched_set = details.get("episode", {}).get("name") or next_item.matched_set
                     next_item.matched_set_code = details.get("episode", {}).get("code") or next_item.matched_set_code
-                     next_item.matched_rarity = details.get("rarity") or next_item.matched_rarity
+                    next_item.matched_rarity = details.get("rarity") or next_item.matched_rarity
                     
                     # Extract energy from types list
                     types = details.get('types')
