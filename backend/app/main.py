@@ -1,6 +1,6 @@
 import traceback
 from fastapi import FastAPI, UploadFile, File, Query, Body, Form, Request, BackgroundTasks
-from .. import shoper_sync
+from . import shoper_sync
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
