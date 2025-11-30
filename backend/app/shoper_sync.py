@@ -10,6 +10,7 @@ from .settings import settings
 
 ROOT_CATEGORY_ID = 38  # ID dla "Karty Pokémon"
 DEFAULT_ATTRIBUTE_GROUPS = [11, 12, 13, 14]
+GENERIC_LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Pok%C3%A9mon_Trading_Card_Game_logo.svg/2560px-Pok%C3%A9mon_Trading_Card_Game_logo.svg.png"
 
 # --- CONTENT CONFIGURATION ---
 
@@ -226,6 +227,10 @@ def generate_content(set_name: str, set_code: str, era_name: str, set_data: Dict
     release_date = set_data.get("release_date", "") if set_data else ""
     total_cards = set_data.get("total", "") if set_data else ""
     
+    # Fallback to generic logo if missing
+    if not logo_url:
+        logo_url = GENERIC_LOGO_URL
+
     # 1. Try exact match from predefined
     data = PREDEFINED_DESCRIPTIONS.get(key)
     
@@ -422,10 +427,11 @@ async def sync_shoper_categories_async():
             print(f"Era '{era}' not found. Creating...")
             
             # Basic info for Era description (Era usually doesn't have a specific set code, use generic logic)
-            era_logo_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Pok%C3%A9mon_Trading_Card_Game_logo.svg/2560px-Pok%C3%A9mon_Trading_Card_Game_logo.svg.png" # Generic fallback
+            era_logo_url = GENERIC_LOGO_URL
             
             era_payload = {
                 "parent_id": ROOT_CATEGORY_ID,
+                "active": 1,
                 "translations": {
                     "pl_PL": {
                         "name": era,
@@ -490,6 +496,7 @@ async def sync_shoper_categories_async():
                 
                 set_payload = {
                     "parent_id": int(era_id),
+                    "active": 1,
                     "translations": {
                         "pl_PL": {
                             "name": set_name,
