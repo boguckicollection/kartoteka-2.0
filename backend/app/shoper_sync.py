@@ -69,7 +69,10 @@ async def sync_shoper_categories_async():
             # Use async create
             try:
                 created_era = await client.create_category_async(era_payload)
-                era_id = created_era.get("category_id") or created_era.get("id")
+                if isinstance(created_era, int):
+                    era_id = created_era
+                else:
+                    era_id = created_era.get("category_id") or created_era.get("id")
                 if not era_id:
                     print(f"ERROR: Failed to create Era '{era}'. Response: {created_era}")
                     continue
@@ -107,7 +110,11 @@ async def sync_shoper_categories_async():
                 }
                 try:
                     created_set = await client.create_category_async(set_payload)
-                    set_id = created_set.get("category_id") or created_set.get("id")
+                    if isinstance(created_set, int):
+                        set_id = created_set
+                    else:
+                        set_id = created_set.get("category_id") or created_set.get("id")
+                    
                     if not set_id:
                         print(f"    ERROR: Failed to create Set '{set_name}'. Response: {created_set}")
                         continue
