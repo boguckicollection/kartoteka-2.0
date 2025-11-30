@@ -135,7 +135,10 @@ async def fetch_pokemontcg_io_sets() -> Dict[str, Dict[str, Any]]:
     Returns a dict mapping normalized set name -> set data (logo, release date, etc.)
     """
     url = "https://api.pokemontcg.io/v2/sets"
-    headers = {"X-Api-Key": settings.pokemontcg_io_api_key} if settings.pokemontcg_io_api_key else {}
+    
+    # Use os.getenv directly to bypass potential Settings caching issues
+    api_key = os.getenv("POKEMONTCG_IO_API_KEY") or settings.dict().get("pokemontcg_io_api_key")
+    headers = {"X-Api-Key": api_key} if api_key else {}
     
     print(f"Fetching sets from {url}...")
     sets_map = {}
