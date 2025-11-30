@@ -37,23 +37,39 @@ async def sync_shoper_categories_async():
     # Use the new async method
     existing_categories = await client.fetch_all_categories()
     
+    # Map name -> list of categories (to handle duplicates like Era name == Set name)
     existing_by_name = {}
     for cat in existing_categories:
         try:
             name = cat.get('translations', {}).get('pl_PL', {}).get('name')
             if name:
-                existing_by_name[name] = cat
+                if name not in existing_by_name:
+                    existing_by_name[name] = []
+                existing_by_name[name].append(cat)
         except Exception:
             continue # Skip malformed category data
             
-    print(f"Found {len(existing_categories)} existing categories, indexed {len(existing_by_name)} by name.")
+    print(f"Found {len(existing_categories)} existing categories, indexed {len(existing_by_name)} unique names.")
+
+    def find_category(name: str, parent_id: int) -> dict | None:
+        """Find a category by name and parent_id."""
+        candidates = existing_by_name.get(name, [])
+        for cat in candidates:
+            try:
+                # Shoper sometimes returns parent_id as string or int
+                pid = cat.get("parent_id")
+                if pid is not None and int(pid) == int(parent_id):
+                    return cat
+            except (ValueError, TypeError):
+                continue
+        return None
 
     # 3. Iteruj przez Ery i Sety
     for era, sets in sets_data.items():
         print(f"\nProcessing Era: {era}")
         
-        # Sprawdź, czy Era istnieje
-        era_category = existing_by_name.get(era)
+        # Sprawdź, czy Era istnieje (parent_id = ROOT_CATEGORY_ID)
+        era_category = find_category(era, ROOT_CATEGORY_ID)
         era_id = None
         if not era_category:
             print(f"Era '{era}' not found. Creating...")
@@ -73,11 +89,17 @@ async def sync_shoper_categories_async():
                     era_id = created_era
                 else:
                     era_id = created_era.get("category_id") or created_era.get("id")
+                
                 if not era_id:
                     print(f"ERROR: Failed to create Era '{era}'. Response: {created_era}")
                     continue
                 print(f"Era '{era}' created with ID: {era_id}")
-                existing_by_name[era] = {"category_id": era_id}
+                
+                # Add to local cache for subsequent lookups
+                new_cat = {"category_id": era_id, "parent_id": ROOT_CATEGORY_ID, "translations": {"pl_PL": {"name": era}}}
+                if era not in existing_by_name:
+                    existing_by_name[era] = []
+                existing_by_name[era].append(new_cat)
             except Exception as e:
                 print(f"ERROR: Exception creating Era '{era}': {e}")
                 continue
@@ -96,7 +118,9 @@ async def sync_shoper_categories_async():
                 continue
 
             print(f"  - Processing Set: {set_name}")
-            set_category = existing_by_name.get(set_name)
+            # Check if Set exists (parent_id = era_id)
+            set_category = find_category(set_name, era_id)
+            
             if not set_category:
                 print(f"    Set '{set_name}' not found. Creating under Era ID {era_id}...")
                 set_payload = {
@@ -119,7 +143,13 @@ async def sync_shoper_categories_async():
                         print(f"    ERROR: Failed to create Set '{set_name}'. Response: {created_set}")
                         continue
                     print(f"    Set '{set_name}' created with ID: {set_id}")
-                    existing_by_name[set_name] = {"category_id": set_id}
+                    
+                    # Add to local cache
+                    new_set_cat = {"category_id": set_id, "parent_id": era_id, "translations": {"pl_PL": {"name": set_name}}}
+                    if set_name not in existing_by_name:
+                        existing_by_name[set_name] = []
+                    existing_by_name[set_name].append(new_set_cat)
+                    
                 except Exception as e:
                     print(f"    ERROR: Exception creating Set '{set_name}': {e}")
             else:
