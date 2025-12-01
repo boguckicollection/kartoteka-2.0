@@ -5300,6 +5300,8 @@ async def batch_items(batch_id: int):
                 "attr_rarity": item.attr_rarity,
                 "attr_energy": item.attr_energy,
                 "attr_card_type": item.attr_card_type,
+                "use_tcggo_image": item.use_tcggo_image if item.use_tcggo_image is not None else True,
+                "additional_images": json_module.loads(item.additional_images_json) if item.additional_images_json else [],
                 "candidates": json_module.loads(item.candidates_json) if item.candidates_json else [],
                 "variants": json_module.loads(item.variants_json) if item.variants_json else None,
                 "duplicate_of_scan_id": item.duplicate_of_scan_id,
@@ -5324,9 +5326,15 @@ async def batch_items(batch_id: int):
 
 
 @app.patch("/batch/{batch_id}/items/{item_id}")
-async def batch_update_item(batch_id: int, item_id: int, request: Request):
+async def batch_update_item(
+    batch_id: int, 
+    item_id: int, 
+    request: Request,
+    additional_images: List[UploadFile] = File(default=[])
+):
     """
     Update a single item in the batch (for manual corrections).
+    Supports both JSON and FormData (for additional images upload).
     """
     from .db import BatchScan, BatchScanItem
     import json as json_module
@@ -5341,7 +5349,18 @@ async def batch_update_item(batch_id: int, item_id: int, request: Request):
         if not item:
             return JSONResponse({"error": "Item not found"}, status_code=404)
         
-        data = await request.json()
+        # Try to parse as JSON first, fallback to form data
+        data = {}
+        content_type = request.headers.get("content-type", "")
+        
+        if "multipart/form-data" in content_type:
+            # FormData with files
+            form = await request.form()
+            if "updates" in form:
+                data = json_module.loads(form["updates"])
+        else:
+            # Standard JSON
+            data = await request.json()
         
         # Update allowed fields
         updatable = [
@@ -5350,12 +5369,40 @@ async def batch_update_item(batch_id: int, item_id: int, request: Request):
             "matched_provider_id", "matched_name", "matched_set", "matched_number", "matched_image",
             "price_eur", "price_pln", "price_pln_final", "warehouse_code",
             "attr_language", "attr_condition", "attr_finish", "attr_rarity", "attr_energy", "attr_card_type",
-            "matched_rarity", "detected_rarity", "detected_energy"
+            "matched_rarity", "detected_rarity", "detected_energy", "use_tcggo_image"
         ]
         
         for field in updatable:
             if field in data:
                 setattr(item, field, data[field])
+        
+        # Handle additional images upload
+        if additional_images:
+            existing_images = []
+            if item.additional_images_json:
+                try:
+                    existing_images = json_module.loads(item.additional_images_json)
+                except:
+                    existing_images = []
+            
+            upload_dir = Path(settings.upload_dir)
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            
+            for img_file in additional_images:
+                if img_file.filename:
+                    # Generate unique filename
+                    safe_name = img_file.filename.replace("/", "_").replace("\\", "_")
+                    stored_name = f"batch_{batch_id}_item_{item_id}_{safe_name}"
+                    stored_path = upload_dir / stored_name
+                    
+                    # Save file
+                    content = await img_file.read()
+                    stored_path.write_bytes(content)
+                    
+                    # Add to list (store relative path for serving)
+                    existing_images.append(f"/uploads/{stored_name}")
+            
+            item.additional_images_json = json_module.dumps(existing_images)
         
         # Recalculate completeness
         fields = {
@@ -5503,18 +5550,44 @@ async def batch_publish(batch_id: int, request: Request):
                             if attributes_payload:
                                 await client.set_product_attributes(product_id, attributes_payload)
                                 
-                            # 5. Upload image
+                            # 5. Upload primary image (based on user choice)
                             image_to_upload = None
-                            if item.matched_image and item.matched_image.startswith("http"):
+                            use_tcggo = item.use_tcggo_image if item.use_tcggo_image is not None else True
+                            
+                            if use_tcggo and item.matched_image and item.matched_image.startswith("http"):
+                                # User chose TCGGO/API image
+                                image_to_upload = item.matched_image
+                            elif not use_tcggo and item.stored_path and Path(item.stored_path).is_file():
+                                # User chose their scan
+                                image_to_upload = item.stored_path
+                            elif item.matched_image and item.matched_image.startswith("http"):
+                                # Fallback to TCGGO if scan not available
                                 image_to_upload = item.matched_image
                             elif item.stored_path and Path(item.stored_path).is_file():
+                                # Fallback to scan if TCGGO not available
                                 image_to_upload = item.stored_path
                                 
                             if image_to_upload:
                                 try:
                                     await client.upload_product_image(product_id, str(image_to_upload), main=True)
                                 except Exception as img_e:
-                                    print(f"WARNING: Image upload exception for item {item.id}: {img_e}")
+                                    print(f"WARNING: Primary image upload exception for item {item.id}: {img_e}")
+                            
+                            # 5b. Upload additional images
+                            if item.additional_images_json:
+                                try:
+                                    import json as json_module2
+                                    additional_imgs = json_module2.loads(item.additional_images_json)
+                                    for img_path in additional_imgs:
+                                        # img_path is like "/uploads/filename.jpg"
+                                        full_path = Path(settings.upload_dir) / Path(img_path).name
+                                        if full_path.is_file():
+                                            try:
+                                                await client.upload_product_image(product_id, str(full_path), main=False)
+                                            except Exception as add_img_e:
+                                                print(f"WARNING: Additional image upload failed for {img_path}: {add_img_e}")
+                                except Exception as e:
+                                    print(f"WARNING: Failed to process additional images for item {item.id}: {e}")
                             
                             # 6. Set Related Products
                             try:

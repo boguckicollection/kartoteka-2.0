@@ -319,6 +319,7 @@ class BatchScanItem(Base):
     
     # Image selection
     use_tcggo_image = Column(Boolean, default=True, nullable=True)
+    additional_images_json = Column(Text, nullable=True)  # JSON array of stored image paths
     
     # Completeness tracking (JSON with field status)
     fields_status = Column(Text, nullable=True)  # JSON: {"name": true, "set": true, "number": false, ...}
@@ -399,45 +400,14 @@ def init_db():
             ("starting_warehouse_code", "VARCHAR(64)"),
         ],
         "batch_scan_items": [
-            ("fields_status", "TEXT"),
-            ("fields_complete", "INTEGER DEFAULT 0"),
-            ("fields_total", "INTEGER DEFAULT 7"),
-            ("publish_status", "VARCHAR(32)"),
-            ("published_shoper_id", "INTEGER"),
-            ("warehouse_code", "VARCHAR(64)"),
-            ("detected_name", "VARCHAR(255)"),
-            ("detected_set", "VARCHAR(255)"),
-            ("detected_set_code", "VARCHAR(64)"),
-            ("detected_number", "VARCHAR(64)"),
-            ("detected_language", "VARCHAR(64)"),
-            ("detected_variant", "VARCHAR(64)"),
-            ("detected_condition", "VARCHAR(64)"),
             ("detected_rarity", "VARCHAR(128)"),
-            ("detected_energy", "VARCHAR(64)"),
-            ("matched_provider_id", "VARCHAR(128)"),
-            ("matched_name", "VARCHAR(255)"),
-            ("matched_set", "VARCHAR(255)"),
-            ("matched_set_code", "VARCHAR(64)"),
-            ("matched_number", "VARCHAR(64)"),
             ("matched_rarity", "VARCHAR(128)"),
-            ("matched_image", "TEXT"),
-            ("match_score", "FLOAT"),
-            ("candidates_json", "TEXT"),
-            ("price_eur", "FLOAT"),
-            ("price_pln", "FLOAT"),
-            ("price_pln_final", "FLOAT"),
-            ("purchase_price", "FLOAT"),
-            ("variants_json", "TEXT"),
-            ("duplicate_of_scan_id", "INTEGER"),
-            ("duplicate_distance", "INTEGER"),
-            ("catalog_id", "INTEGER"),
-            ("attr_language", "VARCHAR(16)"),
-            ("attr_condition", "VARCHAR(16)"),
-            ("attr_finish", "VARCHAR(16)"),
+            ("detected_energy", "VARCHAR(64)"),
             ("attr_rarity", "VARCHAR(16)"),
             ("attr_energy", "VARCHAR(16)"),
             ("attr_card_type", "VARCHAR(16)"),
             ("use_tcggo_image", "INTEGER DEFAULT 1"),
+            ("additional_images_json", "TEXT"),
             ("cardmarket_url", "TEXT"),
         ],
     }

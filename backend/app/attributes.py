@@ -506,18 +506,18 @@ def map_detected_to_form_ids(
         if oid:
             result[str(meta["id"])] = str(oid)
 
-    # Type (Card Type) - default to "Nie dotyczy"
+    # Type (Card Type) - only map specific types, ignore generic "Pokémon", "Trainer", "Energy"
     type_val = detected.get("type") or detected.get("supertype")
     meta = _find_attr(attribute_targets["type"])
-    if meta:
-        candidates = [_norm(type_val)] if type_val else ["nie dotyczy"]
-        oid = _best_option_numeric_id(meta["options"], candidates)
-        if oid:
-            result[str(meta["id"])] = str(oid)
-        else:
-            # Fallback to "Nie dotyczy" if no match
-            oid = _best_option_numeric_id(meta["options"], ["nie dotyczy"])
+    if meta and type_val:
+        normalized_type = _norm(type_val)
+        # Skip generic supertypes that would incorrectly match to specific card types
+        # These are too broad and would match "Pokémon EX" when the card is just a regular Pokémon
+        if normalized_type not in ["pokemon", "pokémon", "trainer", "energy"]:
+            candidates = [normalized_type]
+            oid = _best_option_numeric_id(meta["options"], candidates)
             if oid:
                 result[str(meta["id"])] = str(oid)
+        # If it's a generic type, leave empty (don't set any card type)
 
     return result
