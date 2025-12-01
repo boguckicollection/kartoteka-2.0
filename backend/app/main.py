@@ -5146,8 +5146,7 @@ async def batch_analyze_next(batch_id: int):
                 next_item.attr_condition = '176'  # Near Mint
             if not next_item.attr_finish:
                 next_item.attr_finish = '184'  # Normal
-            if not next_item.attr_card_type:
-                next_item.attr_card_type = '182'  # N/A
+            # Note: No default for card_type - leave empty if not detected
             
             # === STEP 8: Calculate completeness ===
             fields = {

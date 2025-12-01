@@ -75,9 +75,10 @@ type BatchStatus = {
 type Props = {
   apiBase: string;
   onBack: () => void;
+  session?: {id: number, starting_warehouse_code?: string | null} | null;
 };
 
-export default function BatchScanView({ apiBase, onBack }: Props) {
+export default function BatchScanView({ apiBase, onBack, session }: Props) {
   const [batchId, setBatchId] = useState<number | null>(null);
   const [status, setStatus] = useState<BatchStatus | null>(null);
   const [items, setItems] = useState<BatchItem[]>([]);
@@ -95,6 +96,7 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const processingRef = useRef(false);
+  const drawerRef = useRef<HTMLDivElement>(null);
 
   // Load attributes on mount
   useEffect(() => {
@@ -121,6 +123,51 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
       return () => clearTimeout(t);
     }
   }, [toast]);
+
+  // Keyboard navigation in edit drawer
+  useEffect(() => {
+    if (!selectedItem) return;
+    
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        
+        const currentIndex = items.findIndex(it => it.id === selectedItem.id);
+        let nextIndex = -1;
+        
+        if (e.key === 'ArrowLeft' && currentIndex > 0) {
+          nextIndex = currentIndex - 1;
+        } else if (e.key === 'ArrowRight' && currentIndex < items.length - 1) {
+          nextIndex = currentIndex + 1;
+        }
+        
+        if (nextIndex !== -1) {
+          // Save current changes before navigating
+          updateItem(selectedItem.id, {
+            matched_name: selectedItem.matched_name,
+            matched_set: selectedItem.matched_set,
+            matched_number: selectedItem.matched_number,
+            matched_image: selectedItem.matched_image,
+            matched_provider_id: selectedItem.matched_provider_id,
+            price_pln_final: selectedItem.price_pln_final,
+            warehouse_code: selectedItem.warehouse_code,
+            attr_language: selectedItem.attr_language,
+            attr_condition: selectedItem.attr_condition,
+            attr_finish: selectedItem.attr_finish,
+            attr_rarity: selectedItem.attr_rarity,
+            attr_energy: selectedItem.attr_energy,
+            attr_card_type: selectedItem.attr_card_type,
+          });
+          
+          // Navigate to next item
+          setSelectedItem(items[nextIndex]);
+        }
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedItem, items]);
 
   // Handle attribute change with price logic
   const handleItemAttributeChange = (item: BatchItem, attrId: string, value: string) => {
@@ -179,6 +226,14 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
     try {
       const fd = new FormData();
       imageFiles.forEach(file => fd.append('files', file));
+      
+      // Add session info if available
+      if (session?.id) {
+        fd.append('session_id', session.id.toString());
+      }
+      if (session?.starting_warehouse_code) {
+        fd.append('starting_warehouse_code', session.starting_warehouse_code);
+      }
 
       const res = await fetch(`${apiBase}/batch/start`, {
         method: 'POST',
@@ -648,9 +703,19 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
       {selectedItem && (
         <div className="fixed inset-0 z-50 flex justify-end">
           <div className="absolute inset-0 bg-black/50" onClick={() => setSelectedItem(null)} />
-          <div className="relative w-full max-w-2xl bg-[#0f172a] border-l border-gray-700 overflow-y-auto shadow-2xl">
+          <div ref={drawerRef} className="relative w-full max-w-2xl bg-[#0f172a] border-l border-gray-700 overflow-y-auto shadow-2xl">
             <div className="sticky top-0 bg-[#0f172a] border-b border-gray-700 p-4 flex items-center justify-between z-10">
-              <h3 className="text-lg font-semibold">Edytuj karte</h3>
+              <div className="flex items-center gap-4">
+                <h3 className="text-lg font-semibold">Edytuj karte</h3>
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <kbd className="px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs">←</kbd>
+                  <kbd className="px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs">→</kbd>
+                  <span>Nawigacja</span>
+                  <span className="ml-2 text-cyan-400">
+                    {items.findIndex(it => it.id === selectedItem.id) + 1} / {items.length}
+                  </span>
+                </div>
+              </div>
               <button
                 onClick={() => setSelectedItem(null)}
                 className="p-2 hover:bg-gray-700 rounded-lg"
@@ -720,12 +785,31 @@ export default function BatchScanView({ apiBase, onBack }: Props) {
                   <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider border-b border-gray-700 pb-1">Dane podstawowe</h4>
                   <div>
                     <label className="text-xs text-gray-400">Nazwa karty</label>
-                    <input
-                      type="text"
-                      value={selectedItem.matched_name || selectedItem.detected_name || ''}
-                      onChange={(e) => setSelectedItem({ ...selectedItem, matched_name: e.target.value })}
-                      className="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                    />
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={selectedItem.matched_name || selectedItem.detected_name || ''}
+                        onChange={(e) => setSelectedItem({ ...selectedItem, matched_name: e.target.value })}
+                        className="flex-1 mt-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                      <button
+                        onClick={() => {
+                          const cardNumber = (selectedItem.matched_number || selectedItem.detected_number || '').split('/')[0];
+                          const searchString = `${selectedItem.matched_name || selectedItem.detected_name || ''} ${cardNumber}`.trim();
+                          if (searchString) {
+                            window.open(`https://www.cardmarket.com/en/Pokemon/Products/Search?category=-1&searchString=${encodeURIComponent(searchString)}&searchMode=v1`, '_blank');
+                          }
+                        }}
+                        disabled={!selectedItem.matched_name && !selectedItem.detected_name}
+                        className="mt-1 h-10 w-10 flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed relative group"
+                        title="Szukaj na CardMarket"
+                      >
+                        <span className="material-symbols-outlined text-xl">storefront</span>
+                        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden w-auto p-2 text-xs text-white whitespace-nowrap bg-gray-800 rounded-md group-hover:block z-50">
+                          Szukaj na CardMarket
+                        </span>
+                      </button>
+                    </div>
                   </div>
 
                   <div>

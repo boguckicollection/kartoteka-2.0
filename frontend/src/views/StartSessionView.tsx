@@ -162,14 +162,17 @@ export default function StartSessionView({ onSessionStarted, apiBase }: Props) {
             <div className="grid grid-cols-3 gap-3">
               {/* Box Input */}
               <div className="space-y-1">
-                <label className="text-xs text-gray-500 uppercase tracking-wider">Karton</label>
+                <label className="text-xs text-gray-500 uppercase tracking-wider flex items-center gap-1">
+                  Karton
+                  <span className="text-yellow-400 cursor-help" title='Wpisz "P" dla kartonu premium'>ⓘ</span>
+                </label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-cyan-400 font-bold text-sm">K</span>
                   <input
                     type="text"
                     value={box}
                     onChange={(e) => setBox(e.target.value.toUpperCase())}
-                    placeholder="10"
+                    placeholder="1-10 lub P"
                     maxLength={3}
                     className="w-full pl-8 pr-3 py-3 text-white placeholder-gray-600 bg-gray-800/50 border border-gray-600/50 rounded-lg shadow-inner focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition-all text-center font-mono text-lg"
                   />

@@ -386,10 +386,14 @@ export default function App() {
   const renderContent = () => {
     if (tab === 'scan') {
       if (showBatchScan) {
-        return <BatchScanView apiBase={apiBase} onBack={() => {
-          setShowBatchScan(false);
-          setShowSessionStart(false);
-        }} />;
+        return <BatchScanView 
+          apiBase={apiBase} 
+          session={scanSession}
+          onBack={() => {
+            setShowBatchScan(false);
+            setShowSessionStart(false);
+          }} 
+        />;
       }
       if (showSessionStart) {
         return <StartSessionView apiBase={apiBase} onSessionStarted={(sessionData) => {
