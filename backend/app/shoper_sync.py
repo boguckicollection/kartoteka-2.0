@@ -410,36 +410,47 @@ async def sync_shoper_categories_async():
         return None
 
     # 3. Iteruj przez Ery i Sety
-    # Limit processing to only one era for testing if desired
-    TEST_ERA_NAME = "Mega Evolution"
     
-    for era, sets in sets_data.items():
-        # TEST MODE: Process ONLY the specific era
-        if TEST_ERA_NAME and era != TEST_ERA_NAME:
-            continue
-            
-        print(f"\nProcessing Era: {era}")
+    # Sort eras to ensure processing order if needed, or just iterate
+    for era_name, sets_list in sets_data.items():
+        print(f"\nProcessing Era: {era_name}")
         
         # Sprawdź, czy Era istnieje (parent_id = ROOT_CATEGORY_ID)
-        era_category = find_category(era, ROOT_CATEGORY_ID)
+        era_category = find_category(era_name, ROOT_CATEGORY_ID)
         era_id = None
+        
+        # Determine Era Logo (Try to find a representative logo from the sets)
+        # Strategy: Use the logo of the first set in the list
+        era_logo_url = GENERIC_LOGO_URL
+        if sets_list and isinstance(sets_list, list) and len(sets_list) > 0:
+            first_set = sets_list[0]
+            if isinstance(first_set, dict):
+                possible_logo = first_set.get("images", {}).get("logo")
+                if possible_logo:
+                    era_logo_url = possible_logo
+
         if not era_category:
-            print(f"Era '{era}' not found. Creating...")
+            print(f"Era '{era_name}' not found. Creating...")
             
-            # Basic info for Era description (Era usually doesn't have a specific set code, use generic logic)
-            era_logo_url = GENERIC_LOGO_URL
+            era_description_html = f"""
+<div style="text-align: center; margin-bottom: 20px;">
+    <img src="{era_logo_url}" alt="{era_name}" style="max-width: 100%; height: auto; max-height: 300px;">
+    <h2 style="margin-top: 10px;">Era <strong>{era_name}</strong></h2>
+</div>
+<p>Odkryj karty Pokémon z ery {era_name}. Znajdziesz tutaj zestawy i single z tego okresu.</p>
+"""
             
             era_payload = {
                 "parent_id": ROOT_CATEGORY_ID,
                 "active": 1,
                 "translations": {
                     "pl_PL": {
-                        "name": era,
+                        "name": era_name,
                         "active": True,
-                        "description": f"""<div style="display:flex;align-items:center;gap:12px;"><img src="{era_logo_url}" height="48" alt="{era} logo"><h2>Era <strong>{era}</strong></h2></div><p>Odkryj karty z ery {era}.</p>""",
-                        "seo_title": f"Karty Pokémon Era {era} | Sklep Kartoteka",
-                        "seo_description": f"Oryginalne karty Pokémon z ery {era}. Największy wybór singli i zestawów.",
-                        "seo_keywords": f"pokemon tcg, {era}, karty pokemon, sklep pokemon",
+                        "description": era_description_html,
+                        "seo_title": f"Karty Pokémon Era {era_name} | Sklep Kartoteka",
+                        "seo_description": f"Oryginalne karty Pokémon z ery {era_name}. Największy wybór singli i zestawów.",
+                        "seo_keywords": f"pokemon tcg, {era_name}, karty pokemon, sklep pokemon",
                     }
                 },
                 "attribute_groups": DEFAULT_ATTRIBUTE_GROUPS
@@ -453,30 +464,30 @@ async def sync_shoper_categories_async():
                     era_id = created_era.get("category_id") or created_era.get("id")
                 
                 if not era_id:
-                    print(f"ERROR: Failed to create Era '{era}'. Response: {created_era}")
+                    print(f"ERROR: Failed to create Era '{era_name}'. Response: {created_era}")
                     continue
-                print(f"Era '{era}' created with ID: {era_id}")
+                print(f"Era '{era_name}' created with ID: {era_id}")
                 
                 # Add to local cache for subsequent lookups
-                new_cat = {"category_id": era_id, "parent_id": ROOT_CATEGORY_ID, "translations": {"pl_PL": {"name": era}}}
-                if era not in existing_by_name:
-                    existing_by_name[era] = []
-                existing_by_name[era].append(new_cat)
+                new_cat = {"category_id": era_id, "parent_id": ROOT_CATEGORY_ID, "translations": {"pl_PL": {"name": era_name}}}
+                if era_name not in existing_by_name:
+                    existing_by_name[era_name] = []
+                existing_by_name[era_name].append(new_cat)
             except Exception as e:
-                print(f"ERROR: Exception creating Era '{era}': {e}")
+                print(f"ERROR: Exception creating Era '{era_name}': {e}")
                 continue
         else:
             era_id = era_category.get('category_id') or era_category.get("id")
-            print(f"Era '{era}' already exists with ID: {era_id}")
+            print(f"Era '{era_name}' already exists with ID: {era_id}")
 
         if not era_id:
-            print(f"FATAL: Could not determine ID for Era '{era}'. Skipping its sets.")
+            print(f"FATAL: Could not determine ID for Era '{era_name}'. Skipping its sets.")
             continue
 
         # Iteruj przez Sety w Erze
-        for set_info in sets:
+        for set_info in sets_list:
             set_name = set_info.get("name")
-            set_code = set_info.get("code", "").lower()
+            set_code = set_info.get("id") or set_info.get("ptcgoCode") or "" # Use 'id' from json as code usually
             
             if not set_name:
                 continue
@@ -488,12 +499,56 @@ async def sync_shoper_categories_async():
             if not set_category:
                 print(f"    Set '{set_name}' not found. Creating under Era ID {era_id}...")
                 
-                # Fetch detailed data from API map
-                set_api_data = api_sets.get(set_name.lower())
+                # Try to get data from API map if available, else fall back to JSON data
+                # JSON data has: id, name, series, printedTotal, total, releaseDate, images.logo
                 
-                # Generate content using API data (logo, date, etc.)
-                content = generate_content(set_name, set_code, era, set_api_data)
+                # Construct a merged data object
+                set_merged_data = {
+                    "logo_url": set_info.get("images", {}).get("logo"),
+                    "release_date": set_info.get("releaseDate"),
+                    "total": set_info.get("printedTotal"),
+                    "series": set_info.get("series"),
+                    "code": set_code
+                }
                 
+                # If API map has better data, override? 
+                # API map uses lowercase name as key.
+                if set_name.lower() in api_sets:
+                    api_data = api_sets[set_name.lower()]
+                    # Prefer API data for things that might be missing or different?
+                    # Actually, let's stick to JSON for logo as requested, but maybe API for details.
+                    # User asked to use logo from JSON line.
+                    if not set_merged_data["logo_url"]:
+                        set_merged_data["logo_url"] = api_data.get("logo_url")
+                
+                # Generate content using templates
+                content = generate_content(set_name, set_code, era_name, set_merged_data)
+                
+                # Update Description HTML to match requirement: Small logo on left
+                # generate_content returns 'description' (header) and 'description_bottom'
+                # We need to ensure the header part uses the Flexbox layout requested.
+                
+                logo_url_final = set_merged_data.get("logo_url") or GENERIC_LOGO_URL
+                
+                # Custom Header HTML with Logo Left
+                custom_desc_html = f"""
+<!-- ============== {set_name.upper()} ({set_code.upper()}) ============== -->
+<section id="{set_code.lower()}" class="tcg-category">
+    <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 20px;">
+        <div style="flex: 0 0 auto;">
+            <img src="{logo_url_final}" alt="Pokémon TCG {set_name} logo" style="max-width: 150px; height: auto;" />
+        </div>
+        <div>
+            <h2 style="margin: 0; font-size: 1.5em;">Pokémon TCG: <strong>{set_name}</strong></h2>
+            <p style="margin-top: 10px;">{content['seo_description']}</p>
+        </div>
+    </div>
+</section>
+"""
+                # Combine with the rest of the generated content (bottom part)
+                final_description = custom_desc_html
+                final_bottom = content["description_bottom"]
+
                 set_payload = {
                     "parent_id": int(era_id),
                     "active": 1,
@@ -501,8 +556,8 @@ async def sync_shoper_categories_async():
                         "pl_PL": {
                             "name": set_name,
                             "active": True,
-                            "description": content["description"],
-                            "description_bottom": content["description_bottom"],
+                            "description": final_description,
+                            "description_bottom": final_bottom,
                             "seo_title": content["seo_title"],
                             "seo_description": content["seo_description"],
                             "seo_keywords": content["seo_keywords"],
