@@ -144,13 +144,30 @@ class RapidAPITCGGOProvider(CardProvider):
         }
         async with httpx.AsyncClient(timeout=12) as client:
             # 1. First attempt: Precise search with name and number
-            parts1 = [str(detected.name or '').strip(), str(detected.number or '').strip()]
-            if detected.set:
-                parts1.append(f"EPISODE:{str(detected.set).strip()}")
+            parts1 = [str(detected.name or '').strip()]
+            
+            # Add number
+            if detected.number:
+                parts1.append(str(detected.number).strip())
+                
+            # Add set info intelligently
+            # Prioritize set_name for search query as it is more distinctive than code often
+            if detected.set: 
+                # If detected.set looks like a code (short, uppercase), treat it carefully
+                s = str(detected.set).strip()
+                if len(s) <= 5 and s.isupper() and s.isalnum() and not detected.set_code:
+                    # It might be a code detected as set name
+                    parts1.append(s)
+                else:
+                    parts1.append(s)
+            
+            if detected.set_code:
+                parts1.append(str(detected.set_code).strip())
+
             search_q1 = " ".join([p for p in parts1 if p]).strip()
             
             print(f"DEBUG: TCGGO search query (attempt 1): '{search_q1}'")
-            print(f"DEBUG: Detected data - name: '{detected.name}', number: '{detected.number}', set: '{detected.set}'")
+            print(f"DEBUG: Detected data - name: '{detected.name}', number: '{detected.number}', set: '{detected.set}', set_code: '{detected.set_code}'")
             
             payload = None
             if search_q1:

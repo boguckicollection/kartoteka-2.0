@@ -56,17 +56,18 @@ def _call_openai_vision(b64: str) -> dict:
 
     prompt = (
         "You are an expert at analyzing Pokémon Trading Card Game cards. "
-        "Your task is to identify the card name, card number, set, rarity, energy type, and card type.\n\n"
+        "Your task is to identify the card name, card number, set name, set code, rarity, energy type, and card type.\n\n"
         
         "IMPORTANT INSTRUCTIONS:\n"
         "1. **Card Name**: Located at the top of the card.\n"
         "2. **Card Number**: Look in the BOTTOM corner. Format is 'XX/YYY' or 'XX'. Return ONLY the numerator (XX).\n"
-        "3. **Set**: Look for a set symbol or code near the card number.\n"
-        "4. **Rarity**: Identify the rarity symbol (e.g., Circle for Common, Diamond for Uncommon, Star for Rare).\n"
-        "5. **Energy Type**: Determine the card's energy type (e.g., Grass, Fire, Water, Lightning, Psychic, Fighting, Darkness, Metal, Fairy, Dragon, Colorless).\n"
-        "6. **Card Type**: Specify if it's a 'Pokemon', 'Trainer', or 'Energy' card.\n\n"
+        "3. **Set Name**: Look for the full name of the expansion/set (e.g., 'Scarlet & Violet', 'Lost Origin').\n"
+        "4. **Set Code**: Look for the alphanumeric set code usually near the card number (e.g., 'SV1', 'SWSH11', 'OBF').\n"
+        "5. **Rarity**: Identify the rarity symbol (e.g., Circle for Common, Diamond for Uncommon, Star for Rare).\n"
+        "6. **Energy Type**: Determine the card's energy type (e.g., Grass, Fire, Water, Lightning, Psychic, Fighting, Darkness, Metal, Fairy, Dragon, Colorless).\n"
+        "7. **Card Type**: Specify if it's a 'Pokemon', 'Trainer', or 'Energy' card.\n\n"
         
-        "Return JSON with these exact keys: name, number, set, rarity, energy, card_type. "
+        "Return JSON with these exact keys: name, number, set_name, set_code, rarity, energy, card_type. "
         "Use null for unknown values. Respond with JSON only."
     )
 
@@ -104,12 +105,12 @@ def _call_openai_vision(b64: str) -> dict:
 
     return {
         'name': _scalar(data.get('name')),
-        'set': _scalar(data.get('set')),
+        'set': _scalar(data.get('set_name')) or _scalar(data.get('set')),
         'number': _normalize_card_number(_scalar(data.get('number'))),
         'rarity': _scalar(data.get('rarity')),
         'energy': _scalar(data.get('energy')),
         'card_type': _scalar(data.get('card_type')),
-        'set_code': None,
+        'set_code': _scalar(data.get('set_code')),
         'language': None,
         'variant': None,
         'condition': None,
