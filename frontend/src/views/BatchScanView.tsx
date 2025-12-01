@@ -811,91 +811,6 @@ export default function BatchScanView({ apiBase, onBack, session }: Props) {
                 {selectedItem.status === 'processing' && 'Analizowanie...'}
               </div>
 
-              {/* Image Selection UI */}
-              <div className="space-y-3 pt-4 border-t border-gray-700">
-                <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider">Wybór grafiki głównej</h4>
-                <div className="flex justify-center items-start gap-3 p-3 bg-gray-800/30 rounded-lg">
-                  {/* Option 1: TCGGO Image */}
-                  {selectedItem.matched_image && (
-                    <div 
-                      className={`flex flex-col items-center gap-2 cursor-pointer p-2 rounded-md transition-all ${selectedItem.use_tcggo_image !== false ? 'bg-cyan-500/30 ring-2 ring-cyan-500' : 'hover:bg-gray-700'}`}
-                      onClick={() => setSelectedItem({ ...selectedItem, use_tcggo_image: true })}
-                    >
-                      <img src={selectedItem.matched_image} className="w-20 h-auto rounded border border-gray-600" alt="TCGGO" />
-                      <span className="text-xs text-white font-medium">Grafika z API</span>
-                      {selectedItem.use_tcggo_image !== false && (
-                        <span className="material-symbols-outlined text-cyan-400 text-sm">check_circle</span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Option 2: User's Scan */}
-                  {selectedItem.image_url && (
-                    <div 
-                      className={`flex flex-col items-center gap-2 cursor-pointer p-2 rounded-md transition-all ${selectedItem.use_tcggo_image === false ? 'bg-cyan-500/30 ring-2 ring-cyan-500' : 'hover:bg-gray-700'}`}
-                      onClick={() => setSelectedItem({ ...selectedItem, use_tcggo_image: false })}
-                    >
-                      <img src={`${apiBase}${selectedItem.image_url}`} className="w-20 h-auto rounded border border-gray-600" alt="Skan" />
-                      <span className="text-xs text-white font-medium">Twój skan</span>
-                      {selectedItem.use_tcggo_image === false && (
-                        <span className="material-symbols-outlined text-cyan-400 text-sm">check_circle</span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Additional Images Upload */}
-              <div className="space-y-3 pt-4 border-t border-gray-700">
-                <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider">Dodatkowe zdjęcia (stan karty)</h4>
-                <div className="flex flex-col gap-2 p-3 bg-gray-800/30 rounded-lg">
-                  <label className="cursor-pointer flex items-center justify-center p-4 border-2 border-dashed border-gray-600 rounded-lg hover:bg-gray-700 transition-colors">
-                    <span className="material-symbols-outlined text-cyan-400 mr-2">add_a_photo</span>
-                    <span className="text-white text-sm">Dodaj zdjęcia</span>
-                    <input 
-                      type="file" 
-                      accept="image/*" 
-                      multiple 
-                      className="hidden" 
-                      onChange={(e) => {
-                        if (e.target.files) {
-                          setAdditionalImagesToUpload(prev => [...prev, ...Array.from(e.target.files!)]);
-                        }
-                      }} 
-                    />
-                  </label>
-                  
-                  {/* Display existing additional images from server */}
-                  {selectedItem.additional_images && selectedItem.additional_images.length > 0 && (
-                    <div className="grid grid-cols-3 gap-2 mt-2">
-                      {selectedItem.additional_images.map((imgUrl, index) => (
-                        <div key={index} className="relative">
-                          <img src={`${apiBase}${imgUrl}`} alt={`Dodatkowe ${index + 1}`} className="w-full h-auto rounded border border-gray-600" />
-                          <span className="absolute top-1 left-1 bg-black/70 text-white text-[10px] px-1 rounded">Zapisane</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  
-                  {/* Display newly selected images to upload */}
-                  {additionalImagesToUpload.length > 0 && (
-                    <div className="grid grid-cols-3 gap-2 mt-2">
-                      {additionalImagesToUpload.map((file, index) => (
-                        <div key={index} className="relative">
-                          <img src={URL.createObjectURL(file)} alt={`Nowe ${index + 1}`} className="w-full h-auto rounded border border-cyan-500" />
-                          <button 
-                            className="absolute top-0 right-0 bg-red-600 text-white rounded-full p-0.5 w-5 h-5 flex items-center justify-center text-xs"
-                            onClick={() => setAdditionalImagesToUpload(prev => prev.filter((_, i) => i !== index))}
-                          >
-                            ×
-                          </button>
-                          <span className="absolute bottom-1 left-1 bg-cyan-600/90 text-white text-[10px] px-1 rounded">Nowe</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
 
               {/* Form Fields */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1067,6 +982,91 @@ export default function BatchScanView({ apiBase, onBack, session }: Props) {
                 </div>
               )}
 
+              {/* Image Selection UI */}
+              <div className="space-y-3 pt-4 border-t border-gray-700">
+                <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider">Wybór grafiki głównej</h4>
+                <div className="flex justify-center items-start gap-3 p-3 bg-gray-800/30 rounded-lg">
+                  {/* Option 1: TCGGO Image */}
+                  {selectedItem.matched_image && (
+                    <div 
+                      className={`flex flex-col items-center gap-2 cursor-pointer p-2 rounded-md transition-all ${selectedItem.use_tcggo_image !== false ? 'bg-cyan-500/30 ring-2 ring-cyan-500' : 'hover:bg-gray-700'}`}
+                      onClick={() => setSelectedItem({ ...selectedItem, use_tcggo_image: true })}
+                    >
+                      <img src={selectedItem.matched_image} className="w-20 h-auto rounded border border-gray-600" alt="TCGGO" />
+                      <span className="text-xs text-white font-medium">Grafika z API</span>
+                      {selectedItem.use_tcggo_image !== false && (
+                        <span className="material-symbols-outlined text-cyan-400 text-sm">check_circle</span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Option 2: User's Scan */}
+                  {selectedItem.image_url && (
+                    <div 
+                      className={`flex flex-col items-center gap-2 cursor-pointer p-2 rounded-md transition-all ${selectedItem.use_tcggo_image === false ? 'bg-cyan-500/30 ring-2 ring-cyan-500' : 'hover:bg-gray-700'}`}
+                      onClick={() => setSelectedItem({ ...selectedItem, use_tcggo_image: false })}
+                    >
+                      <img src={`${apiBase}${selectedItem.image_url}`} className="w-20 h-auto rounded border border-gray-600" alt="Skan" />
+                      <span className="text-xs text-white font-medium">Twój skan</span>
+                      {selectedItem.use_tcggo_image === false && (
+                        <span className="material-symbols-outlined text-cyan-400 text-sm">check_circle</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Additional Images Upload */}
+              <div className="space-y-3 pt-4 border-t border-gray-700">
+                <h4 className="text-sm font-bold text-gray-400 uppercase tracking-wider">Dodatkowe zdjęcia (stan karty)</h4>
+                <div className="flex flex-col gap-2 p-3 bg-gray-800/30 rounded-lg">
+                  <label className="cursor-pointer flex items-center justify-center p-4 border-2 border-dashed border-gray-600 rounded-lg hover:bg-gray-700 transition-colors">
+                    <span className="material-symbols-outlined text-cyan-400 mr-2">add_a_photo</span>
+                    <span className="text-white text-sm">Dodaj zdjęcia</span>
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      multiple 
+                      className="hidden" 
+                      onChange={(e) => {
+                        if (e.target.files) {
+                          setAdditionalImagesToUpload(prev => [...prev, ...Array.from(e.target.files!)]);
+                        }
+                      }} 
+                    />
+                  </label>
+                  
+                  {/* Display existing additional images from server */}
+                  {selectedItem.additional_images && selectedItem.additional_images.length > 0 && (
+                    <div className="grid grid-cols-3 gap-2 mt-2">
+                      {selectedItem.additional_images.map((imgUrl, index) => (
+                        <div key={index} className="relative">
+                          <img src={`${apiBase}${imgUrl}`} alt={`Dodatkowe ${index + 1}`} className="w-full h-auto rounded border border-gray-600" />
+                          <span className="absolute top-1 left-1 bg-black/70 text-white text-[10px] px-1 rounded">Zapisane</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  
+                  {/* Display newly selected images to upload */}
+                  {additionalImagesToUpload.length > 0 && (
+                    <div className="grid grid-cols-3 gap-2 mt-2">
+                      {additionalImagesToUpload.map((file, index) => (
+                        <div key={index} className="relative">
+                          <img src={URL.createObjectURL(file)} alt={`Nowe ${index + 1}`} className="w-full h-auto rounded border border-cyan-500" />
+                          <button 
+                            className="absolute top-0 right-0 bg-red-600 text-white rounded-full p-0.5 w-5 h-5 flex items-center justify-center text-xs"
+                            onClick={() => setAdditionalImagesToUpload(prev => prev.filter((_, i) => i !== index))}
+                          >
+                            ×
+                          </button>
+                          <span className="absolute bottom-1 left-1 bg-cyan-600/90 text-white text-[10px] px-1 rounded">Nowe</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
               {/* Match Score */}
               {selectedItem.match_score !== undefined && (
                 <div className="flex items-center gap-2 text-sm pt-2 justify-center">

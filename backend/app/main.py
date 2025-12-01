@@ -5018,9 +5018,9 @@ async def batch_analyze_next(batch_id: int):
                     
                     # Get details for top candidate
                     if i == 0:
+                        best_candidate = cand
                         try:
                             details = await provider.details(cand.id)
-                            best_candidate = cand
                             
                             # Update image from details
                             detailed_image = details.get("image")
@@ -5031,6 +5031,7 @@ async def batch_analyze_next(batch_id: int):
                                 
                         except Exception as e:
                             print(f"Details fetch error: {e}")
+                            # details stays None, but we still have best_candidate
                     
                     candidates_list.append(cand_dict)
             
