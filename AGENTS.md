@@ -29,3 +29,4 @@
 - **Batch Scanning:** Warehouse codes are allocated per-batch (`get_next_free_location_for_batch`).
 - **Mobile:** Camera requires HTTPS context.
 - **Pricing:** Uses EUR→PLN conversion (`eur_pln_rate`), multipliers, and variant detection. Min prices differ by rarity.
+- **Furgonetka Integration:** Uses OAuth 2.0 with token persistence (`FurgonetkaToken`). Auto-syncs shipments in background via `_background_sync_furgonetka`. See `backend/app/furgonetka_client.py` and `FURGONETKA_SETUP.md`.

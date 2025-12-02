@@ -335,6 +335,54 @@ class BatchScanItem(Base):
     batch = relationship("BatchScan", back_populates="items")
 
 
+class FurgonetkaToken(Base):
+    """
+    OAuth tokens for Furgonetka API integration.
+    Stores access and refresh tokens with expiration tracking.
+    """
+    __tablename__ = "furgonetka_tokens"
+    id = Column(Integer, primary_key=True)
+    access_token = Column(Text, nullable=False)
+    refresh_token = Column(Text, nullable=False)
+    expires_at = Column(Float, nullable=False)  # Unix timestamp
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class FurgonetkaShipment(Base):
+    """
+    Tracking table for shipments created via Furgonetka API.
+    Links Shoper orders to Furgonetka packages and stores label information.
+    """
+    __tablename__ = "furgonetka_shipments"
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    # Links to system
+    order_id = Column(Integer, nullable=False, index=True)  # Shoper order ID
+    shoper_order_number = Column(String(64), nullable=True)  # Display format: #12345
+    
+    # Furgonetka data
+    package_id = Column(String(128), nullable=True, unique=True, index=True)  # From API response
+    tracking_number = Column(String(128), nullable=True)
+    carrier_service = Column(String(32), nullable=True)  # inpost, dpd, dhl, orlen, etc.
+    
+    # Status tracking
+    status = Column(String(32), default="pending", nullable=False)  # pending, created, label_downloaded, error
+    error_message = Column(Text, nullable=True)
+    
+    # Label storage
+    label_format = Column(String(10), default="pdf", nullable=True)  # pdf, zpl
+    label_url = Column(Text, nullable=True)  # URL from Furgonetka API
+    label_path = Column(Text, nullable=True)  # Local cached copy (optional)
+    label_downloaded_at = Column(DateTime, nullable=True)
+    
+    # Request/Response payloads (for debugging and audit)
+    request_payload = Column(Text, nullable=True)  # JSON
+    response_payload = Column(Text, nullable=True)  # JSON
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     # Best-effort lightweight migration for SQLite

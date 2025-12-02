@@ -116,6 +116,25 @@ class Settings(BaseSettings):
     holo_price_multiplier: float = Field(default=3.0, alias="HOLO_PRICE_MULTIPLIER")
     reverse_holo_price_multiplier: float = Field(default=2.0, alias="REVERSE_HOLO_PRICE_MULTIPLIER")
 
+    # Furgonetka API Integration
+    furgonetka_client_id: str | None = Field(default=None, alias="FURGONETKA_CLIENT_ID")
+    furgonetka_client_secret: str | None = Field(default=None, alias="FURGONETKA_CLIENT_SECRET")
+    furgonetka_base_url: str = Field(default="https://sandbox.furgonetka.pl", alias="FURGONETKA_BASE_URL")
+    furgonetka_sandbox_mode: bool = Field(default=True, alias="FURGONETKA_SANDBOX_MODE")
+    furgonetka_redirect_uri: str = Field(default="http://localhost:8000/furgonetka/oauth/callback", alias="FURGONETKA_REDIRECT_URI")
+    
+    # Carrier service mapping (Shoper delivery_method_id -> Furgonetka service code)
+    # Example: {"15": "inpost", "16": "dpd_pickup", "17": "orlen", "18": "dhl"}
+    furgonetka_service_map: str | None = Field(default=None, alias="FURGONETKA_SERVICE_MAP")
+    
+    # Default sender address (your warehouse)
+    furgonetka_sender_name: str = Field(default="", alias="FURGONETKA_SENDER_NAME")
+    furgonetka_sender_street: str = Field(default="", alias="FURGONETKA_SENDER_STREET")
+    furgonetka_sender_city: str = Field(default="", alias="FURGONETKA_SENDER_CITY")
+    furgonetka_sender_postcode: str = Field(default="", alias="FURGONETKA_SENDER_POSTCODE")
+    furgonetka_sender_phone: str = Field(default="", alias="FURGONETKA_SENDER_PHONE")
+    furgonetka_sender_email: str = Field(default="", alias="FURGONETKA_SENDER_EMAIL")
+
     # Note: Do NOT define a nested Config when using model_config (pydantic v2)
 
 

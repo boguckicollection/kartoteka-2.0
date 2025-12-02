@@ -284,6 +284,14 @@ try:
 except Exception:
     pass
 
+# Register Furgonetka API router
+try:
+    from .furgonetka_endpoints import router as furgonetka_router
+    app.include_router(furgonetka_router)
+    print("✅ Furgonetka API endpoints registered")
+except Exception as e:
+    print(f"⚠️  Furgonetka endpoints not available: {e}")
+
 
 @app.post("/inventory/check_code")
 async def check_warehouse_code(body: dict = Body(default={})):
@@ -3935,13 +3943,19 @@ async def import_inventory_csv(file: UploadFile = File(...)):
 
 
 @app.get("/orders")
-async def list_orders(limit: int = 20, page: int | None = None, detailed: bool = Query(default=False)):
+async def list_orders(
+    limit: int = 20, 
+    page: int | None = None, 
+    detailed: bool = Query(default=False),
+    auto_sync_furgonetka: bool = Query(default=True, description="Sync with Furgonetka in background")
+):
     """Fetch orders with caching and pagination support.
     
     Args:
         limit: Number of orders per page (default: 20, max: 250)
         page: Page number (optional, defaults to fetch all)
         detailed: Include full order details (items, buyer info)
+        auto_sync_furgonetka: Trigger background sync with Furgonetka
     
     Returns:
         List of normalized order objects
@@ -4162,6 +4176,16 @@ async def list_orders(limit: int = 20, page: int | None = None, detailed: bool =
         _orders_cache[cache_key] = out
         _orders_cache_ts = now
     
+    # Trigger background sync with Furgonetka
+    if auto_sync_furgonetka and out:
+        try:
+            # Collect order IDs from the response
+            order_ids = [o.get("id") for o in out if o.get("id")]
+            if order_ids:
+                asyncio.create_task(_background_sync_furgonetka(order_ids))
+        except Exception as e:
+            print(f"Failed to trigger Furgonetka sync: {e}")
+
     return out
 
 
@@ -5750,3 +5774,28 @@ async def recalc_product_costs():
         return {"status": "ok", "total_products": count, "updated_products": updated}
     finally:
         db.close()
+
+
+async def _background_sync_furgonetka(order_ids: List[int]):
+    """Background task to sync Furgonetka shipments."""
+    try:
+        # Import locally to avoid circular imports
+        from .furgonetka_endpoints import sync_shipment_from_furgonetka
+        
+        # Process in chunks to avoid overwhelming API
+        chunk_size = 5
+        for i in range(0, len(order_ids), chunk_size):
+            chunk = order_ids[i:i + chunk_size]
+            for order_id in chunk:
+                try:
+                    await sync_shipment_from_furgonetka(order_id)
+                except Exception as e:
+                    print(f"Background sync failed for order {order_id}: {e}")
+            
+            # Small delay between chunks
+            if i + chunk_size < len(order_ids):
+                await asyncio.sleep(1)
+                
+    except Exception as e:
+        print(f"Background sync error: {e}")
+
