@@ -711,20 +711,70 @@ export default function OrdersView({ items: initialItems, apiBase }: Props) {
           </div>
           
           {/* Footer total */}
-          <div className="flex items-center justify-between p-4 border-t border-gray-700/50 bg-gradient-to-r from-gray-900/80 to-gray-800/80">
-            <button
-              onClick={handlePrint}
-              className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-cyan-400 bg-cyan-500/10 rounded-lg border border-cyan-500/30 hover:bg-cyan-500/20 hover:border-cyan-400 transition-all hover:shadow-lg hover:shadow-cyan-500/20"
-            >
-              <span className="material-symbols-outlined text-lg">print</span>
-              Drukuj paragon
-            </button>
-            <div className="text-right">
-              <div className="text-gray-400 text-xs uppercase tracking-wide mb-1">Wartość zamówienia</div>
-              <div className="text-cyan-400 font-bold text-2xl">
-                {selected?.total != null ? `${Number(String(selected.total).replace(',', '.')).toFixed(2)} zł` : '-'}
+          <div className="p-4 border-t border-gray-700/50 bg-gradient-to-r from-gray-900/80 to-gray-800/80">
+            <div className="flex items-center justify-between mb-3">
+              <button
+                onClick={handlePrint}
+                className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-cyan-400 bg-cyan-500/10 rounded-lg border border-cyan-500/30 hover:bg-cyan-500/20 hover:border-cyan-400 transition-all hover:shadow-lg hover:shadow-cyan-500/20"
+              >
+                <span className="material-symbols-outlined text-lg">print</span>
+                Drukuj paragon
+              </button>
+              <div className="text-right">
+                <div className="text-gray-400 text-xs uppercase tracking-wide mb-1">Wartość zamówienia</div>
+                <div className="text-cyan-400 font-bold text-2xl">
+                  {selected?.total != null ? `${Number(String(selected.total).replace(',', '.')).toFixed(2)} zł` : '-'}
+                </div>
               </div>
             </div>
+            
+            {/* Margin calculation */}
+            {(() => {
+              const items = selected?.products || selected?.items || selected?.orders_products || selected?.order_products || [];
+              let totalCost = 0;
+              let totalRevenue = selected?.total != null ? Number(String(selected.total).replace(',', '.')) : 0;
+              
+              // Calculate total purchase cost from order items
+              // Note: This requires purchase_price to be included in order items from backend
+              // For now, we'll show a placeholder or fetch from products table
+              const hasValidCost = items.some((item: any) => item.purchase_price != null);
+              
+              if (hasValidCost) {
+                items.forEach((item: any) => {
+                  const qty = Number(item?.quantity || item?.qty || item?.count || 0);
+                  const purchasePrice = Number(item?.purchase_price || 0);
+                  totalCost += qty * purchasePrice;
+                });
+                
+                const margin = totalRevenue - totalCost;
+                const marginPercent = totalRevenue > 0 ? (margin / totalRevenue) * 100 : 0;
+                
+                return (
+                  <div className="grid grid-cols-3 gap-3 pt-3 border-t border-gray-700/30">
+                    <div className="text-center p-2 bg-gray-800/50 rounded-lg">
+                      <div className="text-gray-400 text-xs mb-1">Koszt zakupu</div>
+                      <div className="text-red-400 font-semibold text-sm">
+                        {totalCost.toFixed(2)} zł
+                      </div>
+                    </div>
+                    <div className="text-center p-2 bg-gray-800/50 rounded-lg">
+                      <div className="text-gray-400 text-xs mb-1">Marża</div>
+                      <div className="text-green-400 font-semibold text-sm">
+                        {margin.toFixed(2)} zł
+                      </div>
+                    </div>
+                    <div className="text-center p-2 bg-gray-800/50 rounded-lg">
+                      <div className="text-gray-400 text-xs mb-1">Marża %</div>
+                      <div className="text-emerald-400 font-semibold text-sm">
+                        {marginPercent.toFixed(1)}%
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              
+              return null;
+            })()}
           </div>
         </div>
       </div>

@@ -56,7 +56,7 @@ def _call_openai_vision(b64: str) -> dict:
 
     prompt = (
         "You are an expert at analyzing Pokémon Trading Card Game cards. "
-        "Your task is to identify the card name, card number, set, rarity, energy type, and card type.\n\n"
+        "Your task is to identify the card name, card number, set, rarity, energy type, card type, and special card variant.\n\n"
         
         "CRITICAL INSTRUCTIONS:\n"
         "1. **NO GUESSING**: Do NOT guess the card name. If text is not clear, return null. "
@@ -66,10 +66,18 @@ def _call_openai_vision(b64: str) -> dict:
         "4. **Card Number**: Look for numbers like '102/102' or '4/64'. On older cards, this is often in the bottom-right. Return ONLY the numerator (XX).\n"
         "5. **Set**: The Set indicator might be a small symbol/icon, not text. Describe the symbol if you can't map it to a name, or return the likely Set Name if recognized.\n"
         "6. **Rarity**: Identify the rarity symbol (e.g., Circle for Common, Diamond for Uncommon, Star for Rare).\n"
-        "7. **Energy Type**: Determine the card's energy type (e.g., Grass, Fire, Water, Lightning, Psychic, Fighting, Darkness, Metal, Fairy, Dragon, Colorless).\n"
-        "8. **Card Type**: Specify if it's a 'Pokemon', 'Trainer', or 'Energy' card.\n\n"
+        "7. **Energy Type**: Determine the card's energy type (e.g., Grass, Fire, Water, Lightning, Psychic, Fighting, Darkness, Metal, Fairy, Dragon, Colorless). "
+        "Pay close attention to Gray icons: 'Metal' is usually a darker silver/gray with a metallic texture, while 'Colorless' (Normal) is a lighter white/gray starburst or plain circle. "
+        "If uncertain between Metal and Colorless, check the background texture.\n"
+        "8. **Card Type**: Specify if it's a 'Pokemon', 'Trainer', or 'Energy' card.\n"
+        "9. **Special Card Variant**: Look carefully at the card name area for special variants:\n"
+        "   - Pokemon cards may have 'EX', 'V', 'VMAX', 'VSTAR', 'GX', 'ex' (lowercase), or '-ex' next to the Pokemon name\n"
+        "   - Trainer cards usually have a subtitle indicating their type: 'Supporter', 'Item', 'Stadium', 'Tool', 'ACE SPEC'\n"
+        "   - Energy cards may be 'Basic Energy' or 'Special Energy'\n"
+        "   - Examples: 'Pikachu ex' → variant='ex', 'Professor Sada' (Supporter) → variant='Supporter'\n"
+        "   - If no special variant is visible, return null for variant.\n\n"
         
-        "Return JSON with these exact keys: name, number, set, rarity, energy, card_type. "
+        "Return JSON with these exact keys: name, number, set, rarity, energy, card_type, variant. "
         "Use null for unknown values. Respond with JSON only."
     )
 
@@ -105,6 +113,9 @@ def _call_openai_vision(b64: str) -> dict:
         s = str(v).strip()
         return s or None
 
+    # Extract variant from Vision API if available
+    detected_variant = _scalar(data.get('variant'))
+    
     return {
         'name': _scalar(data.get('name')),
         'set': _scalar(data.get('set')),
@@ -112,9 +123,9 @@ def _call_openai_vision(b64: str) -> dict:
         'rarity': _scalar(data.get('rarity')),
         'energy': _scalar(data.get('energy')),
         'card_type': _scalar(data.get('card_type')),
+        'variant': detected_variant,  # Now can be detected from Vision
         'set_code': None,
         'language': None,
-        'variant': None,
         'condition': None,
     }
 

@@ -506,18 +506,20 @@ def map_detected_to_form_ids(
         if oid:
             result[str(meta["id"])] = str(oid)
 
-    # Type (Card Type) - only map specific types, ignore generic "Pokémon", "Trainer", "Energy"
-    type_val = detected.get("type") or detected.get("supertype")
+    # Type (Card Type) - map specific card variants (EX, V, VMAX, VSTAR, GX, Supporter, Item, etc.)
+    # Use 'variant' field from Vision API which now detects these special types
+    variant_val = detected.get("variant")
     meta = _find_attr(attribute_targets["type"])
-    if meta and type_val:
-        normalized_type = _norm(type_val)
-        # Skip generic supertypes that would incorrectly match to specific card types
-        # These are too broad and would match "Pokémon EX" when the card is just a regular Pokémon
-        if normalized_type not in ["pokemon", "pokémon", "trainer", "energy"]:
-            candidates = [normalized_type]
-            oid = _best_option_numeric_id(meta["options"], candidates)
-            if oid:
-                result[str(meta["id"])] = str(oid)
-        # If it's a generic type, leave empty (don't set any card type)
+    if meta:
+        if variant_val:
+            normalized_variant = _norm(variant_val)
+            # Map common variants to card type options
+            # EX, V, VMAX, VSTAR, GX, ex, Supporter, Item, Stadium, Tool, ACE SPEC, etc.
+            if normalized_variant not in ["normal", "regular", ""]:
+                candidates = [normalized_variant, variant_val]
+                oid = _best_option_numeric_id(meta["options"], candidates)
+                if oid:
+                    result[str(meta["id"])] = str(oid)
+        # If no variant detected or it's generic, default to "Nie dotyczy" will be set by frontend/backend defaults
 
     return result

@@ -131,6 +131,7 @@ class InventoryItem(Base):
     set = Column(String(255), nullable=True)
     warehouse_code = Column(String(64), nullable=True, index=True)
     price = Column(Float, nullable=True)
+    purchase_price = Column(Float, nullable=True)
     image = Column(Text, nullable=True)
     variant = Column(String(64), nullable=True)
     sold = Column(Integer, nullable=True)
@@ -457,6 +458,10 @@ def init_db():
             ("use_tcggo_image", "INTEGER DEFAULT 1"),
             ("additional_images_json", "TEXT"),
             ("cardmarket_url", "TEXT"),
+            ("purchase_price", "FLOAT"),
+        ],
+        "inventory": [
+            ("purchase_price", "FLOAT"),
         ],
     }
 

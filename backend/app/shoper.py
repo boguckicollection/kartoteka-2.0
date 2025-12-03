@@ -581,7 +581,8 @@ class ShoperClient:
     async def fetch_orders_page(self, page: int = 1, limit: int = 50) -> Dict[str, Any]:
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
         url = f"{self.base_url}{settings.shoper_orders_path}"
-        params = {"page": page, "limit": limit}
+        # Request products and buyer data embedded
+        params = {"page": page, "limit": limit, "with": "products,buyer"}
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.get(url, params=params, headers=headers)
             r.raise_for_status()

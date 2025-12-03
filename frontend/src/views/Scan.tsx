@@ -270,12 +270,18 @@ export default function ScanView({ session, preview, loading, analyzing, status,
 
             // Attributes are now included in the detected payload, so no need to map them again.
             
-            // Set default values for Language and Condition if not mapped
+            // Set default values for all attributes if not mapped
             if (!newFormData['64']) { // Język (Language)
               newFormData['64'] = '142'; // Angielski (English)
             }
             if (!newFormData['66']) { // Jakość (Quality)
               newFormData['66'] = '176'; // Near Mint
+            }
+            if (!newFormData['65']) { // Wykończenie (Finish)
+              newFormData['65'] = '184'; // Normal
+            }
+            if (!newFormData['39']) { // Typ karty (Card Type)
+              newFormData['39'] = '182'; // Nie dotyczy (N/A)
             }
 
             setFormData(newFormData);
@@ -895,7 +901,45 @@ return (
 
                 </div>
               ) : (
-                <>
+                <div className="max-w-xl mx-auto w-full">
+                  {/* Upload buttons - moved to top for better UX */}
+                  {showFileInputs && scanSubMode === 'single' && (
+                    <div className="mb-4 w-full">
+                        <label htmlFor="file-upload" className="cursor-pointer flex flex-row items-center justify-center gap-4 p-4 bg-gradient-to-br from-cyan-500/10 to-blue-600/10 border-2 border-dashed border-cyan-500/30 rounded-xl shadow-lg hover:border-cyan-500/60 hover:bg-cyan-500/20 transition-all duration-300 group">
+                            <div className="relative w-12 h-12 flex-shrink-0">
+                              <div className="absolute inset-0 bg-cyan-500/20 rounded-full blur-lg opacity-50 group-hover:opacity-100 transition-opacity"></div>
+                              <div className="relative w-full h-full flex items-center justify-center bg-gradient-to-br from-cyan-500/20 to-blue-600/20 rounded-full border border-cyan-500/40">
+                                <span className="material-symbols-outlined text-2xl text-cyan-400">cloud_upload</span>
+                              </div>
+                            </div>
+                            <div className="text-left">
+                              <span className="block text-base font-bold text-white">Wgraj obraz karty</span>
+                              <span className="block text-xs text-gray-400">Automatyczna analiza po wyborze</span>
+                            </div>
+                            <input id="file-upload" type="file" accept="image/*" capture="environment" onChange={onFile} className="hidden" />
+                        </label>
+                    </div>
+                  )}
+                  {showFileInputs && scanSubMode === 'folder' && (
+                    <div className="mb-4 w-full">
+                        <label htmlFor="folder-upload" className="cursor-pointer flex flex-row items-center justify-center gap-4 p-4 bg-gradient-to-br from-purple-500/10 to-pink-600/10 border-2 border-dashed border-purple-500/30 rounded-xl shadow-lg hover:border-purple-500/60 hover:bg-purple-500/20 transition-all duration-300 group">
+                            <div className="relative w-12 h-12 flex-shrink-0">
+                              <div className="absolute inset-0 bg-purple-500/20 rounded-full blur-lg opacity-50 group-hover:opacity-100 transition-opacity"></div>
+                              <div className="relative w-full h-full flex items-center justify-center bg-gradient-to-br from-purple-500/20 to-pink-600/20 rounded-full border border-purple-500/40">
+                                <span className="material-symbols-outlined text-2xl text-purple-400">folder_open</span>
+                              </div>
+                            </div>
+                            <div className="text-left">
+                              <span className="block text-base font-bold text-white">Wgraj folder</span>
+                              <span className="block text-xs text-gray-400">Automatyczne skanowanie katalogu</span>
+                            </div>
+                            <input id="folder-upload" type="file" webkitdirectory="" mozdirectory="" directory="" onChange={onFolderChange} className="hidden" />
+                        </label>
+                    </div>
+                  )}
+
+                  {/* Preview section - only show after scan is loaded */}
+                  {preview && (
                   <div className="grid grid-cols-2 gap-4 w-full">
                       <div>
                           <label className="text-xs text-gray-400 block text-center mb-1">Twój skan</label>
@@ -961,8 +1005,10 @@ return (
                           </div>
                       </div>
                   </div>
+                  )}
 
                   {/* --- Image Selection UI --- */}
+                  {preview && (
                   <div className="mt-4 w-full">
                     <h3 className="text-base font-bold text-white mb-2">Wybór grafiki głównej</h3>
                     <div className="flex justify-around items-start gap-2 p-2 bg-gray-800 rounded-lg">
@@ -1005,8 +1051,10 @@ return (
                       </label>
                     </div>
                   </div>
+                  )}
 
                   {/* --- Additional Images UI --- */}
+                  {preview && (
                   <div className="mt-4 w-full">
                     <h3 className="text-base font-bold text-white mb-2">Dodatkowe zdjęcia (stan karty)</h3>
                     <div className="flex flex-col gap-2 p-2 bg-gray-800 rounded-lg">
@@ -1033,10 +1081,12 @@ return (
                             </div>
                           ))}
                         </div>
-                      )}
-                    </div>
+                          )}
+                      </div>
                   </div>
+                   )}
 
+                  {/* Candidates list */}
                   {scanResult?.candidates && scanResult.candidates.length > 1 && (
                     <div className="mt-4 w-full">
                       <div className="flex items-center justify-between mb-2">
@@ -1078,33 +1128,7 @@ return (
                       </div>
                     </div>
                   )}
-
-                  {showFileInputs && scanSubMode === 'single' && (
-                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
-                        <label htmlFor="file-upload" className="cursor-pointer flex flex-col items-center justify-center p-6 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-colors duration-200 text-center">
-                            <span className="material-symbols-outlined text-4xl text-primary mb-2">image</span>
-                            <span className="text-md font-bold text-white">Wgraj plik</span>
-                            <span className="text-xs text-gray-400 mt-1">Pojedynczy obraz karty</span>
-                            <input id="file-upload" type="file" accept="image/*" capture="environment" onChange={onFile} className="hidden" />
-                        </label>
-                    </div>
-                  )}
-                  {showFileInputs && scanSubMode === 'folder' && (
-                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
-                        <label htmlFor="folder-upload" className="cursor-pointer flex flex-col items-center justify-center p-6 bg-gray-800 rounded-lg shadow-lg hover:bg-gray-700 transition-colors duration-200 text-center">
-                            <span className="material-symbols-outlined text-4xl text-primary mb-2">folder_open</span>
-                            <span className="text-md font-bold text-white">Wgraj folder</span>
-                            <span className="text-xs text-gray-400 mt-1">Cały folder ze skanami</span>
-                            <input id="folder-upload" type="file" webkitdirectory="" mozdirectory="" directory="" onChange={onFolderChange} className="hidden" />
-                        </label>
-                    </div>
-                  )}
-                  {showFileInputs && (
-                  <div className="mt-3">
-                    <button onClick={onSubmit} disabled={loading} className="rounded-lg h-10 px-4 bg-primary text-white text-sm font-bold disabled:opacity-60">{loading && <span className="spinner" />} {loading ? 'Skanuję…' : 'Wyślij do analizy'}</button>
-                  </div>
-                  )}
-                </>
+                </div>
               )}
             </div>
 

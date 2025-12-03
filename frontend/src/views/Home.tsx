@@ -55,6 +55,17 @@ export default function Home({ stats, orders, onNav, onRefresh, onOpenOrder }: P
     { key: 'sold_count', label: 'Sprzedane (sztuki)', value: stats?.sold_count, nav: 'reports' },
   ], [stats]);
 
+  // Calculate alerts
+  const lowStockCount = useMemo(() => {
+    // This will need to come from API - for now we'll add it when we have the data
+    return 0; // Placeholder
+  }, []);
+
+  const needsPriceUpdate = useMemo(() => {
+    // This will need to come from API - for now we'll add it when we have the data
+    return 0; // Placeholder
+  }, []);
+
   return (
     <div className="max-w-7xl mx-auto font-display pb-24">
       {/* Header */}
@@ -107,6 +118,80 @@ export default function Home({ stats, orders, onNav, onRefresh, onOpenOrder }: P
           );
         })}
       </div>
+
+      {/* Alerts & Notifications */}
+      {(lowStockCount > 0 || needsPriceUpdate > 0 || (stats?.scans_ready && stats.scans_ready > 0)) && (
+        <div className="mt-8">
+          <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-4">
+            <span className="material-symbols-outlined text-amber-400">notifications</span>
+            Powiadomienia
+          </h2>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {/* Niski stan magazynu */}
+            {lowStockCount > 0 && (
+              <div 
+                className="group relative cursor-pointer"
+                onClick={() => onNav('inventory')}
+              >
+                <div className="absolute -inset-0.5 bg-gradient-to-r from-amber-500/20 to-orange-600/20 rounded-xl blur opacity-75 group-hover:opacity-100 transition duration-300"></div>
+                <div className="relative p-4 bg-[#0f172a] border border-amber-500/30 rounded-xl hover:border-amber-500/50 transition-all">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 flex items-center justify-center bg-amber-500/20 rounded-lg">
+                      <span className="material-symbols-outlined text-2xl text-amber-400">inventory</span>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-white font-medium">Niski stan magazynu</p>
+                      <p className="text-gray-400 text-sm">{lowStockCount} produktów &lt; 100 sztuk</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            {/* Gotowe do publikacji */}
+            {stats?.scans_ready && stats.scans_ready > 0 && (
+              <div 
+                className="group relative cursor-pointer"
+                onClick={() => onNav('scan')}
+              >
+                <div className="absolute -inset-0.5 bg-gradient-to-r from-cyan-500/20 to-blue-600/20 rounded-xl blur opacity-75 group-hover:opacity-100 transition duration-300"></div>
+                <div className="relative p-4 bg-[#0f172a] border border-cyan-500/30 rounded-xl hover:border-cyan-500/50 transition-all">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 flex items-center justify-center bg-cyan-500/20 rounded-lg">
+                      <span className="material-symbols-outlined text-2xl text-cyan-400">pending_actions</span>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-white font-medium">Gotowe do publikacji</p>
+                      <p className="text-gray-400 text-sm">{stats.scans_ready} skanów czeka</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            {/* Aktualizacja cen */}
+            {needsPriceUpdate > 0 && (
+              <div 
+                className="group relative cursor-pointer"
+                onClick={() => onNav('pricing')}
+              >
+                <div className="absolute -inset-0.5 bg-gradient-to-r from-purple-500/20 to-pink-600/20 rounded-xl blur opacity-75 group-hover:opacity-100 transition duration-300"></div>
+                <div className="relative p-4 bg-[#0f172a] border border-purple-500/30 rounded-xl hover:border-purple-500/50 transition-all">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 flex items-center justify-center bg-purple-500/20 rounded-lg">
+                      <span className="material-symbols-outlined text-2xl text-purple-400">update</span>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-white font-medium">Aktualizacja cen</p>
+                      <p className="text-gray-400 text-sm">{needsPriceUpdate} produktów wymaga aktualizacji</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Recent Scans */}
       {stats?.recent_scans?.length ? (
@@ -190,6 +275,94 @@ export default function Home({ stats, orders, onNav, onRefresh, onOpenOrder }: P
           <span className="material-symbols-outlined text-4xl text-gray-600 mb-2">cloud_upload</span>
           <p className="text-gray-400">Brak opublikowanych kart</p>
           <p className="text-gray-500 text-sm mt-1">Opublikuj karty, aby zobaczyć je tutaj</p>
+        </div>
+      )}
+
+      {/* Recent Orders - Last 5 */}
+      {orders && orders.length > 0 && (
+        <div className="mt-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+              <span className="material-symbols-outlined text-blue-400">receipt_long</span>
+              Ostatnie zamówienia
+            </h2>
+            <button 
+              onClick={() => onNav('orders')}
+              className="text-sm text-cyan-400 hover:text-cyan-300 transition-colors flex items-center gap-1"
+            >
+              Zobacz wszystkie
+              <span className="material-symbols-outlined text-sm">arrow_forward</span>
+            </button>
+          </div>
+          
+          <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
+            {[...orders].sort((a:any, b:any) => Number(b.id) - Number(a.id)).slice(0, 5).map((order: any) => {
+              const statusId = order?.status?.id;
+              const userName = order?.user?.firstname && order?.user?.lastname 
+                ? `${order.user.firstname} ${order.user.lastname}`
+                : order?.user?.email?.split('@')[0] || 'Gość';
+              
+              // Status configuration
+              let statusColor = '#6B7280';
+              let statusIcon = 'label';
+              let statusBg = 'bg-gray-700/50';
+              
+              if (statusId === '1' || statusId === 1) {
+                statusColor = '#3B82F6';
+                statusIcon = 'new_releases';
+                statusBg = 'bg-blue-500/20';
+              } else if (statusId === '2' || statusId === 2) {
+                statusColor = '#F59E0B';
+                statusIcon = 'hourglass_empty';
+                statusBg = 'bg-amber-500/20';
+              } else if (statusId === '7' || statusId === 7) {
+                statusColor = '#10B981';
+                statusIcon = 'local_shipping';
+                statusBg = 'bg-green-500/20';
+              }
+              
+              return (
+                <div
+                  key={order.id}
+                  onClick={() => onOpenOrder && onOpenOrder(order)}
+                  className="group relative cursor-pointer rounded-xl p-4 bg-[#0f172a] border border-gray-700/50 hover:border-gray-600 transition-all duration-200 hover:scale-[1.02] aspect-square flex flex-col justify-between shadow-lg hover:shadow-xl"
+                >
+                  {/* Top: Status Icon & ID */}
+                  <div className="flex justify-between items-start">
+                     <div 
+                        className={`w-10 h-10 flex items-center justify-center rounded-xl ${statusBg}`}
+                      >
+                        <span className="material-symbols-outlined text-xl" style={{ color: statusColor }}>
+                          {statusIcon}
+                        </span>
+                      </div>
+                      <span className="text-white font-bold text-lg">#{order.id}</span>
+                  </div>
+
+                  {/* Middle: Buyer */}
+                  <div className="text-left mt-2">
+                      <p className="text-gray-500 text-[10px] uppercase tracking-wider">Kupujący</p>
+                      <p className="text-white font-medium truncate text-sm">{userName}</p>
+                  </div>
+
+                  {/* Bottom: Stats */}
+                  <div className="flex justify-between items-end border-t border-gray-700/50 pt-3 mt-auto">
+                    <div className="text-left">
+                        <p className="text-gray-500 text-[10px]">Sztuk</p>
+                        <p className="text-white font-bold">{order.items_count || 0}</p>
+                    </div>
+                    <div className="text-right">
+                        <p className="text-gray-500 text-[10px]">Kwota</p>
+                        <p className="text-cyan-400 font-bold">{order.total ? `${Number(String(order.total).replace(',', '.')).toFixed(2)} zł` : '-'}</p>
+                    </div>
+                  </div>
+                  
+                  {/* Hover indicator */}
+                  <div className="absolute inset-0 rounded-xl border-2 border-cyan-500/0 group-hover:border-cyan-500/50 transition-all pointer-events-none"></div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 

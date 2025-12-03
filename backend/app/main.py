@@ -900,6 +900,49 @@ async def _auto_update_prices_task():
             await asyncio.sleep(60)  # Wait a minute before retrying
 
 
+def _migrate_purchase_prices():
+    """
+    Automatically calculates and sets purchase_price for all products that don't have it.
+    Runs once at startup to ensure all products have a purchase cost.
+    """
+    db = SessionLocal()
+    try:
+        products_without_price = db.query(Product).filter(Product.purchase_price.is_(None)).all()
+        
+        if not products_without_price:
+            print("✅ All products already have purchase_price set")
+            return
+        
+        print(f"🔄 Migrating purchase_price for {len(products_without_price)} products...")
+        updated = 0
+        
+        for product in products_without_price:
+            try:
+                price = float(product.price or 0.0)
+                rarity = None
+                
+                # Try to get rarity from linked CardCatalog
+                if product.catalog_id:
+                    catalog_entry = db.get(CardCatalog, product.catalog_id)
+                    if catalog_entry:
+                        rarity = catalog_entry.rarity
+                
+                # Calculate purchase price using existing logic
+                purchase_price = _calculate_purchase_cost(rarity, price)
+                product.purchase_price = purchase_price
+                updated += 1
+            except Exception as e:
+                print(f"⚠️  Failed to calculate purchase_price for product {product.id}: {e}")
+                continue
+        
+        db.commit()
+        print(f"✅ Successfully migrated purchase_price for {updated} products")
+    except Exception as e:
+        print(f"❌ Purchase price migration failed: {e}")
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 async def _on_startup():
     if settings.shoper_auto_sync_on_startup:
@@ -909,6 +952,9 @@ async def _on_startup():
     # Start price auto-update background task
     if getattr(settings, 'price_auto_update_enabled', False):
         asyncio.create_task(_auto_update_prices_task())
+    
+    # Migrate purchase_price for existing products
+    _migrate_purchase_prices()
 
 
 @app.post("/notifications/subscribe")
@@ -2020,6 +2066,8 @@ async def scan_image(
                                 detected_data['66'] = '176'  # Near Mint
                             if not detected_data.get('65'):  # Finish
                                 detected_data['65'] = '184'  # Normal
+                            if not detected_data.get('39'):  # Card Type
+                                detected_data['39'] = '182'  # Nie dotyczy (N/A)
                 except Exception as e:
                     print(f"WARNING: Failed to map attributes for duplicate: {e}")
                 
@@ -2476,6 +2524,10 @@ async def get_candidate_details(body: dict = Body(default={})):
             if items:
                 form_ids = map_detected_to_form_ids(detected_attrs, items)
                 fused.update(form_ids)
+                
+                # Force default card type "Nie dotyczy" if not mapped
+                if not fused.get('39'):
+                    fused['39'] = '182'
         except Exception as e:
             print(f"ERROR during attribute mapping in candidate_details: {e}")
 
@@ -2701,15 +2753,40 @@ async def confirm_candidate(payload: ConfirmRequest):
         scan.graded_psa10 = extracted.get("graded_psa10")
         scan.graded_currency = extracted.get("graded_currency")
 
+        # Calculate purchase_price based on RARITY (not variant/finish)
+        # Common, Uncommon, Rare → 0.10 PLN
+        # Premium rarities (Double Rare, Promo, Illustration Rare, etc.) → 80% of market price
+        rarity = scan.detected_rarity or ''
+        rarity_lower = rarity.lower()
+        
+        # Check if it's a premium rarity
+        is_premium_rarity = any(keyword in rarity_lower for keyword in [
+            'double rare', 'promo', 'illustration rare', 'special illustration rare',
+            'ultra rare', 'hyper rare', 'ace spec', 'shiny'
+        ])
+        
+        if is_premium_rarity and scan.price_pln_final:
+            # Premium: 80% of market price
+            scan.purchase_price = round(scan.price_pln_final * settings.min_price_premium_percent, 2)
+            print(f"INFO: Premium rarity '{rarity}' -> purchase_price = 80% of {scan.price_pln_final} = {scan.purchase_price} PLN")
+        else:
+            # Standard: fixed 0.10 PLN
+            scan.purchase_price = settings.min_price_common
+            print(f"INFO: Standard rarity '{rarity}' -> purchase_price = {scan.purchase_price} PLN")
+
         # ALWAYS prefer price from frontend if provided (user may have manually edited)
         if payload.detected and 'price_pln_final' in payload.detected:
              try:
-                 price_from_frontend = payload.detected['price_pln_final']
-                 if price_from_frontend is not None and price_from_frontend != '':
-                     price_override = float(price_from_frontend)
-                     if price_override > 0:  # Only override if positive
-                         scan.price_pln_final = price_override
-                         print(f"DEBUG: Using price from frontend: {price_override} PLN")
+                  price_from_frontend = payload.detected['price_pln_final']
+                  if price_from_frontend is not None and price_from_frontend != '':
+                      price_override = float(price_from_frontend)
+                      if price_override > 0:  # Only override if positive
+                          scan.price_pln_final = price_override
+                          print(f"DEBUG: Using price from frontend: {price_override} PLN")
+                          # Recalculate purchase_price if price changed
+                          if is_premium_rarity:
+                              scan.purchase_price = round(price_override * settings.min_price_premium_percent, 2)
+                              print(f"DEBUG: Recalculated purchase_price = {scan.purchase_price} PLN")
              except (ValueError, TypeError) as e:
                  print(f"WARNING: Invalid price_pln_final from frontend: {payload.detected.get('price_pln_final')} - {e}")
                  pass # keep calculated price
@@ -2881,8 +2958,33 @@ async def get_product_locations(shoper_id: int):
     finally:
         db.close()
         
+@app.patch("/products/{product_id}/purchase_price")
+async def update_purchase_price(product_id: int, body: dict = Body(...)):
+    """
+    Updates the purchase price for a product in the local database.
+    Body: {"purchase_price": 12.50}
+    """
+    db = SessionLocal()
+    try:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product:
+            return JSONResponse({"error": "Product not found"}, status_code=404)
+        
+        try:
+            new_price = float(body.get("purchase_price", 0))
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "Invalid purchase_price value"}, status_code=400)
+        
+        product.purchase_price = new_price
+        db.commit()
+        
+        return {"success": True, "product_id": product_id, "purchase_price": new_price}
+    finally:
+        db.close()
+
+
 @app.put("/products/{shoper_id}")
-async def update_product_in_shoper(shoper_id: int, product_update: ProductUpdateRequest):
+async def update_product(shoper_id: int, product_update: ProductUpdateRequest):
     if not settings.shoper_base_url or not settings.shoper_access_token:
         return JSONResponse(
             {"error": "Configure SHOPER_BASE_URL and SHOPER_ACCESS_TOKEN"},
@@ -3989,8 +4091,8 @@ async def list_orders(
     # Normalize a compact shape for UI
     out = []
     # Optional product cache and DB session for enrichment
-    prod_cache_by_code: dict[str, tuple[str|None, str|None]] = {}
-    prod_cache_by_id: dict[int, tuple[str|None, str|None]] = {}
+    prod_cache_by_code: dict[str, tuple[str|None, str|None, float|None]] = {}
+    prod_cache_by_id: dict[int, tuple[str|None, str|None, float|None]] = {}
     db = SessionLocal() if detailed else None
     for o in items:
         oid = o.get("order_id") or o.get("id") or o.get("orderId")
@@ -4100,27 +4202,38 @@ async def list_orders(
                         price = float(str(price).replace(",", ".")) if price is not None else None
                     except Exception:
                         price = None
-                    # Enrich with image/permalink via local products when possible
+                    # Enrich with image/permalink/purchase_price via local products when possible
                     image_url = None
                     permalink = None
+                    purchase_price = None
                     try:
                         if code and code in prod_cache_by_code:
-                            image_url, permalink = prod_cache_by_code.get(code) or (None, None)
+                            cached = prod_cache_by_code.get(code)
+                            if cached and len(cached) == 3:
+                                image_url, permalink, purchase_price = cached
+                            else:
+                                image_url, permalink = cached or (None, None)
                         elif isinstance(pid, int) and pid in prod_cache_by_id:
-                            image_url, permalink = prod_cache_by_id.get(pid) or (None, None)
+                            cached = prod_cache_by_id.get(pid)
+                            if cached and len(cached) == 3:
+                                image_url, permalink, purchase_price = cached
+                            else:
+                                image_url, permalink = cached or (None, None)
                         elif db is not None:
                             if code:
                                 pr = db.query(Product).filter(Product.code == code).first()
                                 if pr:
                                     image_url = _product_image_url(pr)
                                     permalink = pr.permalink
-                                    prod_cache_by_code[code] = (image_url, permalink)
+                                    purchase_price = float(pr.purchase_price) if pr.purchase_price else None
+                                    prod_cache_by_code[code] = (image_url, permalink, purchase_price)
                             if (image_url is None) and isinstance(pid, int):
                                 pr2 = db.query(Product).filter(Product.shoper_id == pid).first()
                                 if pr2:
                                     image_url = _product_image_url(pr2)
                                     permalink = pr2.permalink
-                                    prod_cache_by_id[pid] = (image_url, permalink)
+                                    purchase_price = float(pr2.purchase_price) if pr2.purchase_price else None
+                                    prod_cache_by_id[pid] = (image_url, permalink, purchase_price)
                     except Exception:
                         pass
                     simp.append({
@@ -4131,6 +4244,7 @@ async def list_orders(
                         "price": price,
                         "image": image_url,
                         "permalink": permalink,
+                        "purchase_price": purchase_price,
                     })
 
                 for p in prods:
@@ -4606,13 +4720,40 @@ async def stats():
         users_count = metrics.get("users_count")
 
         # Inventory stats (from all products in shop)
-        inventory_stats = db.query(
-            func.sum(Product.purchase_price),
-            func.sum(Product.price)
-        ).filter(Product.stock > 0).first()
+        # Calculate total cost and value (price × stock)
+        total_inventory_cost = 0.0
+        total_inventory_value = 0.0
+        products_counted = 0
+        products_without_purchase_price = 0
         
-        total_inventory_cost = inventory_stats[0] or 0.0
-        total_inventory_value = inventory_stats[1] or 0.0
+        products_in_stock = db.query(Product).filter(Product.stock > 0).all()
+        for product in products_in_stock:
+            stock = int(product.stock or 0)
+            price = float(product.price or 0.0)
+            purchase_price = float(product.purchase_price or 0.0)
+            
+            # If purchase_price is not set, calculate it dynamically
+            if not purchase_price and price:
+                products_without_purchase_price += 1
+                # Use rarity from linked catalog or estimate from price
+                rarity = None
+                if product.catalog_id:
+                    catalog_entry = db.get(CardCatalog, product.catalog_id)
+                    if catalog_entry:
+                        rarity = catalog_entry.rarity
+                purchase_price = _calculate_purchase_cost(rarity, price)
+            
+            if purchase_price > 0:
+                products_counted += 1
+            
+            total_inventory_cost += stock * purchase_price
+            total_inventory_value += stock * price
+        
+        # Debug logging
+        if products_without_purchase_price > 0:
+            print(f"⚠️  {products_without_purchase_price} products calculated purchase_price dynamically")
+        print(f"📊 Inventory: {products_counted} products, cost={total_inventory_cost:.2f}, value={total_inventory_value:.2f}")
+        
         potential_profit = total_inventory_value - total_inventory_cost
 
         return {
@@ -4765,6 +4906,116 @@ async def reports(range_days: int | None = None, low_stock_threshold: int = 1, t
         sold_value_pln = metrics.get("sold_value_pln", 0.0)
         sold_count = metrics.get("sold_count", 0)
         users_count = metrics.get("users_count")
+        
+        # Sales over time (revenue, quantity, cost, profit per day)
+        sales_per_day = []
+        if settings.shoper_base_url and settings.shoper_access_token:
+            try:
+                client = ShoperClient(settings.shoper_base_url, settings.shoper_access_token)
+                orders = await client.fetch_all_orders(limit=500)
+                
+                # Initialize sales map with all dates in range
+                sales_map: dict[str, dict[str, float | int]] = {
+                    k: {"revenue": 0.0, "quantity": 0, "cost": 0.0, "profit": 0.0} 
+                    for k in keys
+                }
+                
+                for order in orders:
+                    try:
+                        # Parse order date
+                        order_date_str = order.get("date") or order.get("date_add")
+                        if not order_date_str:
+                            continue
+                        
+                        # Handle different date formats
+                        if isinstance(order_date_str, str):
+                            try:
+                                order_date = datetime.fromisoformat(order_date_str.replace('Z', '+00:00')).date()
+                            except:
+                                try:
+                                    order_date = datetime.strptime(order_date_str.split(' ')[0], '%Y-%m-%d').date()
+                                except:
+                                    continue
+                        else:
+                            order_date = order_date_str.date()
+                        
+                        order_date_key = order_date.isoformat()
+                        
+                        if order_date_key not in sales_map:
+                            continue
+                        
+                        # Revenue
+                        total = order.get("sum") or order.get("total_gross") or order.get("total") or order.get("amount") or 0
+                        try:
+                            revenue = float(str(total).replace(",", "."))
+                            sales_map[order_date_key]["revenue"] += revenue
+                        except:
+                            pass
+                        
+                        # Quantity and cost - try multiple approaches
+                        items = order.get("products") or order.get("items") or order.get("orders_products") or order.get("order_products") or []
+                        if isinstance(items, dict):
+                            items = items.get("items") or items.get("list") or []
+                        
+                        # If no items found in order, try fetching them separately
+                        if not items:
+                            order_id = order.get("order_id") or order.get("id")
+                            if order_id:
+                                try:
+                                    items = await client.fetch_order_products(int(order_id))
+                                except:
+                                    items = []
+                        
+                        for item in items:
+                            if not isinstance(item, dict):
+                                continue
+                            
+                            qty = int(item.get("quantity") or item.get("qty") or item.get("count") or 0)
+                            sales_map[order_date_key]["quantity"] += qty
+                            
+                            # Try to get purchase cost from Product
+                            product_code = item.get("code")
+                            if product_code and qty > 0:
+                                product = db.query(Product).filter(Product.code == product_code).first()
+                                if product and product.purchase_price:
+                                    sales_map[order_date_key]["cost"] += qty * float(product.purchase_price)
+                    except Exception as e:
+                        print(f"Error processing order for sales_per_day: {e}")
+                        continue
+                
+                # Calculate profit for each day after all orders processed
+                for k, v in sales_map.items():
+                    v["profit"] = v["revenue"] - v["cost"]
+                
+                # Convert to list
+                sales_per_day = [
+                    {
+                        "date": k,
+                        "revenue": round(v["revenue"], 2),
+                        "quantity": int(v["quantity"]),
+                        "cost": round(v["cost"], 2),
+                        "profit": round(v["profit"], 2),
+                    }
+                    for k, v in sales_map.items()
+                ]
+                
+                # Debug: Log summary
+                total_qty = sum(v["quantity"] for v in sales_map.values())
+                total_rev = sum(v["revenue"] for v in sales_map.values())
+                total_cost = sum(v["cost"] for v in sales_map.values())
+                print(f"📊 Sales data: {len(orders)} orders, {total_qty} cards sold, {total_rev:.2f} PLN revenue, {total_cost:.2f} PLN cost")
+                if total_qty == 0:
+                    print(f"⚠️ WARNING: No card quantities found in {len(orders)} orders!")
+                    # Sample first order to debug structure
+                    if orders:
+                        print(f"🔍 Sample order keys: {list(orders[0].keys())}")
+                        items_test = orders[0].get("products") or orders[0].get("items") or []
+                        print(f"🔍 Sample order products type: {type(items_test)}, length: {len(items_test) if isinstance(items_test, (list, dict)) else 'N/A'}")
+            except Exception as e:
+                print(f"❌ Error fetching sales_per_day: {e}")
+                import traceback
+                traceback.print_exc()
+                sales_per_day = []
 
         return {
             "metrics": {
@@ -4780,6 +5031,7 @@ async def reports(range_days: int | None = None, low_stock_threshold: int = 1, t
             },
             "products_per_day": products_per_day,
             "scans_per_day": scans_per_day,
+            "sales_per_day": sales_per_day,
             "top_categories": top_categories,
             "low_stock": low_stock,
             "top_value": top_value,
@@ -5171,7 +5423,8 @@ async def batch_analyze_next(batch_id: int):
                 next_item.attr_condition = '176'  # Near Mint
             if not next_item.attr_finish:
                 next_item.attr_finish = '184'  # Normal
-            # Note: No default for card_type - leave empty if not detected
+            if not next_item.attr_card_type:
+                next_item.attr_card_type = '182'  # Nie dotyczy (N/A)
             
             # === STEP 8: Calculate completeness ===
             fields = {

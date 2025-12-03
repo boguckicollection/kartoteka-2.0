@@ -98,6 +98,7 @@ export default function Reports() {
   const [topCustomers, setTopCustomers] = useState<TopCustomer[]>([])
   const [soldAggregated, setSoldAggregated] = useState<Array<{ key: string; name: string; code?: string | null; qty: number; total?: number | null; image?: string | null }>>([])
   const [timeRange, setTimeRange] = useState<7 | 30 | 90>(30)
+  const [showProfit, setShowProfit] = useState<boolean>(false) // false = revenue, true = profit
 
   const apiBase = useMemo(() => {
     const env = (import.meta as any).env?.VITE_API_BASE_URL as string | undefined
@@ -247,6 +248,41 @@ export default function Reports() {
     }
   }, [data?.top_categories])
 
+  // Chart data for sales over time (multi-axis: revenue/profit + quantity)
+  const salesChartData = useMemo(() => {
+    const points = data?.sales_per_day || []
+    return {
+      labels: points.map(p => {
+        const d = new Date(p.date)
+        return `${d.getDate()}.${d.getMonth() + 1}`
+      }),
+      datasets: [
+        {
+          label: showProfit ? 'Zysk (zł)' : 'Przychód (zł)',
+          data: points.map(p => showProfit ? (p.profit || 0) : (p.revenue || 0)),
+          borderColor: chartColors.green.line,
+          backgroundColor: chartColors.green.fill,
+          yAxisID: 'y-money',
+          tension: 0.4,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+        },
+        {
+          label: 'Ilość kart',
+          data: points.map(p => p.quantity || 0),
+          borderColor: chartColors.purple.line,
+          backgroundColor: chartColors.purple.fill,
+          yAxisID: 'y-quantity',
+          tension: 0.4,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+        }
+      ]
+    }
+  }, [data?.sales_per_day, showProfit])
+
 
 
   const lineChartOptions = {
@@ -296,6 +332,73 @@ export default function Reports() {
       },
     },
     cutout: '60%',
+  }
+
+  const salesChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: {
+      mode: 'index' as const,
+      intersect: false,
+    },
+    plugins: {
+      legend: {
+        display: true,
+        position: 'top' as const,
+        labels: { color: '#94a3b8', font: { size: 11 }, padding: 12, boxWidth: 12 },
+      },
+      tooltip: {
+        backgroundColor: 'rgba(15, 23, 42, 0.9)',
+        titleColor: '#fff',
+        bodyColor: '#94a3b8',
+        borderColor: 'rgba(71, 85, 105, 0.5)',
+        borderWidth: 1,
+        padding: 12,
+        cornerRadius: 8,
+      },
+    },
+    scales: {
+      x: {
+        grid: { color: 'rgba(71, 85, 105, 0.2)', drawBorder: false },
+        ticks: { color: '#64748b', font: { size: 10 } },
+      },
+      'y-money': {
+        type: 'linear' as const,
+        position: 'left' as const,
+        grid: { color: 'rgba(71, 85, 105, 0.2)', drawBorder: false },
+        ticks: { 
+          color: '#22c55e',
+          font: { size: 10 },
+          callback: function(value: any) {
+            return value.toFixed(0) + ' zł'
+          }
+        },
+        title: { 
+          display: true, 
+          text: showProfit ? 'Zysk (PLN)' : 'Przychód (PLN)',
+          color: '#22c55e',
+          font: { size: 11 }
+        }
+      },
+      'y-quantity': {
+        type: 'linear' as const,
+        position: 'right' as const,
+        grid: { display: false },
+        ticks: { 
+          color: '#a855f7',
+          font: { size: 10 },
+          callback: function(value: any) {
+            return value + ' szt.'
+          }
+        },
+        title: { 
+          display: true, 
+          text: 'Ilość kart',
+          color: '#a855f7',
+          font: { size: 11 }
+        }
+      }
+    }
   }
 
 
@@ -398,6 +501,38 @@ export default function Reports() {
             </div>
           )
         })}
+      </div>
+
+      {/* Sales Chart - Full Width */}
+      <div className="mb-4">
+        <div className="bg-[#0f172a] rounded-xl p-5 border border-gray-700/50">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 flex items-center justify-center bg-gradient-to-br from-green-500/20 to-emerald-600/20 rounded-lg">
+                <span className="material-symbols-outlined text-lg text-green-400">monitoring</span>
+              </div>
+              <h3 className="text-white font-semibold">Sprzedaż w czasie</h3>
+            </div>
+            
+            {/* Toggle: Revenue / Profit */}
+            <button 
+              onClick={() => setShowProfit(!showProfit)}
+              className="px-3 py-1.5 text-sm font-medium rounded-lg border transition-all flex items-center gap-2 bg-gray-800/50 border-gray-600 hover:border-cyan-500/50 text-white"
+            >
+              <span className="material-symbols-outlined text-sm">
+                {showProfit ? 'trending_up' : 'attach_money'}
+              </span>
+              {showProfit ? 'Zysk' : 'Przychód'}
+            </button>
+          </div>
+          <div className="h-64">
+            {data?.sales_per_day?.length ? (
+              <Line data={salesChartData} options={salesChartOptions} />
+            ) : (
+              <div className="h-full flex items-center justify-center text-gray-500">Brak danych o sprzedaży</div>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Charts Row 1: Line Charts */}
